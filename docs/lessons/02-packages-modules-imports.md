@@ -20,199 +20,300 @@ your repository. Both are fine, and both would be alarming if you did not know w
 
 ## The concepts
 
-### Modules, packages, and the file system
+### Two words, then the interesting part
 
-A **module** is a `.py` file. A **package** is a directory containing `__init__.py`. That is the
-whole distinction — packages are directories that Python has been told to treat as importable.
+Python has two words for the things you import, and the difference between them is smaller than
+it sounds.
+
+A **module** is a `.py` file. A **package** is a folder with an `__init__.py` inside it. That is
+genuinely the whole distinction — the `__init__.py` is how you tell Python that this folder is
+something you can import, rather than just a folder that happens to have Python files in it.
 
 ```
-portfolio_ai/            package        import portfolio_ai
-├── __init__.py          runs on import of the package itself
-├── exceptions.py        module         import portfolio_ai.exceptions
-└── db/                  subpackage     import portfolio_ai.db
+portfolio_ai/            a package        import portfolio_ai
+├── __init__.py          makes it one
+├── exceptions.py        a module         import portfolio_ai.exceptions
+└── db/                  also a package   import portfolio_ai.db
     └── __init__.py
 ```
 
-Since Python 3.3 a directory *without* `__init__.py` can also be importable — a **namespace
-package** (PEP 420). They exist to let a single package span multiple directories, which is
-useful for plugin systems and almost nothing else. We use explicit `__init__.py` files because
-the implicit behaviour hides mistakes: a typo'd directory name becomes a valid empty namespace
-package rather than an error.
+Modern Python will sometimes treat a folder *without* an `__init__.py` as importable too, but we
+do not rely on that. If you rely on it, a mistyped folder name quietly becomes a valid empty
+package instead of an error, and you spend an afternoon wondering why your module has nothing in
+it. Writing the file out is cheap insurance.
 
-### How `import` resolves
+With the vocabulary out of the way, the next section is the one that actually matters.
 
-When you write `import openai`, Python walks `sys.path` in order and takes the **first** match.
-`sys.path` is built from:
+### How Python finds things
 
-1. `sys.path[0]` — the directory of the script being run, or **the current working directory**
-   for `python -c`, `python -m`, and the REPL
-2. anything in the `PYTHONPATH` environment variable
-3. the standard library
-4. `site-packages` — where installed packages live, including anything a `.pth` file points to
+When you write `import openai`, Python has to go and look for it, and the way it searches is
+simpler than you would expect. It keeps a list of folders. It works down that list from the top,
+checking each folder as it goes, and takes the first thing it finds with the right name. Then it
+stops looking.
 
-Entry 1 is the one that causes trouble. Verify it:
+There is one detail in there that matters far more than it sounds like it should. Python only
+looks at what is sitting *directly* in each folder. It never goes digging through subfolders.
+
+Picture a row of drawers. You open each one in turn and glance at what is lying loose inside, and
+the moment you spot what you came for, you stop. But if something has been packed away in a box
+at the bottom of a drawer, you walk straight past it. You would have to already know the box was
+there, and open it by name.
+
+A Python package is that box. Our `portfolio_ai` folder is a box sitting in the `src` drawer, so
+nothing inside it can be found by a plain `import`. To reach anything in there you have to name
+the box first, which is what `portfolio_ai.something` is doing.
+
+Here is the real list for this project, with the less interesting entries left out:
+
+```
+0.  <the folder you are standing in>
+3.  ...\Python312\Lib                          the standard library
+6.  ...\ai_assistant\.venv\Lib\site-packages   everything we installed
+7.  ...\ai_assistant\src                       added by the editable install
+```
+
+You can print it yourself at any time:
 
 ```bash
-uv run python -c "import sys; print(repr(sys.path[0]))"
-# ''  -- the empty string means "current directory"
+uv run python -c "import sys; [print(i, p or '<cwd>') for i, p in enumerate(sys.path)]"
 ```
 
-Your working directory sits ahead of the standard library and ahead of `site-packages`. A file
-called `openai.py` in the directory you happen to be standing in wins against the real `openai`
-package. You get a confusing `AttributeError` rather than anything resembling "you shadowed a
-dependency". That is the first half of your exercise.
+The first entry is the one worth pausing on, because it is not the project root or any fixed
+place — it is wherever your terminal happens to be standing at that moment. Move to a different
+folder and that entry moves with you. A surprising number of baffling import problems come back
+to that single line.
 
-### Why the code lives under `src/`
+### The same rule, three times
 
-This is the part worth internalising, because the reasoning is not obvious and the payoff is
-invisible when it works.
+That is the whole mechanism. Everything else in this lesson is just that rule applied to
+different situations, so let us walk through the three that matter here.
 
-Suppose the package sat at the repository root instead:
+**Your own file beating a real library.** Suppose there is a file called `openai.py` in the folder
+you are working in. You write `import openai`, and Python starts where it always starts: the
+folder you are standing in. Your file is lying right there, so it wins, and Python never gets far
+enough down the list to reach the real library in `site-packages`. Run the same command from a
+different folder and it behaves completely differently, because the first entry in the list has
+changed underneath you. You will do this deliberately in the exercise.
 
+**A file called `logging.py` that does not break `logging`.** In lesson 4 we are going to add a
+file called `logging.py` inside our package, and that looks like it must cause trouble, because
+Python already has a `logging` module of its own. It turns out to be completely fine, and the
+rule explains why.
+
+When code inside our package says `import logging`, Python goes down the list as usual. The
+folder you are standing in has no `logging.py`. Next comes the standard library, which does have
+one, so Python takes it and stops. Our file is never even considered.
+
+The reason is the box again. What the list actually contains is the `src` folder, and the only
+thing lying directly inside `src` is `portfolio_ai`. Our `logging.py` is tucked inside that, one
+level deeper than Python ever looks. You can see both halves of that for yourself:
+
+```bash
+ls src/
+# portfolio_ai   -- that is genuinely all that is in the drawer
+
+uv run python -c "import sys, pathlib, portfolio_ai
+pkg = pathlib.Path(portfolio_ai.__file__).parent
+print('is the package folder on the list?', str(pkg) in sys.path)"
+# False
 ```
-ai_assistant/
-├── portfolio_ai/        <- package here
-└── pyproject.toml
-```
 
-Run anything from the repository root and `sys.path[0]` is that root, so `import portfolio_ai`
-finds the directory and succeeds — **whether or not the package was ever installed**. That sounds
-convenient. It means:
-
-- your tests pass against the source tree, not against the thing you actually ship
-- a missing `__init__.py`, a file excluded from the wheel, or package data that was never
-  declared all stay invisible
-- you discover the problem when the container starts, which is the worst possible moment
-
-With `src/`, the repository root contains no importable package. The *only* way
-`import portfolio_ai` can succeed is through the installed package — which, in development, is
-the editable install from lesson 1. So every local run exercises the real installation path, and
-a packaging mistake fails immediately instead of at deploy time.
-
-A fair objection: the editable install *does* put `src` on `sys.path` via that `.pth` file, so
-the directory is reachable either way. True — the difference is that it is reachable by the
-sanctioned route rather than by accident of where you were standing. Delete the install and
-`import portfolio_ai` stops working, which is exactly the feedback you want.
-
-You can watch this happen in the verification step at the end of the lesson.
-
-### `logging.py` will not shadow the standard library
-
-Lesson 4 creates `src/portfolio_ai/logging.py`. Every instinct says this must break `import
-logging` for the rest of the package. It does not, and the reason is historical.
-
-In Python 2, imports were *implicitly relative*: a module inside a package would find its sibling
-first, so `portfolio_ai/logging.py` really would have shadowed the standard library everywhere
-inside `portfolio_ai/`. This caused enormous confusion and PEP 328 removed it.
-
-In Python 3 all imports are absolute by default. Inside `portfolio_ai/config.py`:
+Which gives us the sentence worth remembering: a package's own folder is never on the list, only
+its parent is. That is why our file is reachable only by naming the box.
 
 ```python
-import logging                    # the standard library, unambiguously
-from portfolio_ai import logging  # our module, if we ever wanted it
-from . import logging             # our module, explicit relative form
+import logging                    # the standard library
+from portfolio_ai import logging  # ours, by naming the box
+from . import logging             # ours, the shorthand for "the box I am already in"
 ```
 
-So a package-internal module may share a name with a standard library one without incident. A
-*top-level* module still cannot — a `logging.py` at your repository root would shadow the real
-one, because of `sys.path[0]` again.
+If the instinct that this *should* break feels strong, there is a good reason for it. Python 2
+really did peek at neighbouring files first, and a file like ours would have hidden the standard
+library across the whole package. It caused enough confusion that the behaviour was removed.
 
-### Absolute and relative imports
+**Why the code sits in a `src` folder at all.** Plenty of projects put the package straight into
+the project root, and we deliberately did not. This is the payoff.
 
-Both work inside a package:
+```
+what most projects do                 what we do
+
+ai_assistant/                         ai_assistant/
+├── portfolio_ai/                     ├── src/
+└── pyproject.toml                    │   └── portfolio_ai/
+                                      └── pyproject.toml
+```
+
+Imagine we had gone with the layout on the left. You are standing in the project root, so that is
+the first folder on the list, and `portfolio_ai` is lying right there in it. Python finds it
+straight away. That sounds convenient, and it is, right up until you notice what it means: your
+code works whether or not the package was ever properly installed.
+
+That is the part that causes trouble later. You would be running against the folder on your disk
+rather than against the thing you actually ship to the server. If an `__init__.py` is missing, or
+a file never made it into the built package, or you forgot to declare where the prompt files
+live, none of it shows up — because you never went through an installation for it to show up in.
+You find out when the container starts.
+
+With the layout on the right, the project root contains `src`, `docs` and `pyproject.toml`, but
+no `portfolio_ai`. Python does not find it in the first folder. It finds it further down the
+list, in `src`, which is only on the list because the install put it there. So the only route
+that works is the installed one, which means every time you run anything locally you are
+exercising the same path the server will. Packaging mistakes fail on your machine, on the day you
+make them.
+
+That is also why lesson 1 ended by building the package and looking inside it rather than taking
+it on trust.
+
+> Worth keeping hold of: Python looks through a list of folders, only at what is lying directly
+> in each one, and a package's own folder is never on that list.
+
+### Two ways to write the same import
+
+Once you are inside a package there are two ways to refer to something else in it, and they do
+the same job:
 
 ```python
-from portfolio_ai.exceptions import ConfigError   # absolute
-from .exceptions import ConfigError               # relative
-from ..db.pool import get_pool                    # relative, one level up
+from portfolio_ai.exceptions import ConfigError   # the full name
+from .exceptions import ConfigError               # "next to me"
+from ..db.pool import get_pool                    # "up one, then into db"
 ```
 
-Relative imports survive renaming the package and make it obvious that something is internal.
-Absolute imports are greppable, unambiguous when read in isolation, and identical whether they
-appear in this package or a test.
+The dots are shorthand for "the box I am already in", which is why they get shorter as you get
+closer. One dot means this package, two means the one above it, and so on.
 
-**This project uses absolute imports everywhere, including inside `__init__.py`.** One rule with
-no exceptions is easier to apply than a good rule with a carve-out. The cost is that renaming the
-package means a find-and-replace, which is a one-off against a benefit you get every day.
+Each style has a genuine argument behind it. The short form keeps working if you ever rename the
+package, and it makes it obvious at a glance that you are reaching for something internal. The
+full form reads the same wherever you meet it, including in a test file that lives outside the
+package entirely, and you can search the codebase for it and find every use.
 
-Relative imports also have a hard limit worth knowing: they are resolved against the module's
-package, not the file system. `from ..x import y` in a top-level module raises
-`ImportError: attempted relative import beyond top-level package`, which is Python telling you
-there is no parent package, not that the path is wrong.
+We use the full form everywhere, including inside `__init__.py`. Not because it is clearly
+better, but because having one rule with no exceptions is easier to follow than a better rule you
+have to think about each time. The price is a find-and-replace if we ever rename the package,
+which is a single afternoon weighed against a decision you would otherwise make daily.
 
-### `__init__.py` as the public API
+One thing to know about the short form before you meet it in someone else's code: the dots count
+packages, not folders on disk. Use `from ..x import y` in a module that has no parent package and
+you get `attempted relative import beyond top-level package`, which sounds like a broken path but
+is really Python saying there is nothing above you to go up into.
 
-`__init__.py` runs when the package is first imported. Anything it defines or imports becomes an
-attribute of the package, which is what makes this work:
+### What `__init__.py` is for
+
+`__init__.py` runs the first time anyone imports the package. Whatever it defines, or imports,
+becomes part of the package itself — which is what lets this work:
 
 ```python
-from portfolio_ai import ConfigError   # even though ConfigError lives in exceptions.py
+from portfolio_ai import ConfigError
 ```
 
-That convenience has a cost: **every import in `__init__.py` runs on every import of the
-package**, including `import portfolio_ai.some.unrelated.thing`. Pull something heavy in and
-every entry point pays for it. Pull in something that imports back, and you have a cycle.
+even though `ConfigError` is actually defined over in `exceptions.py`. The `__init__.py` imported
+it, so it now belongs to the package too. That is all a re-export is.
 
-So the rule here is narrow: `__init__.py` re-exports only from modules with no dependencies of
-their own. Right now that is exactly one module, `exceptions.py`, which imports nothing at all.
+It is worth being careful about what you put there, though, because that file runs on *every*
+import of the package. Even `import portfolio_ai.db.pool`, which has nothing to do with it, runs
+`__init__.py` first. So anything slow you import there is paid for by everything: every command
+you run, every test, every time the app boots. And if what you import happens to import the
+package back, you have built yourself a loop — which is the next section.
 
-`__all__` is a list of names that controls two things:
+That is why we only re-export from `exceptions.py`. It imports nothing at all, so it cannot be
+slow and cannot loop.
 
-- what `from portfolio_ai import *` imports — the only thing most people know about it
-- what documentation tools and linters treat as the public surface, which matters more
+### What `__all__` does, and what it does not
 
-It does **not** restrict access. `portfolio_ai._private` is still reachable if someone types it.
-Python's privacy is a naming convention and a linter rule, not a language feature.
+Underneath the re-exports there is a list:
 
-### Circular imports
+```python
+__all__ = ["ConfigError", "PortfolioAIError", "PurgeSafetyError", "__version__"]
+```
 
-Two modules importing each other produces an error whose wording is genuinely unhelpful the
-first time you meet it:
+It looks like an access control list. It is not one. It does exactly two things.
+
+The first is that it decides what `from portfolio_ai import *` brings in. That is the textbook
+answer, and honestly the less useful one, because almost nobody should be writing `import *` in
+real code.
+
+The second matters more: it is how you tell the rest of your tooling what counts as the public
+part of this package. Documentation generators build their pages from it. Linters use it to
+decide whether an unused import is a mistake or a deliberate re-export. It is a note to everyone
+downstream saying "these are the names I intend people to use".
+
+What it emphatically does not do is stop anyone reaching the rest:
+
+```python
+from portfolio_ai import exceptions   # not in __all__, imports perfectly fine
+```
+
+This surprises people coming from languages where `private` is enforced by the compiler. Python
+has nothing like that. A leading underscore on a name, or leaving something out of `__all__`, is
+a sign on a door, not a lock. Think of it as documentation with just enough teeth that your
+tooling pays attention.
+
+### When two files need each other
+
+Sooner or later two modules end up importing each other, and the error you get is not especially
+forthcoming the first time:
 
 ```
 ImportError: cannot import name 'B' from partially initialized module 'b'
 (most likely due to a circular import)
 ```
 
-"Partially initialized" is the clue. Importing a module executes it top to bottom. If `a` imports
-`b` at line 1, and `b` imports `a` at its own line 1, then `b` is asking for an `a` that has only
-executed one line and does not have its names yet.
+"Partially initialized" is the part that explains it. Importing a file means running it, from the
+top down. So if `a` asks for `b` on its very first line, Python pauses `a` and starts running
+`b` — and if `b` then asks for something from `a`, it is asking a file that has run exactly one
+line so far and has not defined anything yet. There is nothing there to hand back.
 
-Three ways out, in order of preference:
+There are three ways out, and they are worth knowing in order, because the first is usually the
+right one.
 
-1. **Extract the shared thing** into a third module both can import. Usually the cycle is telling
-   you a genuine design problem — two modules that each know too much about the other.
-2. **Move the import inside the function** that needs it. It then runs at call time, by which
-   point both modules are fully loaded. Cheap, and slightly hides the dependency.
-3. **`if TYPE_CHECKING:`** — for imports needed only for type annotations. The block never runs
-   at runtime but type checkers still read it. Lesson 9 covers this.
+Most often the loop is telling you something true: the two files each know too much about the
+other, and whatever they are both reaching for belongs in a third file they can both import. That
+is a design fix rather than an import fix, and it tends to leave the code better than it found it.
 
-The second half of your exercise is to produce this error deliberately, so that the next time you
-see it in a real codebase you recognise the shape immediately.
+When that is not practical, you can move the import inside the function that needs it. By the
+time anyone calls that function, both files have finished loading, so the problem disappears. It
+is cheap and it works, with the mild cost that the dependency is no longer visible at the top of
+the file.
+
+The third case is when you only needed the import for a type annotation in the first place, which
+has its own tidy solution that lesson 9 will get to.
+
+You will produce this error on purpose in the exercise, because recognising it on sight is worth
+more than understanding it in the abstract.
 
 ### `py.typed`
 
-An empty file with a large effect. By default, a type checker analysing *your* code will ignore
-type hints inside an installed third-party package — it assumes the package is untyped and treats
-everything it exports as `Any`.
+An empty file that changes how other people's tools treat your code.
 
-PEP 561 says: ship a file called `py.typed` inside the package and checkers will trust your
-annotations. Without it, all the typing work in lesson 9 would apply only inside this repository
-and evaporate the moment the package was installed elsewhere.
+When a type checker looks at an installed package, it assumes by default that the package has no
+type information, and treats everything it exports as "could be anything". It does that even if
+the source is full of perfectly good annotations — it has no way to know whether they were meant
+seriously.
 
-### Locating files that are not code
+Shipping a file called `py.typed` inside the package is how you say they were. That is the entire
+mechanism: the file is empty, and its existence is the message.
 
-`assistant/prompts/*.md` will hold the long, tuned prompts ported from n8n. They ship inside the
-package, so how does the code find them at runtime?
+Without it, the typing work in lesson 9 would only count inside this repository and would quietly
+stop mattering the moment the package was installed anywhere else.
 
-The obvious approach is wrong:
+### Finding files that are not code
+
+Not everything in a package is Python. Later on, the long prompts we are porting over from n8n
+will live in `assistant/prompts/` as Markdown files, shipped inside the package alongside the
+code that uses them. Which raises a question worth answering now: how does the code find them
+once it is running?
+
+The obvious answer is to work it out from where the current file is:
 
 ```python
-path = Path(__file__).parent / "prompts" / "rag_agent.md"   # fragile
+path = Path(__file__).parent / "prompts" / "rag_agent.md"
 ```
 
-It works from a normal directory and breaks when the package is inside a zip, a frozen
-executable, or any loader that does not put real files on disk. The supported way:
+That works, right up until it does not. It assumes the package is sitting on disk as ordinary
+folders and files, and packages are not always unpacked that way — some get loaded straight out
+of a zip, for instance. When that happens there is no folder to look next to, and the code breaks
+somewhere far from anything you changed.
+
+The reliable way is to ask the import system, since it already knows where the package ended up:
 
 ```python
 from importlib.resources import files
@@ -220,8 +321,9 @@ from importlib.resources import files
 text = (files("portfolio_ai.assistant") / "prompts" / "rag_agent.md").read_text(encoding="utf-8")
 ```
 
-`files()` asks the import system where the package's data actually is, whatever form it took.
-Mentioned now because it is a packaging concern; used when the prompts arrive.
+It reads almost the same, and it keeps working whatever shape the package is in. Mentioned here
+because it belongs with everything else about how packages are put together; we will actually use
+it once there are prompts to load.
 
 ## The code
 
@@ -396,30 +498,35 @@ point; the running is just marking your own work.
 <details>
 <summary>Answers</summary>
 
-1. `sys.path[0]` is the current working directory, and it sits ahead of both the standard library
-   and `site-packages`. Import takes the first match, so your file wins.
+1. The folder you are standing in is the first one on Python's list, ahead of both the standard
+   library and everything you installed. Python stops at the first match, so your file wins and
+   the real library never gets looked at. Stand somewhere else and the answer changes, because
+   that first entry moves with you.
 
-2. Python 3 imports are absolute by default (PEP 328). A bare `import logging` searches
-   `sys.path`, where it finds the standard library; it does not look at sibling modules. Reaching
-   our module requires saying so explicitly, with `from portfolio_ai import logging` or
-   `from . import logging`. Python 2 behaved the other way, which is where the instinct comes from.
+2. Because Python only looks at what is lying directly in each folder on its list, and our
+   package's folder is not on that list — only its parent, `src`, is. The one thing lying
+   directly in `src` is `portfolio_ai`, so `logging.py` is a level too deep for a plain `import`
+   to see. To reach it you have to name the box: `from portfolio_ai import logging`. (Python 2
+   did check neighbouring files first, which is where the worry comes from, but that behaviour is
+   long gone.)
 
-3. `__init__.py` runs on *every* import of the package, including
-   `import portfolio_ai.something.unrelated`. A heavy import there is paid by every entry point,
-   CLI startup included — and if the imported module imports back, you get a circular import.
+3. That file runs on *every* import of the package, even ones that have nothing to do with it,
+   like `import portfolio_ai.db.pool`. So anything slow in there is paid for by everything — every
+   command, every test run, every boot. And if the thing you import turns out to import the
+   package back, you have made a loop.
 
-4. It controls what `from package import *` brings in, and what documentation tools and linters
-   treat as the public API. It does not restrict access: anything not in `__all__` is still
-   importable by name. It is documentation, not enforcement.
+4. Two things: it decides what `from package import *` brings in, and it tells documentation
+   tools and linters which names you consider public. It does not restrict anything — whatever
+   you leave out is still importable by name. A sign on a door, not a lock.
 
-5. It guarantees that every local run exercises the installed package rather than the source
-   directory. A missing `__init__.py`, a file left out of the wheel or undeclared package data
-   fails immediately on your machine, instead of at container start. The friction is the feature:
-   it moves packaging errors from deploy time to development time.
+5. It means the only way your code can import your package is through the installed copy, which
+   is the same route the server uses. So if something is missing from the built package, you find
+   out on your own machine the day you break it, rather than when a container fails to start.
+   The friction is the whole point.
 
-6. Because type checkers ignore annotations in installed third-party packages by default,
-   treating them as `Any`. `py.typed` (PEP 561) is the opt-in that says "these annotations are
-   real, please use them". Without it, the strict typing from lesson 9 would stop mattering the
-   moment the package was installed anywhere else.
+6. Because a type checker looking at an installed package assumes there is no type information in
+   it and treats everything as "could be anything" — it has no way to know your annotations were
+   meant seriously. The empty `py.typed` file is how you tell it they were. Without it, all the
+   typing work in lesson 9 would stop counting the moment the package was installed elsewhere.
 
 </details>
