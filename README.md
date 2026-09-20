@@ -42,4 +42,4 @@ Copy `.env.example` to `.env` and fill it in once lesson 3 lands. A Postgres ins
 
 ## Licence
 
-MIT
+[MIT](LICENSE)

@@ -3,6 +3,8 @@ name = "portfolio-ai"
 version = "0.1.0"
 description = "RAG assistant, ingestion pipeline and eval harness for the mihaylov.io knowledge base"
 requires-python = ">=3.12"
+license = "MIT"
+license-files = ["LICENSE"]
 
 dependencies = [
     # LLM + embeddings
