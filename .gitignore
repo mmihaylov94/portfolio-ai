@@ -1,0 +1,35 @@
+# --- Secrets -----------------------------------------------------------------
+# This repository is public. Nothing below should ever reach a commit.
+.env
+.env.*
+!.env.example
+
+# --- Reference material, not source ------------------------------------------
+# Exported n8n workflows. Kept locally as the functional spec for the system being
+# replaced, but not committed: they carry the n8n instance id, credential ids and
+# webhook ids, which are internal identifiers with no reason to be public.
+# Everything we actually need from them is captured in ARCHITECTURE.md §2.
+n8n_workflows/
+
+# --- Python ------------------------------------------------------------------
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+
+# The virtualenv. Recreated from uv.lock with `uv sync`, so never committed.
+.venv/
+
+# --- Tool caches -------------------------------------------------------------
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# --- Editors / OS ------------------------------------------------------------
+.vscode/
+.idea/
+Thumbs.db
+desktop.ini

@@ -1,0 +1,54 @@
+[project]
+name = "portfolio-ai"
+version = "0.1.0"
+description = "RAG assistant, ingestion pipeline and eval harness for the mihaylov.io knowledge base"
+requires-python = ">=3.12"
+
+dependencies = [
+    # LLM + embeddings
+    "openai>=1.60",
+    # Postgres: the driver, its async connection pool, and pgvector type adapters
+    "psycopg[binary,pool]>=3.2",
+    "pgvector>=0.3",
+    # Typed models and env-driven settings
+    "pydantic>=2.10",
+    "pydantic-settings>=2.7",
+    # Structured JSON logging
+    "structlog>=24.4",
+    # HTTP API
+    "fastapi>=0.115",
+    "uvicorn[standard]>=0.34",
+    # Outbound HTTP (GitHub API)
+    "httpx>=0.28",
+    # Schema migrations
+    "alembic>=1.14",
+    # Command-line entrypoints
+    "typer>=0.15",
+    # Eval dataset files
+    "pyyaml>=6.0",
+]
+
+[dependency-groups]
+dev = [
+    "ruff>=0.9",
+    "mypy>=1.14",
+    "pytest>=8.3",
+    "pytest-asyncio>=0.25",
+    "testcontainers[postgres]>=4.9",
+    "types-pyyaml>=6.0",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/portfolio_ai"]
+
+# Tool configuration is deliberately minimal here; lesson 9 sets the real rules.
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.mypy]
+python_version = "3.12"
