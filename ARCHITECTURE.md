@@ -358,7 +358,6 @@ ai_assistant/
 ├── README.md                     # quickstart for a human
 ├── pyproject.toml / uv.lock
 ├── .env.example
-├── Makefile                      # dev shortcuts
 ├── docker/
 │   ├── Dockerfile                # multi-stage; one image, several entrypoints
 │   ├── compose.yaml              # optional: run the image locally to verify it before deploy
@@ -370,6 +369,7 @@ ai_assistant/
 ├── src/portfolio_ai/
 │   ├── config.py                 # Settings (pydantic-settings), single source of env truth
 │   ├── logging.py                # structlog JSON logging
+│   ├── exceptions.py             # PortfolioAIError root + the errors we raise on purpose
 │   ├── db/
 │   │   ├── pool.py               # async psycopg pool lifecycle
 │   │   ├── documents.py          # upsert doc, replace chunks, purge stale

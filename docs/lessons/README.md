@@ -14,8 +14,8 @@ Read them in order. Later ones assume the earlier ones.
 
 | # | Lesson | What it lands | Done |
 |---|---|---|---|
-| 1 | [Tooling and uv](01-tooling-and-uv.md) | `pyproject.toml`, `uv.lock`, `.gitignore` | ☐ |
-| 2 | Packages, modules and imports | `src/portfolio_ai/` skeleton | ☐ |
+| 1 | [Tooling and uv](01-tooling-and-uv.md) | `pyproject.toml`, `uv.lock`, `.gitignore` | ☑ |
+| 2 | [Packages, modules and imports](02-packages-modules-imports.md) | package skeleton, `exceptions.py`, `py.typed` | ☑ |
 | 3 | Typed configuration | `config.py`, `.env.example` | ☐ |
 | 4 | Structured logging | `logging.py` | ☐ |
 | 5 | Async Python | `cli.py`, the mental model for everything after | ☐ |
