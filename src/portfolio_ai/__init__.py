@@ -14,9 +14,32 @@ with :mod:`portfolio_ai.db` and :mod:`portfolio_ai.llm` underneath all of them.
 Only the exception types are re-exported here. Everything else is imported from the
 module that defines it, so that ``import portfolio_ai`` stays cheap and cannot
 develop import cycles as the package grows.
+
+This module does one thing on import, which lessons 3 and 4 said modules should
+not do. See the comment below -- the exception is deliberate and the reasoning is
+written down rather than assumed.
 """
 
+import asyncio
+import sys
+
 from portfolio_ai.exceptions import ConfigError, PortfolioAIError, PurgeSafetyError
+
+# Windows picks an event loop that psycopg's async mode cannot use. Without this,
+# the first database call fails with:
+#
+#     InterfaceError: Psycopg cannot use the 'ProactorEventLoop' to run in async mode.
+#
+# which names an internal class and suggests nothing you would guess. It has to be
+# set before any event loop starts, so the only place that reliably covers scripts,
+# tests, one-liners and the API alike is here, at import.
+#
+# Doing work on import is exactly what config.py and logging.py avoid, and the
+# trade is worth stating plainly: the alternative is two lines of boilerplate in
+# every command that touches the database, and a baffling error whenever they are
+# forgotten. On Linux this is a no-op, so production never runs it.
+if sys.platform == "win32":  # pragma: no cover - platform specific
+    asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
 
 __version__ = "0.1.0"
 

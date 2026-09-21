@@ -56,6 +56,10 @@ class Settings(BaseSettings):
     # something plausible-looking.
     database_url: str
     db_schema: str = "portfolio_rag"
+    # How many connections the pool may hold open at once. Postgres has a server-wide
+    # limit shared with everything else on the instance, so this is a share of a
+    # common resource rather than a private dial.
+    db_pool_max_size: int = Field(default=10, ge=1, le=100)
 
     # SecretStr rather than str: see the lesson. Printing this gives "**********".
     openai_api_key: SecretStr
