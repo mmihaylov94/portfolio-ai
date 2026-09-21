@@ -17,7 +17,7 @@ Read them in order. Later ones assume the earlier ones.
 | 1 | [Tooling and uv](01-tooling-and-uv.md) | `pyproject.toml`, `uv.lock`, `.gitignore` | ☑ |
 | 2 | [Packages, modules and imports](02-packages-modules-imports.md) | package skeleton, `exceptions.py`, `py.typed` | ☑ |
 | 3 | [Typed configuration](03-typed-configuration.md) | `config.py`, `.env.example` | ☑ |
-| 4 | Structured logging | `logging.py` | ☐ |
+| 4 | [Structured logging](04-structured-logging.md) | `logging.py` | ☑ |
 | 5 | Async Python | `cli.py`, the mental model for everything after | ☐ |
 | 6 | Postgres with psycopg 3 | `db/pool.py` | ☐ |
 | 7 | Migrations with Alembic | `migrations/`, the full schema | ☐ |
