@@ -136,6 +136,10 @@ migrations/      datasets/      tests/unit  tests/integration      docker/
   place in `api/main.py`. Never leak an OpenAI or psycopg exception to a client response.
 - **Every OpenAI call records tokens, model and latency.** Cost visibility is a feature, not
   an afterthought.
+- **Unit tests never read `.env`.** `tests/unit/conftest.py` switches the file off and gives
+  every unit test the same fixed settings, so what passes locally is what CI runs. Before it
+  existed, the agent tests passed on the dev machine by quietly reading the real `.env` and
+  failed on the first push.
 - Line length 100, ruff format, double quotes. Type hints on every public function.
 
 ## Domain facts to keep straight

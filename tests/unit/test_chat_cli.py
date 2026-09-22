@@ -1,14 +1,14 @@
 """The terminal chat command.
 
 Run with ``--no-save`` and a fake model, the whole command works without a database
--- which is also how it is meant to be used against production.
+-- which is also how it is meant to be used against production. The settings it
+reads come from ``conftest.py``, like every unit test's.
 """
 
-from collections.abc import Iterator
-
+import click
 import pytest
 from openai_fake import FakeOpenAI, install_fake_openai
-from typer.testing import CliRunner
+from typer.testing import CliRunner, Result
 
 from portfolio_ai.assistant.cli import app
 from portfolio_ai.config import get_settings
@@ -27,15 +27,15 @@ CHUNK = RetrievedChunk(
 )
 
 
-@pytest.fixture(autouse=True)
-def environment(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
-    """Settings the command can read, without depending on a .env file."""
-    monkeypatch.setenv("ENVIRONMENT", "local")
-    monkeypatch.setenv("DATABASE_URL", "postgresql://user:pass@localhost:5433/db")
-    monkeypatch.setenv("OPENAI_API_KEY", "not-a-real-key")
-    get_settings.cache_clear()
-    yield
-    get_settings.cache_clear()
+def _text(result: Result) -> str:
+    """What the command printed, without colour codes.
+
+    Colour depends on where the tests run. typer forces it on whenever the
+    GITHUB_ACTIONS variable is set, and then an error box styles `--no-save` in
+    pieces, so the plain string never appears in the raw output. Locally the same
+    box is printed plain. Assertions go through this so they hold in both places.
+    """
+    return click.unstyle(result.output)
 
 
 @pytest.fixture
@@ -59,10 +59,10 @@ def test_one_question_prints_the_answer_and_what_it_cost(fake: FakeOpenAI) -> No
     result = CliRunner().invoke(app, ["--no-save", "-m", "Does Mihail work with Laravel?"])
 
     assert result.exit_code == 0, result.output
-    assert "Yes, Laravel is his main PHP framework." in result.output
-    assert "mihail_related" in result.output
-    assert 'searched "Laravel PHP experience" top 0.62' in result.output
-    assert "4 calls" in result.output
+    assert "Yes, Laravel is his main PHP framework." in _text(result)
+    assert "mihail_related" in _text(result)
+    assert 'searched "Laravel PHP experience" top 0.62' in _text(result)
+    assert "4 calls" in _text(result)
 
 
 def test_a_single_call_is_not_reported_as_one_calls(fake: FakeOpenAI) -> None:
@@ -70,7 +70,7 @@ def test_a_single_call_is_not_reported_as_one_calls(fake: FakeOpenAI) -> None:
 
     result = CliRunner().invoke(app, ["--no-save", "-m", "What is the weather?"])
 
-    assert "1 call " in result.output or result.output.rstrip().endswith("1 call")
+    assert "1 call " in _text(result) or _text(result).rstrip().endswith("1 call")
 
 
 def test_verbose_shows_what_the_search_found(fake: FakeOpenAI) -> None:
@@ -80,7 +80,7 @@ def test_verbose_shows_what_the_search_found(fake: FakeOpenAI) -> None:
 
     result = CliRunner().invoke(app, ["--no-save", "-v", "-m", "Laravel?"])
 
-    assert "0.620  Tech Stack / Does Mihail work with Laravel?" in result.output
+    assert "0.620  Tech Stack / Does Mihail work with Laravel?" in _text(result)
 
 
 def test_a_failed_call_exits_non_zero(fake: FakeOpenAI) -> None:
@@ -89,7 +89,7 @@ def test_a_failed_call_exits_non_zero(fake: FakeOpenAI) -> None:
     result = CliRunner().invoke(app, ["--no-save", "-m", "Laravel?"])
 
     assert result.exit_code == 1
-    assert "OpenAI call failed" in result.output
+    assert "OpenAI call failed" in _text(result)
 
 
 def test_it_refuses_to_write_into_production(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -102,7 +102,7 @@ def test_it_refuses_to_write_into_production(monkeypatch: pytest.MonkeyPatch) ->
     result = CliRunner().invoke(app, ["-m", "Does Mihail work with Laravel?"])
 
     assert result.exit_code == 2
-    assert "--no-save" in result.output
+    assert "--no-save" in _text(result)
 
 
 def test_production_is_allowed_when_nothing_is_saved(
@@ -117,4 +117,4 @@ def test_production_is_allowed_when_nothing_is_saved(
     result = CliRunner().invoke(app, ["--no-save", "-m", "Hi"])
 
     assert result.exit_code == 0
-    assert "Hi there." in result.output
+    assert "Hi there." in _text(result)
