@@ -1,0 +1,171 @@
+# The same commands you run locally, somewhere you cannot skip them.
+#
+# Three jobs. The cheap checks fail first, the ones needing a database run
+# alongside them, and the image is only built once both have passed -- so a red
+# build never produces a tag anyone could deploy.
+
+name: CI
+
+on:
+  push:
+  pull_request:
+
+# Cancel a run when a newer commit arrives on the same branch. Without this a
+# quick succession of pushes queues up runs of code nobody is waiting on any more.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  # Pinned deliberately, and to the same version used locally. CI resolving the
+  # lockfile with a different uv than the one that wrote it is a difference
+  # nobody would notice until it mattered.
+  UV_VERSION: "0.11.16"
+
+jobs:
+  quality:
+    name: Lint, types, unit tests
+    runs-on: ubuntu-latest
+    steps:
+      # Third-party actions are pinned to a commit SHA rather than a tag. A tag is
+      # a label the owner of that repository can move at any time, onto anything.
+      # These actions run in the same job as a token that can push to our package
+      # registry, so "whatever v7 points at today" is not a thing to accept on
+      # trust. The version in the comment is for humans; the SHA is what runs.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+        with:
+          version: ${{ env.UV_VERSION }}
+          # Caches the uv download cache between runs, keyed on uv.lock.
+          enable-cache: true
+
+      # --locked, as in the Dockerfile: fail if uv.lock and pyproject.toml have
+      # drifted apart, rather than resolving something new and testing that
+      # instead of what was committed.
+      - name: Install dependencies
+        run: uv sync --locked
+
+      # --no-sync on each step below: the environment is already installed, and
+      # without it every `uv run` re-checks the lockfile for no benefit.
+      - name: Lint
+        run: uv run --no-sync ruff check .
+
+      - name: Format
+        run: uv run --no-sync ruff format --check .
+
+      - name: Types
+        run: uv run --no-sync mypy
+
+      - name: Unit tests
+        run: uv run --no-sync pytest
+
+  database:
+    name: Integration tests
+    runs-on: ubuntu-latest
+
+    services:
+      postgres:
+        # Pinned to exactly what the development database runs. A suite that
+        # passes against a different server than the one it was written on is a
+        # slower way of finding out the same thing, and pgvector's index
+        # behaviour is the part most likely to differ.
+        image: pgvector/pgvector:0.8.6-pg18
+        env:
+          POSTGRES_PASSWORD: postgres
+        ports:
+          # 5433, not 5432. Two guards written earlier in this project meet here:
+          # the test fixture refuses to run unless ENVIRONMENT is local, and the
+          # settings validator then insists a local database is on 5433, because
+          # locally 5432 is the Postgres without pgvector. Publishing the service
+          # on 5433 satisfies both and changes no code. See the lesson.
+          - 5433:5432
+        # Without a health check the job races the database: the container is
+        # "started" long before Postgres is accepting connections, and the first
+        # test fails with a connection error that looks like a configuration
+        # problem.
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
+    env:
+      ENVIRONMENT: local
+      DATABASE_URL: postgresql://postgres:postgres@localhost:5433/postgres
+      # Settings requires this field, and nothing in these tests calls OpenAI.
+      # Written to be unmistakably fake: a plausible-looking placeholder in a
+      # public repository is something somebody eventually tries.
+      OPENAI_API_KEY: not-a-real-key-ci-only
+
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+        with:
+          version: ${{ env.UV_VERSION }}
+          enable-cache: true
+
+      - name: Install dependencies
+        run: uv sync --locked
+
+      # Runs the real migrations into a throwaway pytest_* schema and drops it
+      # afterwards, exactly as it does locally. The fixture's safety check is the
+      # reason ENVIRONMENT is set above.
+      - name: Integration tests
+        run: uv run --no-sync pytest -m integration
+
+  image:
+    name: Build image
+    runs-on: ubuntu-latest
+    needs: [quality, database]
+
+    permissions:
+      contents: read
+      # Needed to push to GHCR. Granted at the job rather than the workflow, so
+      # the two jobs above run without it.
+      packages: write
+
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      # Only on main. Pull requests still build, a few lines below -- a broken
+      # Dockerfile should fail in review, not after merge -- but nothing from a
+      # pull request gets pushed anywhere.
+      - name: Log in to GHCR
+        if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          # Issued by GitHub for this run and expires with it. No stored secret.
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Tags
+        id: meta
+        uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302 # v6.2.0
+        with:
+          images: ghcr.io/${{ github.repository }}
+          # Two tags on main: latest, which the server pulls, and the commit sha,
+          # which is what makes a rollback possible. With only latest, going back
+          # means rebuilding from an older commit and hoping the result matches.
+          tags: |
+            type=raw,value=latest,enable={{is_default_branch}}
+            type=sha,prefix=sha-
+
+      - name: Build
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: .
+          file: docker/Dockerfile
+          push: ${{ github.ref == 'refs/heads/main' && github.event_name == 'push' }}
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          # Layer cache stored with the Actions cache, so a build that only
+          # changed Python files reuses the dependency layer instead of
+          # reinstalling everything. Runners are fresh machines with no local
+          # Docker cache, so without this every build starts from nothing.
+          cache-from: type=gha
+          cache-to: type=gha,mode=max

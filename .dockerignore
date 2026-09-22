@@ -1,0 +1,62 @@
+# What does not go to the build machine.
+#
+# Docker uploads the whole build context before it runs a single instruction, so
+# everything listed here is a file that is not sent, not hashed into a cache key,
+# and cannot end up in a layer by accident.
+#
+# This file lives at the repository root rather than beside the Dockerfile,
+# because the build context is the repository -- `docker build -f docker/Dockerfile .`
+# -- and Docker looks for .dockerignore at the root of the context.
+
+# --- Secrets -----------------------------------------------------------------
+# The important entry. A COPY that catches .env bakes the OpenAI key into a layer,
+# and layers are permanent: deleting the file in a later instruction leaves the
+# earlier layer intact and extractable by anyone who can pull the image. This
+# repository is public and the image is on a public registry, so "anyone" is
+# literal. Configuration reaches the container through the environment instead.
+.env
+.env.*
+!.env.example
+
+# --- Not source --------------------------------------------------------------
+.git
+.github
+.gitignore
+n8n_workflows/
+docs/
+*.md
+!README.md
+
+# --- Local environment, rebuilt inside the image -----------------------------
+# .venv is the big one. It holds Windows binaries that would be useless in a
+# Linux container, and the image builds its own from uv.lock regardless.
+.venv/
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+
+# --- Tool caches -------------------------------------------------------------
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# --- Tests -------------------------------------------------------------------
+# Nothing in the running container imports these, and CI runs them before the
+# image is built rather than inside it.
+tests/
+
+# --- Editors / OS ------------------------------------------------------------
+.vscode/
+.idea/
+Thumbs.db
+desktop.ini
+
+# --- Deliberately NOT ignored ------------------------------------------------
+# LICENSE      pyproject.toml declares license-files = ["LICENSE"], so the build
+#              backend needs it present to install the project
+# alembic.ini  copied into the image; migrations run from the container
+# migrations/  not part of the installed package, so it travels as files

@@ -1,0 +1,26 @@
+# Scheduled work, run by supercronic in the worker container.
+#
+# Five fields: minute, hour, day of month, month, day of week. Times are read in
+# the container's timezone, so the worker sets TZ=Europe/London -- without it
+# these would run on UTC and drift by an hour for half the year, silently.
+#
+# Output goes to stdout and is collected by Docker's logging, which is why this
+# is supercronic rather than cron: no MAILTO, no /var/log, nothing to go and read
+# inside a container.
+#
+# None of these modules exist yet. They land with the ingestion, analytics and
+# retention steps; the schedule is here because it is a decision from
+# ARCHITECTURE.md section 11 rather than something to work out later.
+
+# Re-read the knowledge base repository and re-embed anything that changed.
+# Overnight because it costs money and nobody is asking questions at 4am.
+0 4 * * *    python -m portfolio_ai.ingestion
+
+# The weekly digest: what visitors asked, what the assistant could not answer,
+# which content gaps are worth writing. Monday morning, before the week starts.
+30 5 * * 1   python -m portfolio_ai.analytics digest
+
+# Retention sweep. Chat messages and feedback older than CHAT_RETENTION_DAYS are
+# deleted; content gaps, aggregates and promoted eval cases are kept, so the
+# insight outlives the conversation it came from.
+0 3 * * *    python -m portfolio_ai.analytics purge

@@ -1,5 +1,7 @@
 # Portfolio AI
 
+[![CI](https://github.com/mmihaylov94/portfolio-ai/actions/workflows/ci.yml/badge.svg)](https://github.com/mmihaylov94/portfolio-ai/actions/workflows/ci.yml)
+
 A retrieval-augmented assistant for the knowledge base behind [mihaylov.io](https://mihaylov.io),
 built in Python to replace an existing n8n implementation.
 
@@ -25,20 +27,43 @@ embedding call, vector query and agent loop iteration is visible in the source.
 
 ## Status
 
-Under construction. Step 1 (foundations) is in progress; the build order is in
-[ARCHITECTURE.md](ARCHITECTURE.md) §12.
+Under construction. Step 1 (foundations) is complete: packaging, configuration, logging, the
+database layer, migrations, tests, the lint and type gates, and CI. Next is ingestion. The build
+order is in [ARCHITECTURE.md](ARCHITECTURE.md) §12.
 
 ## Getting started
 
 Requires [uv](https://docs.astral.sh/uv/) and Python 3.12+.
 
 ```bash
-uv sync                                          # create the environment from the lockfile
-uv run python -c "import portfolio_ai; print(portfolio_ai.__version__)"
+uv sync                                      # create the environment from the lockfile
+cp .env.example .env                         # then fill it in
+
+uv run ruff check . && uv run ruff format .  # lint and format
+uv run mypy                                  # types, strict
+uv run pytest                                # unit tests
+uv run pytest -m integration                 # needs a reachable pgvector database
+
+uv run alembic upgrade head                  # create the schema
 ```
 
-Copy `.env.example` to `.env` and fill it in once lesson 3 lands. A Postgres instance with the
-`pgvector` extension is needed from lesson 7 onward.
+A Postgres instance with the `pgvector` extension is required. `DATABASE_URL` must point at it
+and not at a plain Postgres on the same host — the settings validator refuses a local URL on the
+wrong port, because connecting to the wrong one succeeds and then fails at the first migration
+with `type "vector" does not exist`.
+
+## Building the image
+
+One image runs both the API and the scheduled jobs; the command decides which.
+
+```bash
+docker build -f docker/Dockerfile -t portfolio-ai .   # context is the repository root
+docker compose -f docker/compose.yaml up --build      # run it locally against your own .env
+```
+
+CI runs the same lint, type and test commands on every push and pull request, builds the image
+either way, and pushes `ghcr.io/mmihaylov94/portfolio-ai` only from `main`.
+`docker/compose.prod.yaml` is the deploy template.
 
 ## Licence
 

@@ -1,0 +1,44 @@
+# Run the built image locally, to check it before it goes anywhere.
+#
+#     docker compose -f docker/compose.yaml up --build
+#
+# This is not the development loop. Development runs on the host with
+# `uv run uvicorn ... --reload` against the pgvector container on the LAN, which
+# is faster and lets you edit a file and see the result. This file answers a
+# different question: does the thing CI is about to push actually start?
+#
+# There is deliberately no Postgres service here. The database belongs to the
+# development environment, not to this project, and adding one would mean a second
+# database with a different version, an empty schema and no relationship to the
+# data anything is tested against.
+
+services:
+  api:
+    build:
+      # Relative to this file, so the context is the repository root -- the same
+      # context CI builds from.
+      context: ..
+      dockerfile: docker/Dockerfile
+    image: portfolio-ai:local
+    # The host's .env, read at container start rather than copied into the image.
+    # DATABASE_URL in it points at a host on the LAN, which resolves the same from
+    # inside a container on the default bridge network.
+    env_file: ../.env
+    ports:
+      - "8000:8000"
+
+  # Same image, different command. Useful for checking that a job starts and
+  # connects before trusting it to a schedule at four in the morning:
+  #
+  #     docker compose -f docker/compose.yaml run --rm worker \
+  #         python -m portfolio_ai.ingestion --dry-run
+  #
+  worker:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+    image: portfolio-ai:local
+    command: supercronic /etc/crontab
+    env_file: ../.env
+    environment:
+      TZ: Europe/London

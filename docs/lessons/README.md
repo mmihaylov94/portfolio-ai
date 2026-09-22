@@ -23,7 +23,7 @@ Read them in order. Later ones assume the earlier ones.
 | 7 | [Migrations with Alembic](07-migrations-with-alembic.md) | `migrations/`, the full schema | ☑ |
 | 8 | [Testing](08-testing.md) | `tests/`, pytest fixtures | ☑ |
 | 9 | [Types and linting](09-types-and-linting.md) | `[tool.mypy]`, `[tool.ruff.lint]` | ☑ |
-| 10 | Docker and CI | `Dockerfile`, GitHub Actions | ☐ |
+| 10 | [Docker and CI](10-docker-and-ci.md) | `docker/`, `.github/workflows/ci.yml` | ☑ |
 
 Later steps (ingestion, the assistant, the API, evals, analytics) get their own lessons once the
 foundation is in place. The build order is in [ARCHITECTURE.md](../../ARCHITECTURE.md) §12.
@@ -39,3 +39,7 @@ foundation is in place. The build order is in [ARCHITECTURE.md](../../ARCHITECTU
 7. **Check yourself** — questions, answers at the bottom
 
 Do the exercises. Reading about a lockfile and regenerating one are different kinds of knowing.
+
+Lesson 10 is the exception and has neither section. Its subject is a Dockerfile and a CI workflow,
+and neither can be run on the machine the series was written on — so it ends with an explicit list
+of what was verified and what is still waiting on the first push instead.
