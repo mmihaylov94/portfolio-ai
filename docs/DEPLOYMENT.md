@@ -108,8 +108,12 @@ docker network inspect traefik_proxy \
   The only thing that talks to it is the Express API, from inside the network. Putting it on the
   internet and then guarding it with a bearer token would be two defences where one is needed, and
   the exposed one would be the weaker.
-- **`portfolio-ai-worker`** — the same image, running `supercronic /etc/crontab` instead: daily
-  ingestion, the weekly digest, the retention sweep.
+- **`portfolio-ai-worker`** — the same image, running `supercronic /etc/crontab` instead: hourly
+  ingestion, the weekly digest, the retention sweep. Hourly sounds excessive and is not: a run
+  with nothing to do costs one request to the GitHub tree API and about a second, because every
+  file's blob SHA matches what is stored. What the frequency buys is a bound on staleness and,
+  more importantly, a heartbeat — a webhook that stops firing looks exactly like a repository
+  nobody has committed to, while a scheduled run that stops succeeding says so in the logs.
 - **Postgres** — already on the box and already shared with n8n. This project only ever writes to
   its own `portfolio_rag` schema. The live `mihaylov_rag_documents` and `mihaylov_chat_histories`
   tables belong to n8n and are not touched until cutover (§12).
@@ -296,10 +300,30 @@ OPENAI_API_KEY=<real key>
 # Generate with: openssl rand -hex 32
 PORTFOLIO_AI_API_KEY=<generated>
 
+# Source of the knowledge base. The defaults are already correct for this
+# deployment, so these are here to be findable rather than because they need
+# setting. GITHUB_TOKEN is optional while the repository is public -- a run makes
+# one API call against a limit of sixty an hour -- and becomes required if it
+# ever goes private.
+GITHUB_REPO=mmihaylov94/my-portfolio
+GITHUB_BRANCH=main
+GITHUB_DOCS_PATH=knowledgebase
+# GITHUB_TOKEN=
+
 TZ=Europe/London
 LOG_LEVEL=INFO
 CORS_ORIGINS=https://mihaylov.io
 ```
+
+Everything else in `.env.example` has a working default and can be left out. Two are worth
+knowing about before you need them:
+
+- **`INGESTION_MAX_PURGE_FRACTION`** (default `0.3`) caps how much of the knowledge base one run
+  may delete, as a share of what is stored. It is what stops a bad minute at GitHub wiping the
+  index. If you genuinely delete several articles at once the run will abort — raise it for that
+  one run rather than lowering the guard permanently.
+- **`EMBEDDING_MODEL`** and **`EMBEDDING_DIMENSIONS`** are recorded, not tunable. Changing either
+  invalidates every stored vector and needs a full re-embed and a migration.
 
 > **`ENVIRONMENT=production` matters more than it looks.** Two guards in this codebase key off it:
 > the port validator in `config.py` (which would reject a 5432 URL if this said `local`), and the
@@ -365,6 +389,16 @@ docker compose -f compose.prod.yaml ps
 
 # 5. Watch them boot. JSON, one object per line.
 docker compose -f compose.prod.yaml logs -f --tail=50
+
+# 6. The first ingestion, by hand, dry first. --dry-run plans and prints and
+#    writes nothing, so a wrong GITHUB_REPO or an unreachable database fails
+#    here rather than halfway through a real run.
+docker compose -f compose.prod.yaml run --rm worker \
+    python -m portfolio_ai.ingestion --dry-run
+
+# Expect: discovered 11, indexed 11, cost about $0.0003. Then for real:
+docker compose -f compose.prod.yaml run --rm worker \
+    python -m portfolio_ai.ingestion
 ```
 
 Confirm from the database side, as the app role:
@@ -374,6 +408,10 @@ Confirm from the database side, as the app role:
 \dt portfolio_rag.*            -- 11 tables + alembic_version
 \di portfolio_rag.chunks*      -- an HNSW index on embedding
 select version_num from portfolio_rag.alembic_version;
+
+-- After step 6, the knowledge base itself:
+select count(*) from portfolio_rag.documents;   -- 11
+select count(*) from portfolio_rag.chunks;      -- 111
 ```
 
 And that the Express API can reach it, from the Express container rather than the host — the host
