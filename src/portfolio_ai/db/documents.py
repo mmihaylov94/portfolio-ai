@@ -119,8 +119,13 @@ async def upsert_document(
     Takes a connection rather than getting its own. The caller runs this and the
     chunk replacement below inside one transaction, and a function that opened its
     own connection could not participate in it.
+
+    ``returning id`` gives back the primary key whether the row was inserted or
+    updated. ``do update`` always updates the conflicting row -- even when every
+    value is the same as before -- so the row is always there to return. It is ``do
+    nothing`` that returns no row for one that already existed.
     """
-    await conn.execute(
+    cursor = await conn.execute(
         """
         insert into documents (
             doc_id, source_type, page_type, title, url, tags, last_verified,
@@ -140,6 +145,7 @@ async def upsert_document(
             content_hash  = excluded.content_hash,
             indexed_at    = excluded.indexed_at,
             updated_at    = now()
+        returning id
         """,
         (
             document.meta.doc_id,
@@ -156,18 +162,10 @@ async def upsert_document(
             indexed_at,
         ),
     )
-
-    # Fetched rather than returned by the statement above. `returning id` on an
-    # upsert returns nothing when the row existed and no column actually changed,
-    # because Postgres skips the update -- so the id would be None on exactly the
-    # runs where everything is working correctly.
-    cursor = await conn.execute(
-        "select id from documents where doc_id = %s", (document.meta.doc_id,)
-    )
     row = await cursor.fetchone()
 
-    if row is None:  # pragma: no cover - the upsert above guarantees it exists
-        raise RuntimeError(f"document {document.meta.doc_id!r} vanished between write and read")
+    if row is None:  # pragma: no cover - an upsert with `do update` always returns its row
+        raise RuntimeError(f"upserting {document.meta.doc_id!r} returned no row")
 
     return int(row["id"])
 
