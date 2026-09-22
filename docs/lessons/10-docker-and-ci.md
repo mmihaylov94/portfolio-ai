@@ -311,6 +311,20 @@ ends. There is no stored credential to leak or rotate.
 with no local Docker state, so without it every build starts from nothing and the careful layer
 ordering above buys precisely nothing.
 
+That cache is also what makes the `Set up Buildx` step non-negotiable, and it is worth knowing why
+because the error is actively misleading. A runner's default builder uses the plain `docker`
+driver, which cannot export a build cache at all. Asking it to produces:
+
+```
+ERROR: failed to build: Cache export is not supported for the docker driver.
+```
+
+This was the first CI run's only failure, and the shape of it is the lesson. It fails *before the
+first Dockerfile instruction runs*, so the message says nothing about the Dockerfile and the
+Dockerfile is never reached — a red "Build image" job that has not built anything and tells you
+nothing about whether it could. `docker/setup-buildx-action` creates a builder on the
+`docker-container` driver, which can, and the two lines at the bottom of the job start working.
+
 There is also a piece of YAML trivia here that is worth knowing because it will confuse you
 elsewhere. Parse this file with a standard YAML library and the `on:` key comes back as the
 boolean `True` — YAML 1.1 treats `on`, `off`, `yes` and `no` as booleans, which is the same rule
@@ -347,7 +361,7 @@ saying so is better than writing confidently about output nobody saw. Docker is 
 this machine — the same fact that changed the testing strategy in lesson 8 — so the image has not
 been built.
 
-Verified, by running it:
+### Verified before the first push
 
 - the unit tests pass with no `.env` anywhere on the path, so the `quality` job needs no
   configuration at all
@@ -356,15 +370,37 @@ Verified, by running it:
   path the `database` job uses, both guards included
 - `uv.lock` is in sync with `pyproject.toml`, so `--locked` will not fail
 - every pinned artefact exists: the uv image tag, the pgvector tag, the supercronic release and
-  its checksum, and all five action SHAs resolved to real commits
+  its checksum, and every action SHA resolved to a real commit rather than a tag object
 - all three YAML files parse
 
-Waiting on the first push, and worth watching the first run for:
+### What the first run settled
+
+It ran. Two of the three jobs were green on the first attempt:
+
+- **`quality` passed** — ruff, mypy and pytest, on a machine with no `.env` and none of this
+  project's history.
+- **`database` passed** — the service container came up with pgvector available, and the
+  integration tests migrated into a throwaway schema and dropped it. Both guards from §"the guard
+  collision" were satisfied by the port mapping, in the environment they were written for rather
+  than the one they were tested in.
+
+- **`image` failed**, on `Cache export is not supported for the docker driver` — the missing
+  `setup-buildx-action` step described above. Which means **the Dockerfile is still unverified**:
+  the job failed before executing a single instruction from it, so everything below is unchanged
+  by that run.
+
+Three small things came out of the same run and were fixed with it: the runners are now pinned to
+`ubuntu-24.04` rather than `ubuntu-latest`, which is the argument this whole lesson makes applied
+to the one thing it had missed; and `quality` and `database` now use distinct `cache-suffix`
+values, because running in parallel with an identical dependency set made them race for the same
+cache key and log `Unable to reserve cache` on every run. A warning that appears every time is a
+warning nobody reads by the third week.
+
+### Still not verified
 
 - that the image builds at all, and that the `LICENSE` reasoning above is right
 - that the layer cache behaves — the second build after a source-only change should skip the
   dependency install
-- that the service container comes up with pgvector available
 - that GHCR accepts the push and both tags appear
 
 ```bash

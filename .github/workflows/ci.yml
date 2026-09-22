@@ -25,7 +25,12 @@ env:
 jobs:
   quality:
     name: Lint, types, unit tests
-    runs-on: ubuntu-latest
+    # Pinned rather than ubuntu-latest, for the same reason as every other pin in
+    # this repository: `latest` moves on a date somebody else chooses, and a runner
+    # image change is exactly the kind of difference that turns up as an unrelated
+    # failure. GitHub announces these migrations, which is a reason to take them
+    # deliberately rather than a reason not to pin.
+    runs-on: ubuntu-24.04
     steps:
       # Third-party actions are pinned to a commit SHA rather than a tag. A tag is
       # a label the owner of that repository can move at any time, onto anything.
@@ -40,6 +45,12 @@ jobs:
           version: ${{ env.UV_VERSION }}
           # Caches the uv download cache between runs, keyed on uv.lock.
           enable-cache: true
+          # Per-job suffix. This job and `database` run in parallel with an
+          # identical dependency set, so without it both try to save the same
+          # cache key and whichever finishes second logs "Unable to reserve
+          # cache". Harmless, but a warning that appears on every run is a
+          # warning nobody reads by the third week.
+          cache-suffix: quality
 
       # --locked, as in the Dockerfile: fail if uv.lock and pyproject.toml have
       # drifted apart, rather than resolving something new and testing that
@@ -63,7 +74,7 @@ jobs:
 
   database:
     name: Integration tests
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
 
     services:
       postgres:
@@ -107,6 +118,7 @@ jobs:
         with:
           version: ${{ env.UV_VERSION }}
           enable-cache: true
+          cache-suffix: database
 
       - name: Install dependencies
         run: uv sync --locked
@@ -119,7 +131,7 @@ jobs:
 
   image:
     name: Build image
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     needs: [quality, database]
 
     permissions:
@@ -130,6 +142,19 @@ jobs:
 
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      # Creates a builder using the `docker-container` driver.
+      #
+      # This step is not optional scaffolding. A runner's default builder uses the
+      # plain `docker` driver, which cannot export a build cache at all:
+      #
+      #     ERROR: failed to build: Cache export is not supported for the docker driver.
+      #
+      # It fails immediately, before the first Dockerfile instruction runs -- so the
+      # error says nothing about the Dockerfile and the Dockerfile is never reached.
+      # The `cache-from`/`cache-to` lines at the bottom of this job are what require it.
+      - name: Set up Buildx
+        uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
 
       # Only on main. Pull requests still build, a few lines below -- a broken
       # Dockerfile should fail in review, not after merge -- but nothing from a
