@@ -26,8 +26,19 @@ from structlog.typing import EventDict, Processor, WrappedLogger
 from portfolio_ai.config import get_settings
 
 
-def _redact_secrets(logger: WrappedLogger, method_name: str, event_dict: EventDict) -> EventDict:
+def _redact_secrets(
+    logger: WrappedLogger,  # ruff: ignore[unused-function-argument]
+    method_name: str,  # ruff: ignore[unused-function-argument]
+    event_dict: EventDict,
+) -> EventDict:
     """Replace the value of any field whose name suggests it holds a secret.
+
+    The first two arguments are never used and cannot be removed: this signature is
+    structlog's, not ours, and every processor in the chain is called with all three.
+    That is a category ruff's unused-argument rule is structurally bad at, because it
+    cannot tell a parameter nobody needed from one a caller insists on passing. Naming
+    them ``_logger`` and ``_method_name`` would silence it and would also hide which
+    protocol this function is implementing, which is the more useful information.
 
     ``SecretStr`` in config.py already stops the OpenAI key printing when the
     settings object is logged. This is the second layer, for dictionaries that

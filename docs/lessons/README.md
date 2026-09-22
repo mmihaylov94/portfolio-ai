@@ -22,7 +22,7 @@ Read them in order. Later ones assume the earlier ones.
 | 6 | [Postgres with psycopg 3](06-postgres-with-psycopg.md) | `db/pool.py` | ☑ |
 | 7 | [Migrations with Alembic](07-migrations-with-alembic.md) | `migrations/`, the full schema | ☑ |
 | 8 | [Testing](08-testing.md) | `tests/`, pytest fixtures | ☑ |
-| 9 | Types and linting | strict mypy, ruff rules | ☐ |
+| 9 | [Types and linting](09-types-and-linting.md) | `[tool.mypy]`, `[tool.ruff.lint]` | ☑ |
 | 10 | Docker and CI | `Dockerfile`, GitHub Actions | ☐ |
 
 Later steps (ingestion, the assistant, the API, evals, analytics) get their own lessons once the

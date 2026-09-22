@@ -6,13 +6,22 @@ needs configuring and nothing is written anywhere.
 """
 
 import pytest
+from structlog.typing import EventDict
 
 from portfolio_ai.logging import _redact_secrets
 
 
-def _redact(event: dict[str, object]) -> dict[str, object]:
-    """Call the processor the way structlog would."""
-    return _redact_secrets(None, "info", event)  # type: ignore[arg-type]
+def _redact(event: EventDict) -> EventDict:
+    """Call the processor the way structlog would.
+
+    Annotated with structlog's own EventDict rather than dict[str, object], which
+    is what this said first and is not the same thing. EventDict is a
+    MutableMapping, so promising to return a dict was a promise the processor never
+    made -- and the `# type: ignore` that used to sit on this line was silencing a
+    different error entirely, which is why it needed the error code removing before
+    anyone could see that.
+    """
+    return _redact_secrets(None, "info", event)
 
 
 @pytest.mark.parametrize(

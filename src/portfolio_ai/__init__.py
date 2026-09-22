@@ -19,6 +19,7 @@ This module does one thing on import, which lessons 3 and 4 said modules should
 not do. See the comment below -- the exception is deliberate and the reasoning is
 written down rather than assumed.
 """
+# ruff: file-ignore[non-empty-init-module]  -- see the event loop comment below
 
 import asyncio
 import sys
@@ -38,6 +39,11 @@ from portfolio_ai.exceptions import ConfigError, PortfolioAIError, PurgeSafetyEr
 # trade is worth stating plainly: the alternative is two lines of boilerplate in
 # every command that touches the database, and a baffling error whenever they are
 # forgotten. On Linux this is a no-op, so production never runs it.
+#
+# ruff objects to an __init__.py containing anything but docstrings and re-exports,
+# and the rule is right about why: importing a package should not have effects. The
+# suppression at the top of this file is deliberate rather than a rewrite, because the
+# reasoning above is the whole justification and a rule cannot read it.
 if sys.platform == "win32":  # pragma: no cover - platform specific
     asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
 

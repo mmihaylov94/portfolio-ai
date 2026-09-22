@@ -21,6 +21,11 @@ from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 
 from portfolio_ai.exceptions import ConfigError
 
+# Named rather than written inline in the check below. A bare 5433 in a comparison
+# says nothing about which of the two local databases it is, and the same digits then
+# have to be repeated in the error message.
+_LOCAL_PGVECTOR_PORT = 5433
+
 
 class Settings(BaseSettings):
     """Every configurable value the project currently uses.
@@ -105,8 +110,8 @@ class Settings(BaseSettings):
         if self.environment != "local":
             return self
         port = urlparse(self.database_url).port
-        if port != 5433:
-            raise ValueError("Local pgvector runs on port 5433.")
+        if port != _LOCAL_PGVECTOR_PORT:
+            raise ValueError(f"Local pgvector runs on port {_LOCAL_PGVECTOR_PORT}.")
         return self
 
 

@@ -883,7 +883,7 @@ GitHub Actions, mirroring how the portfolio already ships:
 ```
 push to main
   -> ruff check + ruff format --check
-  -> mypy src
+  -> mypy
   -> pytest (unit; integration via a pgvector service container)
   -> docker build + push ghcr.io/mmihaylov94/portfolio-ai:latest
   -> server pulls

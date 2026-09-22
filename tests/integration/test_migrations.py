@@ -6,6 +6,7 @@ ARCHITECTURE.md section 5 describes. The fixture in conftest.py has already run
 """
 
 import pytest
+from psycopg.rows import DictRow
 
 from portfolio_ai.db.pool import get_pool
 
@@ -25,10 +26,16 @@ EXPECTED_TABLES = {
 }
 
 
-async def _fetch_all(query: str, params: tuple[object, ...] = ()) -> list[dict[str, object]]:
+async def _fetch_all(query: str, params: tuple[object, ...] = ()) -> list[DictRow]:
+    # DictRow, not dict[str, object]. The two look interchangeable and are not:
+    # `object` means "something, but nothing is known about it", so mypy correctly
+    # refuses `"hnsw" in row["indexdef"]` -- you cannot search inside a value whose
+    # type says it might be an int. DictRow is dict[str, Any], which is the truth
+    # about a database row: the columns are strings, the values are whatever the
+    # query selected and nobody can know that statically.
     pool = await get_pool()
     async with pool.connection() as conn, conn.cursor() as cur:
-        await cur.execute(query, params)  # type: ignore[arg-type]
+        await cur.execute(query, params)
         return list(await cur.fetchall())
 
 
@@ -42,7 +49,7 @@ async def test_every_expected_table_exists(test_schema: str) -> None:
     # A subset check rather than equality: alembic_version is there too, and a
     # test that breaks when an unrelated table appears is a test that gets edited
     # rather than read.
-    assert EXPECTED_TABLES <= tables
+    assert tables >= EXPECTED_TABLES
 
 
 async def test_alembic_recorded_the_latest_revision() -> None:

@@ -188,7 +188,7 @@ service to a compose file for development, and do not run the app in Docker to t
 ```bash
 uv sync                                          # install
 uv run ruff check . && uv run ruff format .      # lint / format
-uv run mypy src                                  # types
+uv run mypy                                      # types: src, tests and migrations
 uv run pytest                                    # unit; -m integration needs Docker running
 
 uv run alembic upgrade head                      # migrations (creates the portfolio_rag schema)

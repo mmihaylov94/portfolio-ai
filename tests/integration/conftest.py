@@ -10,7 +10,8 @@ one, and then the tests pass against a shape production never has.
 
 import os
 import secrets
-from collections.abc import Iterator
+from collections.abc import AsyncIterator, Iterator
+from pathlib import Path
 
 import psycopg
 import pytest
@@ -26,8 +27,10 @@ from portfolio_ai.db.pool import close_pool
 SCHEMA_PREFIX = "pytest_"
 
 
-def _project_root() -> str:
-    return os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+def _project_root() -> Path:
+    # Three os.path.dirname calls wrapped around an abspath said the same thing and
+    # had to be counted to be read. `.parents[2]` is the same walk, stated once.
+    return Path(__file__).resolve().parents[2]
 
 
 def _sync_connect() -> psycopg.Connection:
@@ -91,8 +94,9 @@ def test_schema() -> Iterator[str]:
     # Alembic creates the schema itself, because env.py has to do that before it
     # can put its version table inside it. Lesson 7's chicken-and-egg fix pays for
     # itself here: the fixture gets schema creation for free.
-    config = Config(os.path.join(_project_root(), "alembic.ini"))
-    config.set_main_option("script_location", os.path.join(_project_root(), "migrations"))
+    root = _project_root()
+    config = Config(root / "alembic.ini")
+    config.set_main_option("script_location", str(root / "migrations"))
     command.upgrade(config, "head")
 
     yield schema
@@ -103,7 +107,7 @@ def test_schema() -> Iterator[str]:
 
 
 @pytest.fixture(autouse=True)
-async def _reset_pool() -> None:
+async def _reset_pool() -> AsyncIterator[None]:
     """Close the connection pool after every test.
 
     The pool is a module-level global (lesson 6), which is convenient in a running
@@ -113,6 +117,12 @@ async def _reset_pool() -> None:
 
     Closing it after each test costs a few connections' worth of setup and removes
     the whole category. ``autouse`` means no test has to remember.
+
+    The return type is ``AsyncIterator[None]`` rather than ``None`` because a
+    function containing ``yield`` does not return -- calling it builds an async
+    generator and runs none of the body. Python does not mind the wrong annotation
+    and neither does pytest, which is why this said ``None`` for a whole lesson
+    while every test passed.
     """
     yield
     await close_pool()

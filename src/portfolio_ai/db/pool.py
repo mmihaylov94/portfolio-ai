@@ -16,21 +16,38 @@ Every query in this project goes through here.
 import structlog
 from pgvector.psycopg import register_vector_async
 from psycopg import AsyncConnection, OperationalError, sql
-from psycopg.rows import dict_row
+from psycopg.rows import DictRow, dict_row
 from psycopg_pool import AsyncConnectionPool, PoolTimeout
 
 from portfolio_ai.config import get_settings
 
 log = structlog.get_logger(__name__)
 
+# What kind of pool this is, spelled out once.
+#
+# The type parameter is not decoration. `kwargs={"row_factory": dict_row}` below is
+# what makes rows arrive as dictionaries, but it says so in a plain dict, where no
+# type checker can read it. Left to itself, mypy uses psycopg's declared default --
+# AsyncConnection[TupleRow] -- and then rejects `row["status"]` in a file three
+# directories away, describing a tuple nobody wrote.
+#
+# Note what did *not* happen: mypy never complained about the missing parameter,
+# because the library supplies a default for it. Silence from a type checker is not
+# agreement. It can mean it quietly filled in a blank you did not notice.
+#
+# Writing the alias down is a promise rather than a proof -- mypy believes it without
+# checking that the kwargs match. They have to be kept in step by hand, which is why
+# they sit next to each other.
+type Pool = AsyncConnectionPool[AsyncConnection[DictRow]]
+
 # Created on first use and reused afterwards. A pool has to outlive any single
 # function -- a CLI run uses it throughout, and the API will hold one for the
 # lifetime of the process -- so it lives at module level rather than being passed
 # down through every call.
-_pool: AsyncConnectionPool | None = None
+_pool: Pool | None = None
 
 
-async def _configure_connection(conn: AsyncConnection) -> None:
+async def _configure_connection(conn: AsyncConnection[DictRow]) -> None:
     """Prepare a newly opened connection. Runs once per connection, not per query.
 
     Two things happen here, and both are per-connection state rather than anything
@@ -78,9 +95,14 @@ async def _configure_connection(conn: AsyncConnection) -> None:
     await conn.commit()
 
 
-async def get_pool() -> AsyncConnectionPool:
+async def get_pool() -> Pool:
     """Return the pool, opening it on first call."""
-    global _pool
+    # ruff dislikes `global` on principle, and for most code it is right: a function
+    # that reassigns module state is hard to reason about and impossible to run twice.
+    # Here it is the point. Lesson 8 paid the bill for it in the test fixtures, and
+    # the alternative -- threading the pool through every signature in the project --
+    # is a cost on every call for a benefit only the tests would see.
+    global _pool  # ruff: ignore[global-statement]
 
     if _pool is None:
         settings = get_settings()
@@ -105,7 +127,7 @@ async def get_pool() -> AsyncConnectionPool:
 
 async def close_pool() -> None:
     """Close the pool and forget it. Safe to call when nothing was ever opened."""
-    global _pool
+    global _pool  # ruff: ignore[global-statement] -- see get_pool
 
     if _pool is not None:
         await _pool.close()
