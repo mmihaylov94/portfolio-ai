@@ -179,7 +179,7 @@ This repository is public on GitHub, and **git history is published too**. From 
 - `.env` gitignored; `.env.example` carries placeholders only.
 - **No personal email addresses** in code or docs. The digest recipient is `DIGEST_TO_EMAIL`.
 - **No IPs or hostnames in committed files** — not the LAN dev server, not the EC2 host, not
-  container names. They live in `.env`. `compose.prod.yaml` is a template, and `mihaylov.io` is
+  container names. They live in `.env`. `docker/docker-compose.yml` is a template, and `mihaylov.io` is
   the only host that should appear anywhere in the repo.
 - Prompts, schema and eval datasets are fine to publish — they are much of the value.
 - **Real chat logs never leave the database.** `datasets/` holds curated cases only; read any
@@ -250,8 +250,11 @@ Production schedules live in `docker/crontab`, run by the `worker` container wit
   nothing at 50. Checked twice: optimistically after discovery, before anything is fetched or
   spent, and exactly at the purge itself.
 - **The n8n tables (`mihaylov_rag_documents`, `mihaylov_chat_histories`) are live production.**
-  This project writes only to the `portfolio_rag` schema. Do not touch or drop the old tables
-  until cutover is explicitly confirmed.
+  In production they live in n8n's database; this project has its **own database**,
+  `portfolio_ai`, on the same Postgres instance, with the `portfolio_rag` schema inside it.
+  Never point this project at n8n's database, and do not touch or drop the old tables until
+  cutover is explicitly confirmed. (Locally, `portfolio_rag` shares a database with other things —
+  the schema is what isolates it there, and production is stricter.)
 - **Do not commit secrets.** `OPENAI_API_KEY`, `DATABASE_URL`, `PORTFOLIO_AI_API_KEY` and
   `SMTP_APP_PASSWORD` come from `.env`, which is gitignored. The repo is public, so a leaked
   secret is leaked to everyone, permanently, in history.

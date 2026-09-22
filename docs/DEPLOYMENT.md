@@ -47,28 +47,22 @@ host ports at all.
 | Host | **The existing EC2 instance**, alongside the site, n8n and Traefik | §4, §11 |
 | Images | **Built in GitHub Actions → GHCR**, pulled on the box | §7, §8 |
 | Services | **Two from one image** — `api` (FastAPI) and `worker` (supercronic) | §2 |
-| Database | **The Postgres container already on the box**, reached by service name | §5 |
+| Database | **Its own database, `portfolio_ai`**, on the Postgres already on the box | §5 |
 | Schema | **`portfolio_rag`**, owned entirely by this project | §5, §11 |
 | Exposure | **None.** No published ports, no Traefik labels, internal only | §2 |
 | Auth | Bearer token, checked by FastAPI, attached server-side by the Express API | §6, §12 |
 | Migrations | **Alembic, run as a one-shot before the containers start** | §8, §9 |
 | Timezone | **`TZ=Europe/London`** on the worker | §6, §11 |
-| Deploy dir | **`/opt/portfolio-ai`** (override with `PORTFOLIO_AI_DIR`) | §6, §9 |
+| Deploy dir | **`/opt/portfolio-ai`**, holding `docker-compose.yml` and `.env` | §6, §9 |
 
 Everything environment-specific — the Postgres service name, credentials, the API key — lives in
 `/opt/portfolio-ai/.env` on the box and nowhere else. **This repository is public**, so every value
 of that kind appears here as a `<placeholder>`.
 
-Two of those placeholders look interchangeable and are not. `<postgres-service>` is the **network
-alias** other containers resolve, and it is what goes in `DATABASE_URL`. `<postgres-container>` is
-the **container name**, and it is what `docker exec` takes. Compose sets both, and they are equal
-only when the compose file says `container_name:` matching the service key — so check rather than
-assume:
-
-```bash
-docker network inspect traefik_proxy \
-  --format '{{range .Containers}}{{.Name}}{{"\n"}}{{end}}'
-```
+One placeholder does double duty. `<postgres-container>` is the Postgres container's **name**,
+which is what `docker exec` takes — and on a user-defined network like `traefik_proxy`, a
+container's name also resolves as a hostname for every other container on it, so the same name is
+the host part of `DATABASE_URL`. §5a finds it and §5g proves it resolves.
 
 ---
 
@@ -123,11 +117,11 @@ docker network inspect traefik_proxy \
 
 ## 3. Order of operations
 
-1. **Confirm the `vector` extension exists** on the production database and that the app role can
-   create a schema (§5). Nothing else works until this is true, and it is the one step that can
-   fail for a reason outside this repository.
-2. **Create the database role and grant it `CREATE` on the database** (§5).
-3. **Put `compose.prod.yaml` and `.env` on the box**, permissions set (§6).
+1. **Create the role and a database it owns**, `portfolio_ai`, on the existing Postgres (§5).
+2. **Install `vector` into that database as a superuser**, and prove the role can use it (§5).
+   Nothing else works until this is true, and it is the one step that can fail for a reason
+   outside this repository.
+3. **Put `docker-compose.yml` and `.env` on the box**, permissions set (§6).
 4. **Make GHCR pullable** — either publish the package or log in with a PAT (§7).
 5. **First deploy by hand**, one command at a time, so a failure names itself (§8).
 6. **Install the helper scripts** (§9, §10).
@@ -163,95 +157,226 @@ discover them one at a time.
 This is the section to do slowly. It is the only part of the deployment that can fail for reasons
 that have nothing to do with this codebase.
 
-### 5a. The `vector` extension must already exist
+The end state is a **new database, `portfolio_ai`, owned by a new role**, on the Postgres
+instance that already runs n8n — with the `vector` extension installed in it, and a proof, run as
+that role over the network, that migration `0001` will succeed. Everything below is in order; each
+step depends on the one before.
 
-Migration `0001` opens with:
+**Why a database of its own rather than a schema inside n8n's database.** A schema is a
+naming convention; a database is a boundary. Postgres cannot query across databases, so no bug and
+no wrong `search_path` in this project can reach n8n's tables, and `drop extension vector` here
+cannot cascade into n8n's live vector column. It also makes `pg_dump portfolio_ai` the whole of
+this project. The one cost: extensions are per database, so `vector` has to be installed into the
+new one, by a superuser — which is 5f.
+
+### 5a. Find the Postgres container
+
+```bash
+docker ps --format 'table {{.Names}}\t{{.Image}}\t{{.Status}}' | grep -iE 'postgres|pgvector'
+```
+
+Note the **name** (first column) and the **image** (second). The image should be
+`pgvector/pgvector:…` or similar. If it is plain `postgres:…`, the pgvector files may not be
+installed at all, and no amount of privilege will create the extension — see 5f.
+
+On a user-defined network like `traefik_proxy`, a container's name resolves as a hostname for
+every other container on it. So this one name is both what `docker exec` takes below and the host
+part of `DATABASE_URL` in §6.
+
+### 5b. Open a superuser session, and confirm pgvector is on the server
+
+```bash
+# The superuser and the default database the container was created with.
+# Deliberately not `env`, which would print POSTGRES_PASSWORD to the terminal.
+docker exec <postgres-container> printenv POSTGRES_USER POSTGRES_DB
+
+docker exec -it <postgres-container> psql -U <POSTGRES_USER> -d <POSTGRES_DB>
+```
+
+No password prompt is normal: inside the container, over the local socket, the official image
+trusts connections. That same trust is why 5g cannot be tested this way.
+
+n8n's database is the place that proves the pgvector files are installed on this server:
 
 ```sql
-create extension if not exists vector with schema public;
+\c <n8n-database>
+\dx                             -- `vector` should be listed, with its version
+select version();               -- the server's major version
 ```
 
-`vector` is **not a trusted extension**, which in PostgreSQL means only a superuser can install it.
-A normal role gets:
+If `vector` is listed, the extension files exist and 5f will work. Development runs PostgreSQL 18.6
+with pgvector 0.8.6, and CI pins `pgvector/pgvector:0.8.6-pg18`; if production is materially older,
+record it, because index behaviour is where pgvector versions differ.
 
-```
-ERROR:  permission denied to create extension "vector"
-HINT:  Must have CREATE privilege on current database and be a superuser...
-```
+### 5c. Generate a password
 
-`if not exists` does **not** rescue you — it only turns the statement into a no-op when the
-extension is already present, which a non-superuser is allowed to do. Both halves were verified
-against the development database, whose role is deliberately not a superuser:
+In a second terminal on the host:
 
-```
-role        : ('rag_assistant', False, False, False)   -- not superuser
-vector      : trusted=False
-create extension if not exists vector   -> OK (no-op)
-create extension <absent, untrusted>    -> DENIED: permission denied to create extension
+```bash
+openssl rand -hex 24
 ```
 
-So the check before the first deploy is one query, run against the production database as **any**
-role:
+**Hex, deliberately.** The password ends up inside `DATABASE_URL`, which is a URL, and `@`, `:`,
+`/`, `%` or `#` in it break the parsing. The error that produces names the host, not the password,
+so the first hour goes on DNS.
+
+### 5d. Create the role
+
+Back in `psql`, as the superuser:
 
 ```sql
-select extname, extversion from pg_extension where extname = 'vector';
+create role portfolio_ai login;
+\password portfolio_ai
 ```
 
-- **A row comes back** → done. Nothing further is needed, and the migration's first statement will
-  be a no-op. This is the expected answer, because n8n is already storing vectors in this database.
-- **No row** → install it once, as a superuser, before deploying:
-  ```sql
-  create extension vector with schema public;
-  ```
-  Into `public`, not into `portfolio_rag`. Extensions are shared across a database, and putting it
-  in our schema would mean every connection needed our schema on its search path merely to
-  understand what a vector is.
+`\password` prompts for the password and sends it already hashed. Putting it in
+`create role ... password '...'` instead would write it to the psql history file inside the
+container and, if statement logging is on, to the server log.
 
-> **Do not drop this extension to "reinstall it cleanly."** `drop extension vector` cascades to
-> every column of type `vector` in the database — including n8n's live table. There is no situation
-> in this deployment where dropping it is the right move.
-
-### 5b. Version parity
-
-```sql
-select version();
-select extversion from pg_extension where extname = 'vector';
-```
-
-Development runs **PostgreSQL 18.6 with pgvector 0.8.6**, and CI pins `pgvector/pgvector:0.8.6-pg18`
-to match. If production is materially older, note it here — index behaviour is where pgvector
-versions differ, and the HNSW index is the part the test suite exists to protect.
-
-### 5c. The application role
-
-The app does not need, and should not have, a superuser. It needs exactly two things: the ability
-to create its own schema, and ownership of what it creates.
-
-```sql
-create role <db-user> login password '<generated>';
-grant connect on database <db-name> to <db-user>;
-grant create on database <db-name> to <db-user>;   -- so Alembic can create portfolio_rag
-```
-
-Verify, connected **as that role**:
-
-```sql
-select current_user,
-       (select rolsuper from pg_roles where rolname = current_user) as is_superuser,
-       has_database_privilege(current_user, current_database(), 'CREATE') as can_create_schema;
-```
-
-Wanted: `is_superuser = false`, `can_create_schema = true`.
+**Grant it nothing else** — not superuser, not `createdb`, not `createrole`.
 
 > **Do not reuse n8n's database role.** A shared role means this project's credentials being
 > rotated, leaked or revoked takes the live chat down with it, and it removes the only thing
 > stopping a mistake here from writing to n8n's tables.
 
-### 5d. Who creates the schema
+### 5e. Create the database, owned by that role
 
-Nobody, by hand. `migrations/env.py` creates `portfolio_rag` if it is missing, before Alembic looks
-for its version table — the version table lives *inside* the schema, so something has to create it
-first. Creating it manually is harmless but unnecessary.
+```sql
+create database portfolio_ai
+    owner portfolio_ai
+    template template0
+    encoding 'UTF8'
+    locale_provider builtin
+    builtin_locale 'C.UTF-8';
+
+revoke connect on database portfolio_ai from public;
+```
+
+**`template template0` and the builtin locale are not decoration** — the obvious
+`create database portfolio_ai owner portfolio_ai` failed on this server:
+
+```
+ERROR:  template database "template1" has a collation version mismatch
+DETAIL:  The template database was created using collation version 2.41, but the
+         operating system provides version 2.36.
+```
+
+The Postgres data directory was initialised under glibc 2.41 (Debian 13) and the container now runs
+on glibc 2.36 (Debian 12). Text sorting rules come from glibc, so Postgres refuses to copy a
+template whose recorded rules no longer match the running ones. That is a property of the server,
+not of this project — see *Collation version mismatch* in §11.
+
+`template0` records no collation version at all — it is stipulated to contain nothing
+collation-dependent — so the check does not apply to it, and nothing shared (`template1`) is
+modified to get past it. `locale_provider builtin` then makes the new database's text rules
+Postgres's own rather than glibc's, so a future image change cannot put *this* database into the
+same state. Nothing in this project sorts human-language text in SQL: `doc_id` lookups are
+equality and chunk order is an integer, so byte-order `C.UTF-8` is both correct and faster. It
+needs PostgreSQL 17 or later; on 15 or 16, use `locale 'C'` in place of the last two lines.
+
+**Owned by the app role, deliberately.** Since PostgreSQL 15 the `public` schema in a new database
+belongs to `pg_database_owner` — whoever owns the database — so ownership gives the role everything
+it needs inside it: creating the `portfolio_rag` schema, and using the `vector` type that will live
+in `public`. No separate grants, and none of the PostgreSQL 15 "`CREATE` on `public` was revoked"
+surprises.
+
+**The revoke** is what makes the separate database actually separate. By default every role on the
+server may connect to every new database; this limits `portfolio_ai` to its owner and superusers.
+(n8n's database has the same default in the other direction. Connecting grants nothing by itself —
+reading n8n's tables would still need privileges on them — so tightening that is optional, and it
+is a change to n8n's database rather than this project's. Leave it unless you have a reason.)
+
+Nobody creates the `portfolio_rag` schema by hand. `migrations/env.py` does, on the first
+`alembic upgrade`.
+
+### 5f. Install `vector` into the new database
+
+Still the superuser:
+
+```sql
+\c portfolio_ai
+create extension vector with schema public;
+\dx                             -- vector, with the same version as in 5b
+\q
+```
+
+Into `public`, not `portfolio_rag`: putting an extension in our schema would mean every connection
+needed our schema on its search path merely to understand what a vector is.
+
+This has to be the superuser because `vector` is **not a trusted extension** — only a superuser can
+install it, and the app role never will be one. Migration `0001` opens with
+`create extension if not exists vector with schema public`, which a normal role can run *only* as a
+no-op, when the extension already exists. Verified against the development database, whose role is
+deliberately not a superuser:
+
+```
+create extension if not exists vector   -> OK (no-op)
+create extension <absent, untrusted>    -> DENIED: permission denied to create extension
+```
+
+So if this step is skipped, the very first migration fails with
+`permission denied to create extension "vector"` — which reads like a broken migration.
+
+- **`could not open extension control file`** → the Postgres image has no pgvector in it. That
+  contradicts 5b, so check you are on the right container. Either way, stop: it is a change to the
+  Postgres container, not to this project.
+
+> **Never drop this extension to "reinstall it cleanly."** It cascades to every `vector` column in
+> the database. In `portfolio_ai` that is only our own embeddings — re-creatable, but a full
+> re-embed — and keeping that mistake away from n8n's table is one of the reasons for a separate
+> database.
+
+### 5g. Prove it, as the new role, over the network
+
+This is the step that matters, and it has to be done **from another container on
+`traefik_proxy`** — not with `docker exec` into the Postgres container. The official image trusts
+loopback connections, so a test run from inside it never checks the password at all and passes
+with a wrong one. A separate container connects the way the app will: by name, across the network,
+with a password.
+
+The client can be the Postgres container's own image — it is already on the box, so there is
+nothing to pull:
+
+```bash
+docker run --rm --network traefik_proxy <postgres-image> \
+  psql "postgresql://portfolio_ai:<password>@<postgres-container>:5432/portfolio_ai" -c "
+    select current_user,
+           current_database(),
+           (select rolsuper from pg_roles where rolname = current_user) as superuser,
+           has_database_privilege(current_database(), 'CREATE') as can_create_schema,
+           has_schema_privilege('public', 'USAGE') as can_use_public;
+    create extension if not exists vector with schema public;
+  "
+```
+
+Expected:
+
+```
+ current_user | current_database | superuser | can_create_schema | can_use_public
+--------------+------------------+-----------+-------------------+----------------
+ portfolio_ai | portfolio_ai  | f         | t                 | t
+NOTICE:  extension "vector" already exists, skipping
+```
+
+That last line is migration `0001`'s first statement, run as the real role against the real
+database. If it prints the notice, the migration will get past it.
+
+- **`password authentication failed`** → the password in the URL is not the one set by
+  `\password`. Set it again.
+- **`permission denied for database`** → the revoke in 5e ran but the ownership did not take:
+  `\l portfolio_ai` should show `portfolio_ai` as owner.
+- **`permission denied to create extension`** → 5f was skipped, or ran in a different database.
+- **`could not translate host name`** → the container name is wrong, or it is not on
+  `traefik_proxy`: `docker network inspect traefik_proxy`.
+
+### 5h. Keep this for §6
+
+```bash
+DATABASE_URL=postgresql://portfolio_ai:<password>@<postgres-container>:5432/portfolio_ai
+```
+
+The deploy script in §9 needs nothing from here: its configuration is a block at the top of the
+script itself.
 
 ---
 
@@ -268,14 +393,14 @@ code, which is the entire point of building it in CI.
 
 ```
 /opt/portfolio-ai/
-├── compose.prod.yaml     copied from this repo: docker/compose.prod.yaml
+├── docker-compose.yml    copied from this repo: docker/docker-compose.yml
 └── .env                  never committed, chmod 600
 ```
 
 ```bash
-# Copy docker/compose.prod.yaml from the repository to the box, then:
+# Copy docker/docker-compose.yml from the repository to the box, then:
 chmod 600 .env
-chmod 644 compose.prod.yaml
+chmod 644 docker-compose.yml
 ```
 
 ### `.env`
@@ -291,7 +416,7 @@ ENVIRONMENT=production
 # Service name on traefik_proxy, not localhost and not an IP. Port 5432 here: the
 # 5433 rule is a LOCAL-only guard, because locally 5432 is a different database
 # without pgvector. On this box there is one Postgres and it is on 5432.
-DATABASE_URL=postgresql://<db-user>:<password>@<postgres-service>:5432/<db-name>
+DATABASE_URL=postgresql://portfolio_ai:<password>@<postgres-container>:5432/portfolio_ai
 DB_SCHEMA=portfolio_rag
 
 OPENAI_API_KEY=<real key>
@@ -370,34 +495,34 @@ once means a failure names its own step instead of being one line in a wrapper's
 cd /opt/portfolio-ai
 
 # 1. Pull. Nothing has started yet, so a bad tag or a missing login fails here, harmlessly.
-docker compose -f compose.prod.yaml pull
+docker compose pull
 
 # 2. Check what the container thinks its configuration is, before it tries to use it.
 #    Settings validates at import, so a bad .env fails here with a message naming the
 #    variable -- which is a much better place to find out than mid-migration.
-docker compose -f compose.prod.yaml run --rm --no-deps api \
+docker compose run --rm --no-deps worker \
     python -c "from portfolio_ai.config import get_settings; s=get_settings(); print(s.environment, s.db_schema)"
 
 # 3. Migrate. Creates the portfolio_rag schema and eleven tables. Additive only --
 #    it touches nothing outside its own schema.
-docker compose -f compose.prod.yaml run --rm --no-deps api alembic upgrade head
-docker compose -f compose.prod.yaml run --rm --no-deps api alembic current   # expect: <rev> (head)
+docker compose run --rm --no-deps worker alembic upgrade head
+docker compose run --rm --no-deps worker alembic current   # expect: <rev> (head)
 
 # 4. Start both services.
-docker compose -f compose.prod.yaml up -d
-docker compose -f compose.prod.yaml ps
+docker compose up -d
+docker compose ps
 
 # 5. Watch them boot. JSON, one object per line.
-docker compose -f compose.prod.yaml logs -f --tail=50
+docker compose logs -f --tail=50
 
 # 6. The first ingestion, by hand, dry first. --dry-run plans and prints and
 #    writes nothing, so a wrong GITHUB_REPO or an unreachable database fails
 #    here rather than halfway through a real run.
-docker compose -f compose.prod.yaml run --rm worker \
+docker compose run --rm worker \
     python -m portfolio_ai.ingestion --dry-run
 
 # Expect: discovered 11, indexed 11, cost about $0.0003. Then for real:
-docker compose -f compose.prod.yaml run --rm worker \
+docker compose run --rm worker \
     python -m portfolio_ai.ingestion
 ```
 
@@ -471,135 +596,168 @@ migration never runs without a completed backup.
 #!/usr/bin/env bash
 # /usr/local/bin/deploy-portfolio-ai
 #
-# Pull the latest image, migrate, restart, verify, clean up.
-# Overridable: PORTFOLIO_AI_DIR, PORTFOLIO_AI_PG_CONTAINER, PORTFOLIO_AI_PG_DB,
-#              PORTFOLIO_AI_PG_USER, PORTFOLIO_AI_BACKUP_RETENTION_DAYS
+# Pull the latest image, back up if migrations are pending, migrate, restart,
+# verify, clean up. Usage:
+#
+#   deploy-portfolio-ai              normal deploy
+#   deploy-portfolio-ai --backup     force a backup even with nothing to migrate
+#   deploy-portfolio-ai --no-backup  skip the backup
 set -euo pipefail
 
-DEPLOY_DIR="${PORTFOLIO_AI_DIR:-/opt/portfolio-ai}"
-COMPOSE_FILE="${PORTFOLIO_AI_COMPOSE:-compose.prod.yaml}"
-SERVICES="${PORTFOLIO_AI_SERVICES:-api worker}"
-IMAGE_LABEL="org.opencontainers.image.source=https://github.com/mmihaylov94/portfolio-ai"
-STATE_DIR="$DEPLOY_DIR/.deploy-state"
-BACKUP_DIR="${PORTFOLIO_AI_BACKUPS:-$DEPLOY_DIR/backups}"
-RETAIN_DAYS="${PORTFOLIO_AI_BACKUP_RETENTION_DAYS:-30}"
-IMAGE_RETAIN_HOURS="${PORTFOLIO_AI_IMAGE_RETENTION_HOURS:-168}"
+# --- Configuration -----------------------------------------------------------
+DEPLOY_DIR="/opt/portfolio-ai"
+COMPOSE_FILE="docker-compose.yml"
 
-# The Postgres container, and a role that may read the portfolio_rag schema. The dump
-# runs INSIDE that container on purpose: pg_dump refuses to dump a server newer than
-# itself, and the server's own binaries are by definition the right version.
-PG_CONTAINER="${PORTFOLIO_AI_PG_CONTAINER:?set PORTFOLIO_AI_PG_CONTAINER}"
-PG_DB="${PORTFOLIO_AI_PG_DB:?set PORTFOLIO_AI_PG_DB}"
-PG_USER="${PORTFOLIO_AI_PG_USER:-postgres}"
+PG_CONTAINER="postgres"        # the Postgres container
+PG_DB="portfolio_ai"           # this project's database
+PG_USER="portfolio_ai"         # owns that database, so it can dump it
+PG_SCHEMA="portfolio_rag"      # what gets backed up
+
+BACKUP_DIR="$DEPLOY_DIR/backups"
+BACKUP_RETENTION_DAYS=30
+IMAGE_RETENTION_HOURS=168      # 7 days
+IMAGE_LABEL="org.opencontainers.image.source=https://github.com/mmihaylov94/portfolio-ai"
+# -----------------------------------------------------------------------------
 
 BACKUP_MODE="auto"
 case "${1:-}" in
-  -n|--no-backup) BACKUP_MODE="never" ;;
   -b|--backup)    BACKUP_MODE="always" ;;
+  -n|--no-backup) BACKUP_MODE="never" ;;
   "")             ;;
   *) echo "usage: $(basename "$0") [--backup|--no-backup]" >&2; exit 2 ;;
 esac
 
-cd "$DEPLOY_DIR"
-compose() { docker compose -f "$COMPOSE_FILE" "$@"; }
 say() { printf '\n\033[1m==> %s\033[0m\n' "$*"; }
+die() { printf '\n\033[1;31mFAILED: %s\033[0m\n' "$*" >&2; exit 1; }
 
-# --- 1. Record the rollback target ------------------------------------------
-# From the running containers, not from the tag: by the time we pull, :latest
-# means something else, and this file has to say what was actually live.
+cd "$DEPLOY_DIR" || die "$DEPLOY_DIR does not exist"
+[ -f "$COMPOSE_FILE" ] || die "$DEPLOY_DIR/$COMPOSE_FILE not found"
+[ -f .env ] || die "$DEPLOY_DIR/.env not found"
+
+compose() { docker compose -f "$COMPOSE_FILE" "$@"; }
+
+# One-off commands run in a throwaway container from the worker's definition:
+# same image, same .env, same network. The worker rather than the api, because
+# the worker is the service that exists and works today.
+oneshot() { compose run --rm --no-deps -T worker "$@"; }
+
+# --- 1. Record what is running now, as the rollback target -------------------
 say "Recording current images"
-mkdir -p "$STATE_DIR"
-: > "$STATE_DIR/previous-images.txt"
-for svc in $SERVICES; do
+mkdir -p .deploy-state
+: > .deploy-state/previous-images.txt
+for svc in api worker; do
   cid="$(compose ps -q "$svc" 2>/dev/null || true)"
-  [ -n "$cid" ] || { echo "  $svc: not running, nothing to record"; continue; }
+  if [ -z "$cid" ]; then
+    echo "  $svc: not running"
+    continue
+  fi
   image_id="$(docker inspect --format '{{.Image}}' "$cid")"
-  # RepoDigests is the pullable ghcr.io/...@sha256:... form. A locally built image
-  # has none, so fall back to the image id, which still works on this host.
   ref="$(docker image inspect \
           --format '{{if .RepoDigests}}{{index .RepoDigests 0}}{{else}}{{.Id}}{{end}}' \
           "$image_id")"
-  echo "$svc $ref" >> "$STATE_DIR/previous-images.txt"
-  echo "  $svc $ref"
+  echo "$svc $ref" >> .deploy-state/previous-images.txt
+  echo "  $svc: $ref"
 done
 
-# --- 2. Pull ----------------------------------------------------------------
+# --- 2. Pull ------------------------------------------------------------------
 say "Pulling"
 compose pull
 
-# --- 3. Back up, if migrations are pending ----------------------------------
-# `alembic current` prints "<rev> (head)" when the database is up to date. grep for
-# the marker rather than parsing: the container also writes structlog JSON to stdout,
-# and a parser that assumes clean output breaks the first time a log line appears.
-pending=1
-if compose run --rm --no-deps api alembic current 2>/dev/null | grep -q '(head)'; then
+# --- 3. Back up, if there is anything to migrate -----------------------------
+# `alembic current` prints "<revision> (head)" when the database is up to date.
+# Captured whole so that a failure here -- a wrong DATABASE_URL, an unreachable
+# database -- stops the deploy with the real error instead of carrying on.
+say "Checking migration state"
+if ! current="$(oneshot alembic current 2>&1)"; then
+  echo "$current" >&2
+  die "could not read the migration state -- the real error is printed just above"
+fi
+if grep -q '(head)' <<<"$current"; then
   pending=0
+  echo "  up to date"
+else
+  pending=1
+  echo "  migrations pending"
 fi
 
 do_backup=0
 case "$BACKUP_MODE" in
   always) do_backup=1 ;;
-  never)  do_backup=0 ;;
-  auto)   [ "$pending" -eq 1 ] && do_backup=1 ;;
+  auto)   do_backup=$pending ;;
 esac
 
 if [ "$do_backup" -eq 1 ]; then
-  say "Migrations pending -- dumping portfolio_rag first"
-  mkdir -p "$BACKUP_DIR"
-  stamp="$(date -u +%Y%m%dT%H%M%SZ)"
-  out="$BACKUP_DIR/portfolio_rag-$stamp.dump"
-  # Custom format (-Fc), schema-scoped, no ownership or ACLs -- so it restores into
-  # a database whose roles are named differently without a pile of errors.
-  docker exec "$PG_CONTAINER" pg_dump \
-      -U "$PG_USER" -d "$PG_DB" \
-      --schema=portfolio_rag --no-owner --no-privileges -Fc > "$out"
-  # An empty dump is a failed dump that exited 0 -- catch it here, not at restore.
-  [ -s "$out" ] || { echo "dump is empty: $out" >&2; exit 1; }
-  echo "  $out ($(du -h "$out" | cut -f1))"
-  find "$BACKUP_DIR" -name 'portfolio_rag-*.dump' -mtime "+$RETAIN_DAYS" -print -delete
-else
-  say "No migrations pending -- skipping backup"
+  schema_exists="$(docker exec "$PG_CONTAINER" psql -U "$PG_USER" -d "$PG_DB" -tAc \
+    "select 1 from pg_namespace where nspname = '$PG_SCHEMA'")"
+
+  if [ "$schema_exists" != "1" ]; then
+    # First deploy: nothing exists yet, so there is nothing to lose.
+    say "Backup skipped -- $PG_SCHEMA does not exist yet"
+  else
+    say "Backing up $PG_SCHEMA"
+    mkdir -p "$BACKUP_DIR"
+    out="$BACKUP_DIR/$PG_SCHEMA-$(date -u +%Y%m%dT%H%M%SZ).dump"
+
+    # Run inside the Postgres container, so pg_dump is always the server's own
+    # version. No -t on docker exec: a TTY would corrupt the binary dump.
+    docker exec "$PG_CONTAINER" pg_dump -U "$PG_USER" -d "$PG_DB" \
+      --schema="$PG_SCHEMA" --no-owner --no-privileges -Fc > "$out"
+
+    # An empty file is a failed dump that exited 0. Refuse to migrate on it.
+    [ -s "$out" ] || die "backup is empty: $out -- not migrating"
+    echo "  $out ($(du -h "$out" | cut -f1))"
+
+    find "$BACKUP_DIR" -name "$PG_SCHEMA-*.dump" -mtime "+$BACKUP_RETENTION_DAYS" -print -delete
+  fi
 fi
 
-# --- 4. Migrate -------------------------------------------------------------
+# --- 4. Migrate ---------------------------------------------------------------
 say "Migrating"
-compose run --rm --no-deps api alembic upgrade head
+oneshot alembic upgrade head
 
-# --- 5. Restart -------------------------------------------------------------
+# --- 5. Restart ---------------------------------------------------------------
 say "Starting"
-compose up -d
-compose ps
+compose up -d --remove-orphans
 
-# --- 6. Readiness -----------------------------------------------------------
-# From inside the container, because this service publishes no host port and the
-# host is not on traefik_proxy. Uses the image's own Python; no extra image to pull.
-say "Readiness"
-ready=0
-for _ in $(seq 1 15); do
-  if compose exec -T api python - <<'PROBE' 2>/dev/null
-import sys, urllib.request
-try:
-    with urllib.request.urlopen("http://127.0.0.1:8000/readyz", timeout=2) as r:
-        sys.exit(0 if r.status == 200 else 1)
-except urllib.error.HTTPError as e:
-    # 404 means the API step has not landed yet. Not a failure of this deploy.
-    sys.exit(0 if e.code == 404 else 1)
-except Exception:
-    sys.exit(1)
-PROBE
-  then ready=1; break; fi
-  sleep 2
-done
-[ "$ready" -eq 1 ] && echo "  ok" || { echo "  NOT READY -- see: compose logs api" >&2; exit 1; }
+# --- 6. Verify ----------------------------------------------------------------
+say "Verifying"
 
-# --- 7. Clean up this project's old images only -----------------------------
-# Label-scoped. A bare `prune -a` on this box would also remove the previous images
-# of the live site, its API, n8n and Traefik -- deleting someone else's rollback
-# target. `prune` never removes an image a container is using, so the images
-# recorded in step 1 survive as long as the containers do.
-say "Pruning images older than ${IMAGE_RETAIN_HOURS}h"
+# The worker has to be up and staying up. A few seconds' grace, because a
+# container that crashes on start is briefly "running" before it is not.
+sleep 5
+worker_cid="$(compose ps -q worker 2>/dev/null || true)"
+[ -n "$worker_cid" ] || die "worker container was not created -- see: docker compose -f $COMPOSE_FILE logs worker"
+worker_state="$(docker inspect --format '{{.State.Status}}' "$worker_cid")"
+[ "$worker_state" = "running" ] || die "worker is '$worker_state' -- see: docker compose -f $COMPOSE_FILE logs worker"
+echo "  worker: running"
+
+# The API cannot run until the API module exists (build step 4). Reported, not
+# treated as a failure, so the deploy is usable for the worker in the meantime.
+api_cid="$(compose ps -q api 2>/dev/null || true)"
+if [ -z "$api_cid" ]; then
+  echo "  api: not deployed"
+else
+  api_state="$(docker inspect --format '{{.State.Status}}' "$api_cid")"
+  if [ "$api_state" = "running" ]; then
+    echo "  api: running"
+  else
+    echo "  api: $api_state (expected until the API is built)"
+  fi
+fi
+
+# The real check: exactly what the worker does every hour, minus the writing.
+# Proves the image runs, .env is valid, GitHub and the database are reachable,
+# and the schema is in place. Reads only; spends nothing.
+echo
+oneshot python -m portfolio_ai.ingestion --dry-run \
+  || die "ingestion dry run failed -- the hourly job would fail the same way"
+
+# --- 7. Clean up this project's old images only ------------------------------
+# Label-scoped on purpose: this server also runs the site, n8n and Postgres, and
+# a bare `prune -a` would delete their previous images too.
+say "Pruning this project's images older than ${IMAGE_RETENTION_HOURS}h"
 docker image prune -af \
-  --filter "until=${IMAGE_RETAIN_HOURS}h" \
+  --filter "until=${IMAGE_RETENTION_HOURS}h" \
   --filter "label=$IMAGE_LABEL"
 
 say "Deployed"
@@ -608,78 +766,148 @@ say "Deployed"
 ### Install
 
 ```bash
-# Quoted delimiter ('EOS'): without the quotes the shell expands $svc, $(date) and
-# friends as it writes, and you get a file full of blanks that looks fine.
-sudo tee /usr/local/bin/deploy-portfolio-ai >/dev/null <<'EOS'
-…paste the script above…
-EOS
+sudo nano /usr/local/bin/deploy-portfolio-ai     # paste the script above, save
 sudo chmod 0755 /usr/local/bin/deploy-portfolio-ai
 
-# The two values with no sensible default. Put them where a login shell will see them.
-sudo tee /etc/profile.d/portfolio-ai.sh >/dev/null <<'EOF'
-export PORTFOLIO_AI_PG_CONTAINER=<postgres-container>
-export PORTFOLIO_AI_PG_DB=<db-name>
-export PORTFOLIO_AI_PG_USER=postgres
-EOF
-. /etc/profile.d/portfolio-ai.sh
-
-# Prove the dump path works before trusting it to abort a migration.
-docker exec "$PORTFOLIO_AI_PG_CONTAINER" pg_dump --version
 deploy-portfolio-ai --backup
 ```
 
-That last line is the real test: it forces a dump even with nothing pending, so the backup path is
-exercised on a day when it is not load-bearing.
+The configuration is the block at the top of the script, with this deployment's real values:
+the Postgres container is `postgres`, the database and its owning role are both `portfolio_ai`.
+An earlier version read those from environment variables set in `/etc/profile.d/`, which only
+login shells source — under `sudo` or a fresh terminal they were simply absent and the script
+died on its first lines. If you created that file, it is no longer used and can be deleted.
+
+`--backup` on the first run forces a dump with nothing to migrate, so the backup path is
+proved on a day when it is not load-bearing.
+
+The dump runs as `portfolio_ai`, which owns the database and so can read all of it, through
+`docker exec` into the Postgres container. That relies on the official image trusting
+connections over the local socket, which is also what let you open `psql` without a password
+in §5b.
 
 ---
 
 ## 10. `rollback-portfolio-ai`
 
-**Image-only.** It reads `previous-images.txt`, pins both services to those digests through a
-Compose override, and restarts. It never touches the database.
+**Image-only.** Puts the containers back on the images that were running before the last
+`deploy-portfolio-ai`, which records them before it pulls anything. It never touches the
+database.
+
+```bash
+rollback-portfolio-ai          # shows what it will pin, asks first
+rollback-portfolio-ai --yes    # does not ask
+```
 
 ```bash
 #!/usr/bin/env bash
 # /usr/local/bin/rollback-portfolio-ai
+#
+# Put the containers back on the images that were running before the last
+# deploy-portfolio-ai. Images only -- the database is never touched. Usage:
+#
+#   rollback-portfolio-ai        asks before changing anything
+#   rollback-portfolio-ai --yes  does not ask
 set -euo pipefail
 
-DEPLOY_DIR="${PORTFOLIO_AI_DIR:-/opt/portfolio-ai}"
-COMPOSE_FILE="${PORTFOLIO_AI_COMPOSE:-compose.prod.yaml}"
-STATE="$DEPLOY_DIR/.deploy-state/previous-images.txt"
+# --- Configuration -----------------------------------------------------------
+DEPLOY_DIR="/opt/portfolio-ai"
+COMPOSE_FILE="docker-compose.yml"
+# -----------------------------------------------------------------------------
 
-cd "$DEPLOY_DIR"
-[ -s "$STATE" ] || { echo "no recorded images at $STATE" >&2; exit 1; }
+STATE=".deploy-state/previous-images.txt"   # written by deploy-portfolio-ai
+OVERRIDE=".deploy-state/rollback.yaml"
 
-override="$DEPLOY_DIR/.deploy-state/rollback.yaml"
+ASSUME_YES=0
+case "${1:-}" in
+  -y|--yes) ASSUME_YES=1 ;;
+  "")       ;;
+  *) echo "usage: $(basename "$0") [--yes]" >&2; exit 2 ;;
+esac
+
+say() { printf '\n\033[1m==> %s\033[0m\n' "$*"; }
+die() { printf '\n\033[1;31mFAILED: %s\033[0m\n' "$*" >&2; exit 1; }
+
+cd "$DEPLOY_DIR" || die "$DEPLOY_DIR does not exist"
+[ -f "$COMPOSE_FILE" ] || die "$DEPLOY_DIR/$COMPOSE_FILE not found"
+[ -s "$STATE" ] || die "nothing to roll back to: $DEPLOY_DIR/$STATE is missing or empty"
+
+compose() { docker compose -f "$COMPOSE_FILE" "$@"; }
+
+# Only services still defined in the compose file get pinned. A service recorded
+# before it was commented out would otherwise land in the override with nothing
+# but an image -- no .env, no network, no command -- and compose would start a
+# container with exactly that.
+defined="$(compose config --services)"
+
+say "Images recorded before the last deploy"
 {
   echo "services:"
-  while read -r svc ref; do
+  while read -r svc ref || [ -n "${svc:-}" ]; do
     [ -n "$svc" ] || continue
-    printf '  %s:\n    image: %s\n' "$svc" "$ref"
+    if grep -qx "$svc" <<<"$defined"; then
+      printf '  %s:\n    image: %s\n' "$svc" "$ref"
+      echo "  $svc -> $ref" >&2
+    else
+      echo "  $svc: skipped, no longer in $COMPOSE_FILE" >&2
+    fi
   done < "$STATE"
-} > "$override"
+} > "$OVERRIDE"
 
-echo "Rolling back to:"
-cat "$STATE"
+grep -q "image:" "$OVERRIDE" || die "none of the recorded services is still in $COMPOSE_FILE"
+
 cat <<'WARN'
 
-This reverts the IMAGES ONLY. If the deploy you are undoing applied a migration,
-the older image may not understand the current schema -- in which case the fix is
-restoring the dump from /opt/portfolio-ai/backups, not this script.
+This reverts the IMAGES ONLY. The database is not touched.
+
+If the deploy being undone applied a migration, the older image may not
+understand the newer schema. Then the fix is restoring the dump that
+deploy-portfolio-ai took before migrating -- see backups/ -- not this.
 WARN
 
-read -r -p "Proceed? [y/N] " reply
-[ "$reply" = "y" ] || { echo "aborted"; exit 1; }
+if [ "$ASSUME_YES" -ne 1 ]; then
+  # No terminal to answer from (a script, cron) reads end-of-input: that is a no.
+  read -r -p "Proceed? [y/N] " reply || reply=""
+  case "$reply" in
+    y|Y) ;;
+    *)   die "aborted, nothing changed" ;;
+  esac
+fi
 
-docker compose -f "$COMPOSE_FILE" -f "$override" up -d
-docker compose -f "$COMPOSE_FILE" -f "$override" ps
-echo
-echo "Pinned. The next deploy-portfolio-ai moves forward on :latest again --"
-echo "fix the bad build rather than leaving this in place."
+say "Starting on the recorded images"
+compose -f "$OVERRIDE" up -d
+
+# Same check as the deploy: the worker has to come up and stay up.
+sleep 5
+worker_cid="$(compose ps -q worker 2>/dev/null || true)"
+[ -n "$worker_cid" ] || die "worker container was not created -- see: docker compose logs worker"
+worker_state="$(docker inspect --format '{{.State.Status}}' "$worker_cid")"
+[ "$worker_state" = "running" ] || die "worker is '$worker_state' -- see: docker compose logs worker"
+echo "  worker: running"
+
+say "Rolled back"
+echo "Pinned until the next deploy-portfolio-ai, which moves forward on :latest again."
+echo "Fix the bad build before deploying, or the next deploy brings it straight back."
 ```
 
-The override is not sticky by design: the next `deploy-portfolio-ai` runs without it and moves
-forward. Rollback is a way to stop the bleeding, not a state to live in.
+### Install
+
+```bash
+sudo nano /usr/local/bin/rollback-portfolio-ai     # paste the script above, save
+sudo chmod 0755 /usr/local/bin/rollback-portfolio-ai
+```
+
+It pins images through a Compose override rather than editing `docker-compose.yml`, so the override
+is not sticky: the next `deploy-portfolio-ai` runs without it and moves forward on `:latest` again.
+Rollback is a way to stop the bleeding, not a state to live in — fix the bad build before deploying.
+
+Two things it guards against that the first version did not:
+
+- **A service that has since been commented out is skipped**, not pinned. Otherwise it would land
+  in the override with nothing but an image — no `.env`, no network, no command — and Compose would
+  start a container with exactly that.
+- **No terminal to answer from counts as "no".** Run from a script without `--yes`, it says
+  `aborted, nothing changed` rather than exiting silently.
 
 ---
 
@@ -691,8 +919,8 @@ Everything is JSON, one object per line, on stdout — collected by Docker.
 
 ```bash
 cd /opt/portfolio-ai
-docker compose -f compose.prod.yaml logs -f api
-docker compose -f compose.prod.yaml logs --since 24h worker | grep -v '"level":"info"'
+docker compose logs -f worker
+docker compose logs --since 24h worker | grep -v '"level":"info"'
 ```
 
 **Check the daemon's rotation policy before this box has been running for a year.** Without
@@ -713,7 +941,7 @@ The worker runs supercronic, which logs each job's start and finish to stdout. T
 check the morning after a deploy:
 
 ```bash
-docker compose -f compose.prod.yaml logs --since 12h worker
+docker compose logs --since 12h worker
 ```
 
 An ingestion run that found nothing to do is the normal case — `content_hash` means an unchanged
@@ -723,14 +951,14 @@ document is not re-embedded, so the daily cost after the first run is close to z
 hour for half the year:
 
 ```bash
-docker compose -f compose.prod.yaml exec worker date
+docker compose exec worker date
 ```
 
 Manual runs, when you do not want to wait for the schedule:
 
 ```bash
-docker compose -f compose.prod.yaml run --rm worker python -m portfolio_ai.ingestion --dry-run
-docker compose -f compose.prod.yaml run --rm worker python -m portfolio_ai.ingestion --force
+docker compose run --rm worker python -m portfolio_ai.ingestion --dry-run
+docker compose run --rm worker python -m portfolio_ai.ingestion --force
 ```
 
 > **`--dry-run` first, every time, against production.** It plans and prints and writes nothing,
@@ -749,13 +977,51 @@ Restore is deliberately manual:
 ```bash
 # Into a scratch schema first, always. Never straight over the live one.
 docker exec -i <postgres-container> pg_restore \
-    -U postgres -d <db-name> --no-owner --no-privileges \
+    -U postgres -d portfolio_ai --no-owner --no-privileges \
     --schema=portfolio_rag < /opt/portfolio-ai/backups/portfolio_rag-<stamp>.dump
 ```
 
 > The dump contains columns of type `public.vector`. Restoring into a database without the
 > extension fails on the first `CREATE TABLE` with `type "vector" does not exist` — which reads
-> like a corrupt dump and is not. §5a again.
+> like a corrupt dump and is not. §5f again.
+
+### Collation version mismatch
+
+Found while creating the database: the Postgres data directory on this server was initialised
+under **glibc 2.41** (Debian 13, "trixie") and the container now runs on **glibc 2.36** (Debian
+12, "bookworm"). The image was switched to an older base at some point — a `…-bookworm` tag in
+place of a trixie one, or a floating tag that resolved differently.
+
+`portfolio_ai` is unaffected: it was created from `template0` with Postgres's own builtin
+locale (§5e), which glibc does not touch. **The other databases on the server are affected**,
+including n8n's, and this is worth looking at separately, soon. To see every database's recorded
+version against what the OS now provides:
+
+```sql
+select datname,
+       datcollversion                         as recorded,
+       pg_database_collation_actual_version(oid) as actual
+from pg_database
+where datcollversion is not null;
+```
+
+Why it matters: B-tree indexes on text are stored in collation order. Where glibc changed the rules
+between versions for characters present in the data, those indexes can disagree with how the server
+now compares text — lookups that miss rows that exist, unique constraints that admit duplicates.
+For mostly-ASCII data it is often harmless in practice, but nothing guarantees it, and Postgres logs
+a warning on every connection to an affected database for that reason.
+
+The fixes, in order of preference:
+
+1. **Run the Postgres container on an image matching the data** — a trixie-based tag of the same
+   Postgres and pgvector version. The mismatch disappears for every database at once, with no data
+   touched. This is a change to the Postgres container, which n8n depends on, so back up first.
+2. **Or stay on bookworm and repair each affected database**: `reindex database <name>;` to rebuild
+   text indexes under the current rules, then `alter database <name> refresh collation version;`.
+   Refreshing *without* reindexing only silences the warning.
+
+Do not `alter database template1 refresh collation version` as a shortcut — if option 1 is taken
+later, it would put `template1` out of step in the other direction.
 
 ### Cost
 
@@ -775,7 +1041,7 @@ API's. They must match, and changing one without the other returns 401 to every 
 ```bash
 openssl rand -hex 32
 # edit both .env files, then restart both:
-docker compose -f /opt/portfolio-ai/compose.prod.yaml up -d api
+docker compose -f /opt/portfolio-ai/docker-compose.yml up -d api
 docker compose -f <portfolio-dir>/docker-compose.yml up -d api
 ```
 
@@ -815,8 +1081,10 @@ until then the assistant is describing itself inaccurately to the people asking 
 
 - **`vector` is an untrusted extension** — a non-superuser cannot create it, only skip it when it
   already exists. Check with `select extname from pg_extension where extname='vector'` before the
-  first deploy. §5a.
-- **Never `drop extension vector`** to reinstall it — it cascades into n8n's live table.
+  first deploy. §5f.
+- **Never `drop extension vector`** to reinstall it — it cascades to every vector column in the
+  database. In `portfolio_ai` that is only our embeddings, which is one reason it is a
+  separate database from n8n's.
 - **`ENVIRONMENT=production`, not `local`.** Two guards key off it; `local` would reject a
   port-5432 URL and would let the test fixture believe it may drop schemas here.
 - **Port 5432 in production, 5433 locally.** The 5433 rule is a local-only guard for a local-only

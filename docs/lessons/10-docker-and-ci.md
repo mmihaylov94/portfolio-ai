@@ -277,7 +277,7 @@ The default `CMD` points at `portfolio_ai.api.main:app`, which does not exist ye
 builds; the command fails. That is deliberate — a placeholder that returns something harmless
 would work perfectly and need remembering later, which is a worse outcome than a clear error.
 
-### `docker/compose.yaml` and `docker/compose.prod.yaml`
+### `docker/compose.yaml` and `docker/docker-compose.yml`
 
 The local one exists to answer one question before CI does: does the thing we are about to push
 start? It is not the development loop — that stays `uv run uvicorn --reload` on the host, because

@@ -361,7 +361,7 @@ ai_assistant/
 ├── docker/
 │   ├── Dockerfile                # multi-stage; one image, several entrypoints
 │   ├── compose.yaml              # optional: run the image locally to verify it before deploy
-│   ├── compose.prod.yaml         # EC2 deploy template (external Postgres, traefik_proxy network)
+│   ├── docker-compose.yml        # EC2 deploy template (external Postgres, traefik_proxy network)
 │   └── crontab                   # supercronic schedule: ingest daily, analytics weekly
 ├── alembic.ini                   # minimal; the database URL comes from Settings, not here
 ├── migrations/                   # alembic
@@ -890,8 +890,12 @@ Set `TZ=Europe/London` on the worker so those times mean what they say.
 
 - **Postgres is on `traefik_proxy` and reached by service name** — no published ports, no
   credentials crossing a host boundary. It is the existing instance on the EC2 box, the one n8n
-  uses; this project only adds the `vector` extension and its own `portfolio_rag` schema, and
-  leaves the live n8n tables alone until cutover.
+  uses, but this project has **its own database** on it (`portfolio_ai`), owned by its own
+  role, with the `portfolio_rag` schema inside. n8n's own database is never
+  touched. Separate databases rather than separate schemas because it is a hard boundary rather
+  than a convention: Postgres cannot query across databases, so no bug or wrong `search_path` here
+  can reach n8n's tables, and `drop extension vector` in ours cannot cascade into theirs. The cost
+  is that `vector` must be installed into the new database once, by a superuser.
 - The Express API container gains `PORTFOLIO_AI_URL=http://portfolio-ai:8000` and
   `PORTFOLIO_AI_API_KEY` in its `.env`, plus the `/api/chat` and `/api/chat/feedback` routes.
   It is already on `traefik_proxy`, so it resolves the FastAPI service by name.
@@ -991,7 +995,7 @@ Non-negotiable from the first commit, because git history is published too:
 - **No IPs or hostnames in committed files** — not the LAN address of the dev server, not the
   EC2 host, not container names. They belong in `.env` only. A private-range address is low risk
   by itself, but it maps out your network for anyone reading, and it accretes: one IP in a README
-  becomes three in a runbook. `compose.prod.yaml` is a template, not a copy of the live file, and
+  becomes three in a runbook. `docker/docker-compose.yml` is a template, not a copy of the live file, and
   the only host appearing anywhere in the repo is `mihaylov.io`.
 - Prompts, schema and eval datasets are all fine to publish — none of them are secrets, and they
   are much of what makes the repo worth reading.

@@ -1,0 +1,57 @@
+# Production deploy template. Lives on the server as /opt/portfolio-ai/docker-compose.yml.
+#
+# This file is a template on purpose: it names no hosts, no addresses and no
+# credentials, because the repository is public. Everything specific lives in the
+# .env beside it on the server, which is not in git and never will be.
+#
+# Deploying is one command -- `deploy-portfolio-ai`, see docs/DEPLOYMENT.md §9 --
+# which does this, plus a backup, verification and cleanup:
+#
+#     docker compose pull
+#     docker compose run --rm worker alembic upgrade head
+#     docker compose up -d --remove-orphans
+#
+# Migrations as a separate one-shot rather than in an entrypoint, so the schema
+# change is a step somebody takes and watches, not something that happens
+# invisibly whenever a container restarts.
+
+services:
+  # The chat API. Commented out until it exists: the module this runs lands with
+  # build step 4, and until then the container would start, fail and restart
+  # forever -- churn and log noise on a server shared with the live site and n8n.
+  # Uncomment the whole block when the API is built, then run deploy-portfolio-ai.
+  #
+  # api:
+  #   image: ghcr.io/mmihaylov94/portfolio-ai:latest
+  #   container_name: portfolio-ai
+  #   command: uvicorn portfolio_ai.api.main:app --host 0.0.0.0 --port 8000
+  #   env_file: .env
+  #   networks: [traefik_proxy]
+  #   restart: unless-stopped
+  #   # No Traefik labels, deliberately. This service is not on the internet: the
+  #   # only thing that talks to it is the Express API, from inside the network, at
+  #   # http://portfolio-ai:8000. Publishing it and then guarding it with a bearer
+  #   # token would be two defences where one is needed, and the weaker one would be
+  #   # the one exposed.
+
+  worker:
+    image: ghcr.io/mmihaylov94/portfolio-ai:latest
+    container_name: portfolio-ai-worker
+    command: supercronic /etc/crontab
+    env_file: .env
+    environment:
+      # Without this the container is on UTC and every time in the crontab is
+      # wrong for half the year, in a way nothing reports.
+      TZ: Europe/London
+    networks: [traefik_proxy]
+    restart: unless-stopped
+    # Both services run the same image and differ only in what they run. One
+    # build, one tag, one thing to roll back.
+
+networks:
+  # Already exists on the server: the network Traefik and the portfolio's Express
+  # API are on. Joining it is what lets the Express API reach this service by
+  # name, and what lets this service reach Postgres by name without any port
+  # being published to the host.
+  traefik_proxy:
+    external: true

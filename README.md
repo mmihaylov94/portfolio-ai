@@ -68,7 +68,7 @@ docker compose -f docker/compose.yaml up --build      # run it locally against y
 
 CI runs the same lint, type and test commands on every push and pull request, builds the image
 either way, and pushes `ghcr.io/mmihaylov94/portfolio-ai` only from `main`.
-`docker/compose.prod.yaml` is the deploy template.
+`docker/docker-compose.yml` is the deploy template.
 
 ## Licence
 
