@@ -65,6 +65,21 @@ class EmbeddingError(PortfolioAIError):
     """
 
 
+class AssistantError(PortfolioAIError):
+    """The assistant could not produce an answer.
+
+    Raised when an OpenAI call fails after the SDK has done its own retrying, or
+    comes back unusable -- a response the API marked failed or incomplete. The
+    SDK's exceptions are translated into this one so that the API has exactly one
+    thing to turn into a polite "try again in a moment", rather than a list of
+    OpenAI exception classes that grows every time the SDK adds one. The original
+    is always kept as ``__cause__`` for the logs.
+
+    Not raised for a rejected API key. That is a configuration problem and stays a
+    :class:`ConfigError`, as it does for embeddings.
+    """
+
+
 class PurgeSafetyError(PortfolioAIError):
     """A run would have deleted an implausible share of the knowledge base.
 

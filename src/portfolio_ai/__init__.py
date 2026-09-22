@@ -25,6 +25,7 @@ import asyncio
 import sys
 
 from portfolio_ai.exceptions import (
+    AssistantError,
     ConfigError,
     DocumentRejectedError,
     EmbeddingError,
@@ -56,6 +57,7 @@ if sys.platform == "win32":  # pragma: no cover - platform specific
 __version__ = "0.1.0"
 
 __all__ = [
+    "AssistantError",
     "ConfigError",
     "DocumentRejectedError",
     "EmbeddingError",

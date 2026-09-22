@@ -10,7 +10,7 @@ A production Python system that replaces two n8n workflows powering the AI chat 
 
 1. **Ingestion** — pull Markdown from the `knowledgebase/` folder of the GitHub repo
    `mmihaylov94/my-portfolio`, chunk it by H2 section, embed it with OpenAI, upsert into
-   Postgres/pgvector. Runs daily in production.
+   Postgres/pgvector. Runs hourly in production.
 2. **Assistant** — a RAG chat API ("Rachel") answering questions about that documentation.
    Authenticated endpoint called by the portfolio site's chat box.
 3. **Evals** — an ad-hoc CLI that scores the assistant against a golden dataset so different
@@ -108,9 +108,10 @@ learn Python and Python-for-AI properly. That changes how to work here:
 src/portfolio_ai/
   config.py      logging.py
   db/            pool, documents, chat, feedback, analytics, evals  (raw SQL lives here only)
-  llm/           client, embeddings, pricing
+  llm/           client, embeddings, pricing, responses (the Responses API adapter)
   ingestion/     github, frontmatter, chunking, pipeline, cli
-  assistant/     schemas, classifier, retrieval, agent, memory, prompts/*.md
+  assistant/     classifier, retrieval, agent (the loop), conversation (memory + storage),
+                 postprocess (link filter, fallback), memory, cli, prompts/*.md + loader
   api/           main, security, deps, routers/
   analytics/     signals, clustering, digest, cli
   evals/         datasets, runner, judge, metrics, report, cli
@@ -139,15 +140,25 @@ migrations/      datasets/      tests/unit  tests/integration      docker/
 - **Persona is "Rachel"**, the assistant *for* Mihail Mihaylov — never Mihail himself. Always
   third person about him. She does not introduce herself unless asked who she is.
 - **Three-way classification** gates every message: `out_of_scope` (canned reply, no LLM spend),
-  `small_talk` (short reply, no retrieval), `mihail_related` (full RAG).
+  `small_talk` (short reply, no retrieval), `mihail_related` (full RAG). The classifier is given
+  **the previous exchange** along with the new message. n8n gave it the message alone, which
+  sent "yes please" -- the natural reply to Rachel's own offer of more detail -- to small talk,
+  the one route that cannot search. Measured before it was changed, and it is an input change,
+  not a prompt change.
+- **The first search is required**, not suggested: the knowledge-base route sends
+  `tool_choice="required"` on its first call. The prompt already demands a search before any
+  factual answer; this makes it so, and it is why every `mihail_related` answer has a
+  `top_score`. Later rounds are the model's choice, up to `AGENT_MAX_SEARCH_ROUNDS`.
 - **Search queries are rewritten** before retrieval: strip filler phrases and the name "Mihail",
   keep short keyword-style topical queries. This measurably improves retrieval.
 - **Link rule:** never emit a URL containing `/knowledgebase/` or `/projects/`. Enforced both in
-  the prompt and as a hard post-processing filter in code.
+  the prompt and as a hard filter in code -- one that works on the token stream, holding back
+  only the word in progress, so a forbidden URL never reaches a visitor even mid-answer.
 - **Answer style:** 2–4 sentences, conversational, no section headers, no bullet lists unless
   asked. Offer more detail rather than dumping it.
 - **Defaults carried over from n8n:** chat model `gpt-5-mini`, embeddings `text-embedding-3-small`
-  at 1536 dimensions, `top_k = 20`, memory window 25 messages.
+  at 1536 dimensions, `top_k = 20`, memory window 25 **exchanges** (50 messages -- n8n's
+  setting counts exchanges, and earlier drafts of these notes misread it as messages).
 - **Frontmatter keys** in source docs: `doc_id`, `source_type`, `page_type`, `title`, `url`,
   `tags`, `last_verified`. `doc_id` is the stable identity used for upserts and purges.
 - **Chunking** is one chunk per H2 section, chunk text = `"{section_title}\n\n{section_body}"`.
@@ -156,6 +167,10 @@ migrations/      datasets/      tests/unit  tests/integration      docker/
   and `top_k = 20` is a large fraction of the whole corpus (worth testing a smaller value).
   Articles are authored as H2 questions, which is why section-level chunking works well; keep
   that convention when writing new ones.
+- **Reasoning effort is the biggest lever on how the chat feels.** Same question, 2026-09-22:
+  the n8n-parity default took 26.7s with the first word at 22.4s; `low` 10.6s/7.8s; `minimal`
+  9.2s/5.9s, and cheaper each time. The default stays at parity until the evals in step 5 say
+  what it costs in quality -- `CHAT_REASONING_EFFORT` in `.env` changes it for a session.
 - **Analytics signals are recorded at answer time and cannot be backfilled:** `top_score`
   (best cosine similarity), `fallback_used` (the "I do not have that information" answer) and
   `classification` go on every `chat_messages` row. Build these in with the API, not later.
@@ -208,6 +223,10 @@ uv run python -m portfolio_ai.ingestion --dry-run    # plan only, no DB writes, 
 uv run python -m portfolio_ai.ingestion              # incremental ingest
 uv run python -m portfolio_ai.ingestion --force      # re-embed everything
 
+uv run python -m portfolio_ai.assistant               # chat with Rachel in the terminal
+uv run python -m portfolio_ai.assistant --no-save -v  # store nothing; show what searches found
+uv run python -m portfolio_ai.assistant -m "..."      # ask one question and exit
+
 uv run uvicorn portfolio_ai.api.main:app --reload     # dev API
 
 uv run eval run --dataset golden_v1 --model gpt-5-mini --label baseline
@@ -221,7 +240,9 @@ uv run analytics purge                                # retention sweep (90 days
 ```
 
 Production schedules live in `docker/crontab`, run by the `worker` container with
-`TZ=Europe/London`: ingest daily at 04:00, digest Mondays at 05:30, purge daily at 03:00.
+`TZ=Europe/London`: ingest hourly on the hour, digest Mondays at 05:30, purge daily at
+03:00. Hourly rather than daily because a run that finds nothing changed costs nothing --
+it compares git blob SHAs and stops.
 
 ## Guardrails
 
@@ -258,6 +279,9 @@ Production schedules live in `docker/crontab`, run by the `worker` container wit
 - **Do not commit secrets.** `OPENAI_API_KEY`, `DATABASE_URL`, `PORTFOLIO_AI_API_KEY` and
   `SMTP_APP_PASSWORD` come from `.env`, which is gitignored. The repo is public, so a leaked
   secret is leaked to everyone, permanently, in history.
+- **The terminal chat will not write to production.** `python -m portfolio_ai.assistant`
+  refuses to run with `ENVIRONMENT=production` unless `--no-save` is given, because a smoke
+  test typed into the chat tables is indistinguishable from a visitor afterwards.
 - **Embedding dimension changes are migrations.** Changing `EMBEDDING_DIMENSIONS` or the
   embedding model invalidates every stored vector and requires a full re-embed.
 - **Evals cost money.** A full run makes one chat call plus one judge call per case. Mention the
@@ -270,12 +294,17 @@ Production schedules live in `docker/crontab`, run by the `worker` container wit
 
 ## Current state
 
-**Requirements are final — every open question is closed** (the decisions log is ARCHITECTURE.md
-§13). No code written yet; this folder is not a git repository yet either.
+Steps 1-3 of the build order (ARCHITECTURE.md §12) are done, and **every open requirement
+question is closed** (the decisions log is ARCHITECTURE.md §13).
 
-Build order (ARCHITECTURE.md §12): foundations (incl. `git init`, the public GitHub repo and the
-Actions workflow) → ingestion → assistant core → API (incl. feedback capture) → evals → front end
-and cutover → analytics reporting.
+- **Foundations** — packaging, settings, logging, the async pool, migrations, tests, CI and the
+  image on GHCR. Written up as ten lessons in `docs/lessons/`.
+- **Ingestion** — deployed and running hourly: 11 documents, 111 chunks.
+- **Assistant core** — Rachel answers end to end from the terminal: classify, search, answer,
+  remember, record. No HTTP yet, so nothing is reachable from the site.
+
+Next is **step 4, the API**: FastAPI, bearer auth, rate limits, SSE streaming, and the feedback
+endpoint. Then evals (5), the front end and cutover (6), analytics reporting (7).
 
 Analytics reporting is last on purpose — it needs real traffic to be worth writing. But the
 *capture* (feedback endpoint, `top_score`, `fallback_used`) ships in step 4, because none of it

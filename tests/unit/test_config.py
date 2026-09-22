@@ -61,6 +61,29 @@ def test_retrieval_top_k_is_bounded() -> None:
         _settings(retrieval_top_k=500)
 
 
+def test_assistant_defaults_are_the_n8n_settings() -> None:
+    settings = _settings()
+
+    assert settings.chat_model == "gpt-5-mini"
+    assert settings.classifier_model == "gpt-5-mini"
+    assert settings.chat_reasoning_effort is None
+    assert settings.memory_window_turns == 25
+
+
+def test_reasoning_effort_accepts_the_known_values() -> None:
+    assert _settings(classifier_reasoning_effort="minimal").classifier_reasoning_effort == "minimal"
+
+
+def test_reasoning_effort_rejects_anything_else() -> None:
+    with pytest.raises(ValidationError):
+        _settings(chat_reasoning_effort="extreme")
+
+
+def test_a_blank_reasoning_effort_means_unset() -> None:
+    """`CHAT_REASONING_EFFORT=` in a .env file is someone saying "use the default"."""
+    assert _settings(chat_reasoning_effort="").chat_reasoning_effort is None
+
+
 def test_cors_origins_splits_on_commas() -> None:
     """Environment variables have no notion of a list, so one gets unpacked."""
     settings = _settings(cors_origins="https://a.example, https://b.example")

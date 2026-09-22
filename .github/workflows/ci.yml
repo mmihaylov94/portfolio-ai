@@ -180,6 +180,30 @@ jobs:
             type=raw,value=latest,enable={{is_default_branch}}
             type=sha,prefix=sha-
 
+      # Built into the local Docker daemon first so the next step can run it. The
+      # push below then builds again from the same cache, which costs seconds.
+      - name: Build for testing
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: .
+          file: docker/Dockerfile
+          load: true
+          tags: portfolio-ai:ci
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      # The prompts are Markdown files inside the package, and the image installs
+      # the package rather than copying the source tree. Nothing else would notice
+      # them going missing until the assistant answered its first question in
+      # production with an ImportError.
+      - name: Check the image can load its prompts
+        run: |
+          docker run --rm portfolio-ai:ci python -c "
+          from portfolio_ai.assistant.prompts.loader import ALL
+          print('prompts in the image:', ', '.join(prompt.ref for prompt in ALL))
+          assert len(ALL) == 5
+          "
+
       - name: Build
         uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
         with:

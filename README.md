@@ -8,7 +8,7 @@ built in Python to replace an existing n8n implementation.
 Four parts:
 
 1. **Ingestion** — reads Markdown from a GitHub repository, chunks it by section, embeds it with
-   OpenAI and upserts into Postgres with pgvector. Runs daily.
+   OpenAI and upserts into Postgres with pgvector. Runs hourly.
 2. **Assistant** — a RAG chat API answering questions about that documentation, behind an
    authenticated endpoint.
 3. **Evals** — a harness for comparing models and prompts on retrieval quality, answer quality,
@@ -28,9 +28,17 @@ embedding call, vector query and agent loop iteration is visible in the source.
 
 ## Status
 
-Under construction. Step 1 (foundations) is complete: packaging, configuration, logging, the
-database layer, migrations, tests, the lint and type gates, and CI. Next is ingestion. The build
-order is in [ARCHITECTURE.md](ARCHITECTURE.md) §12.
+Under construction, and useful already.
+
+- **Foundations** — packaging, configuration, logging, the database layer, migrations, tests, the
+  lint and type gates, CI and the published image.
+- **Ingestion** — deployed, and syncing the knowledge base hourly.
+- **Assistant core** — the assistant answers end to end from a terminal: it classifies each
+  message, searches the knowledge base, answers from what it finds, remembers the conversation and
+  records what every answer cost.
+
+Next is the HTTP API, which is what the site will talk to. The build order is in
+[ARCHITECTURE.md](ARCHITECTURE.md) §12.
 
 ## Getting started
 
@@ -50,6 +58,10 @@ uv run alembic upgrade head                  # create the schema
 uv run python -m portfolio_ai.ingestion --dry-run   # plan an ingest; no writes, no spend
 uv run python -m portfolio_ai.ingestion             # sync the knowledge base
 uv run portfolio-ai-validate path/to/knowledgebase  # check articles; no DB, no network
+
+uv run python -m portfolio_ai.assistant             # chat with the assistant in the terminal
+uv run python -m portfolio_ai.assistant -v          # and show what each search found
+uv run python -m portfolio_ai.assistant -m "..."    # ask one question and exit
 ```
 
 A Postgres instance with the `pgvector` extension is required. `DATABASE_URL` must point at it

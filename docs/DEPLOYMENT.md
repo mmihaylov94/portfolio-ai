@@ -965,6 +965,21 @@ docker compose run --rm worker python -m portfolio_ai.ingestion --force
 > and it is the only cheap way to find out that a change to chunking is about to re-embed the
 > entire corpus.
 
+### Asking the assistant something, on the server
+
+The quickest way to prove that the production key, the production database and the production
+knowledge base all work together — before any of it is reachable from the site:
+
+```bash
+docker compose run --rm worker python -m portfolio_ai.assistant --no-save -m "What does Mihail do?"
+```
+
+It prints the answer, the route it took, what the best chunk scored and what the answer cost.
+
+**`--no-save` is not optional here, and the command enforces it.** With `ENVIRONMENT=production`
+it refuses to run without the flag, because anything it wrote would land in the same tables as
+real visitors' conversations and could not be told apart from them afterwards.
+
 ### Backups
 
 `deploy-portfolio-ai` dumps `portfolio_rag` before any migration and keeps 30 days of them in

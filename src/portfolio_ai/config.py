@@ -26,6 +26,12 @@ from portfolio_ai.exceptions import ConfigError
 # have to be repeated in the error message.
 _LOCAL_PGVECTOR_PORT = 5433
 
+# How hard a reasoning model thinks before answering. Declared here rather than next
+# to the code that sends it (llm/responses.py) because Settings needs it, and this
+# module cannot import from llm/ -- llm/ imports this module, and the two would then
+# each need the other to finish loading first.
+type ReasoningEffort = Literal["minimal", "low", "medium", "high"]
+
 
 class Settings(BaseSettings):
     """Every configurable value the project currently uses.
@@ -87,6 +93,28 @@ class Settings(BaseSettings):
 
     retrieval_top_k: int = Field(default=20, ge=1, le=100)
 
+    # --- Assistant ------------------------------------------------------------
+    # The defaults are what the n8n workflow runs, so the first version of the
+    # assistant is a port rather than a port plus changes nobody measured. Step 5's
+    # evals are where any of these should move, one at a time.
+    chat_model: str = "gpt-5-mini"
+    classifier_model: str = "gpt-5-mini"
+    # Unset sends nothing, so the model's own default applies -- medium, for
+    # gpt-5-mini, which is also what n8n sent by never setting it. `minimal` halved
+    # the classifier's latency in a nine-question check; that is a hint, not evidence.
+    classifier_reasoning_effort: ReasoningEffort | None = None
+    chat_reasoning_effort: ReasoningEffort | None = None
+    # How much conversation the model sees, in exchanges: one question plus one
+    # answer. 25 is n8n's number, and n8n's means exchanges too -- its memory node
+    # hands LangChain k=25, which returns the last 2 * k messages. Earlier project
+    # docs read it as 25 messages.
+    memory_window_turns: int = Field(default=25, ge=0, le=100)
+    # How many times the model may search in one answer before it must reply. The
+    # first search is required; after this many the next call has tools switched
+    # off. n8n allowed ten iterations -- a limit that only matters when something
+    # has gone wrong, which is when a lower one is cheaper.
+    agent_max_search_rounds: int = Field(default=3, ge=1, le=10)
+
     # --- Ingestion source -----------------------------------------------------
     # The repository ingestion reads from. Public, so the token below is optional.
     github_repo: str = "mmihaylov94/my-portfolio"
@@ -134,6 +162,19 @@ class Settings(BaseSettings):
         """Accept ``a, b`` as a list, since env vars have no notion of a list."""
         if isinstance(value, str):
             return [item.strip() for item in value.split(",") if item.strip()]
+        return value
+
+    @field_validator("classifier_reasoning_effort", "chat_reasoning_effort", mode="before")
+    @classmethod
+    def _blank_means_unset(cls, value: object) -> object:
+        """Read ``CHAT_REASONING_EFFORT=`` as "not set" rather than as an invalid value.
+
+        An empty assignment is how a lot of people write "leave this at the default"
+        in a .env file. Without this it would fail validation as not one of the four
+        allowed words, which is technically correct and helps nobody.
+        """
+        if isinstance(value, str) and not value.strip():
+            return None
         return value
 
     @model_validator(mode="after")

@@ -14,6 +14,7 @@ import math
 from dataclasses import dataclass
 
 import structlog
+from pgvector import Vector
 from psycopg import AsyncConnection
 from psycopg.rows import DictRow
 
@@ -239,6 +240,76 @@ async def touch_indexed_at(doc_ids: list[str], indexed_at: dt.datetime) -> None:
             "update documents set indexed_at = %s, updated_at = now() where doc_id = any(%s)",
             (indexed_at, doc_ids),
         )
+
+
+@dataclass(frozen=True)
+class RetrievedChunk:
+    """One chunk found by a similarity search, with the document it came from."""
+
+    chunk_id: int
+    doc_id: str
+    title: str
+    url: str | None
+    # The section's slug ("php-laravel") and its heading ("Does Mihail use Laravel?").
+    section: str | None
+    section_title: str | None
+    content: str
+    # Cosine similarity to the query: 1 means pointing the same way, 0 unrelated.
+    # In practice this corpus scores in a narrow band -- the best hit for a good
+    # question lands around 0.5-0.7 -- which is why nothing here uses a fixed cutoff
+    # yet. The analytics step calibrates one from real traffic.
+    score: float
+
+
+async def search_chunks(vector: list[float], *, top_k: int) -> list[RetrievedChunk]:
+    """The ``top_k`` chunks closest to ``vector``, best first.
+
+    ``<=>`` is pgvector's cosine *distance*, which is what the HNSW index from
+    migration 0001 is built for (``vector_cosine_ops``) -- order by the same operator
+    the index was built with, or the index is ignored and every row is scored.
+    Distance runs from 0 (identical) upwards, so ``1 - distance`` turns it into the
+    similarity people expect, where bigger is better.
+
+    The query vector is wrapped in ``Vector`` rather than passed as a list. psycopg
+    sends a Python list as ``float8[]``, and pgvector only converts arrays to vectors
+    *on assignment* -- into a column, as ingestion does. In a comparison there is no
+    ``vector <=> float8[]`` operator, and the query fails. ``Vector`` goes over the
+    wire as a vector in the first place, through the adapter registered on every
+    connection in ``pool.py``.
+
+    Both ``%(query)s`` placeholders are one parameter, sent once. Named placeholders
+    are what allow using a value twice without passing it twice.
+    """
+    pool = await get_pool()
+
+    async with pool.connection() as conn, conn.cursor() as cur:
+        await cur.execute(
+            """
+            select c.id, c.section, c.section_title, c.content,
+                   d.doc_id, d.title, d.url,
+                   1 - (c.embedding <=> %(query)s) as score
+            from chunks c
+            join documents d on d.id = c.document_id
+            order by c.embedding <=> %(query)s
+            limit %(top_k)s
+            """,
+            {"query": Vector(vector), "top_k": top_k},
+        )
+        rows = await cur.fetchall()
+
+    return [
+        RetrievedChunk(
+            chunk_id=row["id"],
+            doc_id=row["doc_id"],
+            title=row["title"],
+            url=row["url"],
+            section=row["section"],
+            section_title=row["section_title"],
+            content=row["content"],
+            score=float(row["score"]),
+        )
+        for row in rows
+    ]
 
 
 def purge_limit(stored: int, fraction: float, grace: int) -> int:

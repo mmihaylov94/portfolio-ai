@@ -396,12 +396,17 @@ values, because running in parallel with an identical dependency set made them r
 cache key and log `Unable to reserve cache` on every run. A warning that appears every time is a
 warning nobody reads by the third week.
 
+### Settled since, by pushing and then deploying
+
+- **The image builds**, and GHCR accepts it: both tags appear, `latest` and `sha-<commit>`.
+- **It runs.** The server pulls `latest` and runs ingestion in it on a schedule, and the deploy
+  script runs `alembic current`, the migrations and a dry run inside the same image before
+  starting anything.
+
 ### Still not verified
 
-- that the image builds at all, and that the `LICENSE` reasoning above is right
 - that the layer cache behaves — the second build after a source-only change should skip the
-  dependency install
-- that GHCR accepts the push and both tags appear
+  dependency install. Nobody has read the timings to check, which is the honest state of it.
 
 ```bash
 docker build -f docker/Dockerfile -t portfolio-ai .

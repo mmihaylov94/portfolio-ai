@@ -12,7 +12,7 @@ Python replacement for the two n8n workflows that currently power the AI chat bo
 
 | # | Deliverable | Runs how |
 |---|-------------|----------|
-| 1 | **Ingestion** — read Markdown docs from a GitHub repo, chunk, embed, upsert into Postgres/pgvector | Scheduled daily in production; manually on demand |
+| 1 | **Ingestion** — read Markdown docs from a GitHub repo, chunk, embed, upsert into Postgres/pgvector | Scheduled hourly in production; manually on demand |
 | 2 | **Assistant** — RAG chat API answering questions about the documentation | Authenticated HTTP endpoint called by the portfolio site |
 | 3 | **Evals** — measure assistant quality across models/configs | Ad-hoc CLI, results persisted for comparison |
 | 4 | **Analytics & feedback** — track what is asked, what fails, and what the docs are missing | Captured continuously, reported weekly |
@@ -24,7 +24,8 @@ That biases every choice toward transparent, readable code over framework magic.
 
 - Multi-tenant / multi-user support. One knowledge base, one site.
 - Replacing n8n entirely — only these two workflows.
-- Real-time (webhook-on-push) ingestion. Daily is sufficient; the repo changes rarely.
+- Real-time (webhook-on-push) ingestion. Hourly is sufficient; the repo changes rarely, and a
+  run with nothing to do costs nothing.
 - A live analytics dashboard. See §10 — traffic does not justify it yet.
 
 ---
@@ -39,7 +40,7 @@ why this section is as detailed as it is.
 
 ### 2.1 `Portfolio | Knowledgebase -> RAG Vector Store`
 
-Triggers: manual, plus schedule (currently **Mondays 06:00** — the new system moves to **daily**).
+Triggers: manual, plus schedule (currently **Mondays 06:00** — the new system moves to **hourly**).
 
 ```
 GitHub tree API (recursive, branch main)
@@ -276,13 +277,20 @@ documents whose content has not changed since the last run.** Only `indexed_at` 
 
 ```sql
 chat_sessions  (id, session_id unique, created_at, last_seen_at, client_ip_hash, user_agent,
-                referrer, first_seen_path)
-chat_messages  (id, session_id fk, role, content, tool_calls jsonb, retrieved_chunk_ids bigint[],
-                classification, top_score real, fallback_used boolean,
-                model, prompt_tokens, completion_tokens, cost_usd, latency_ms, created_at)
+                referrer)
+chat_messages  (id, session_id fk, role, content, reply_to_id fk, tool_calls jsonb,
+                retrieved_chunk_ids bigint[], classification, top_score real,
+                fallback_used boolean, model, prompt_tokens, completion_tokens, cost_usd,
+                latency_ms, first_token_ms, llm_calls jsonb, created_at)
 ```
 
-Memory is the last N (default 25) messages for a `session_id`, mirroring the n8n context window.
+A turn is two rows -- the question and the answer -- written together when the answer is
+complete, with `reply_to_id` pointing from the answer back to its question. Memory is the last
+`MEMORY_WINDOW_TURNS` exchanges (default 25, so 50 rows), which is what n8n's setting meant too.
+`llm_calls` holds one record per OpenAI call behind the answer -- step, model, prompt version,
+tokens, latency, cost -- so "what did this cost" and "where did the time go" are both answerable
+afterwards. `first_token_ms` is how long the visitor waited for words, as opposed to `latency_ms`
+for the whole answer; with streaming those are very different numbers.
 `session_id` is an opaque string minted by the browser (`crypto.randomUUID()` in `localStorage`).
 Existing `@n8n/chat` conversations are **not** migrated — a clean break was accepted, so the old
 `mihaylov_chat_histories` table is simply dropped at cutover.
@@ -362,7 +370,7 @@ ai_assistant/
 │   ├── Dockerfile                # multi-stage; one image, several entrypoints
 │   ├── compose.yaml              # optional: run the image locally to verify it before deploy
 │   ├── docker-compose.yml        # EC2 deploy template (external Postgres, traefik_proxy network)
-│   └── crontab                   # supercronic schedule: ingest daily, analytics weekly
+│   └── crontab                   # supercronic schedule: ingest hourly, analytics weekly
 ├── alembic.ini                   # minimal; the database URL comes from Settings, not here
 ├── migrations/                   # alembic
 │   ├── env.py                    # URL rewriting, schema creation, version_table_schema
@@ -379,9 +387,10 @@ ai_assistant/
 │   │   ├── analytics.py          # the reporting queries
 │   │   └── evals.py
 │   ├── llm/
-│   │   ├── client.py             # AsyncOpenAI wrapper: retries, timeouts, token accounting
-│   │   ├── embeddings.py         # batched embedding with backoff
-│   │   └── pricing.py            # per-model cost table for reporting
+│   │   ├── client.py             # the shared AsyncOpenAI client: timeout, retries
+│   │   ├── responses.py          # the Responses API: one structured call, one streamed
+│   │   ├── embeddings.py         # batched embedding
+│   │   └── pricing.py            # per-model cost table, cached input included
 │   ├── ingestion/
 │   │   ├── github.py             # tree listing + raw file fetch
 │   │   ├── frontmatter.py        # parse + normalise metadata
@@ -389,16 +398,22 @@ ai_assistant/
 │   │   ├── pipeline.py           # orchestration: discover -> diff -> embed -> upsert -> purge
 │   │   └── cli.py                # python -m portfolio_ai.ingestion (--dry-run, --force, --only)
 │   ├── assistant/
-│   │   ├── schemas.py            # ChatRequest / ChatResponse / Citation / FeedbackRequest
-│   │   ├── classifier.py         # 3-way intent classification
-│   │   ├── retrieval.py          # embed query -> cosine search -> dedupe -> context block
-│   │   ├── agent.py              # tool-calling loop over search_knowledgebase
-│   │   ├── memory.py             # load/append conversation history
+│   │   ├── classifier.py         # 3-way routing, given the previous exchange
+│   │   ├── retrieval.py          # the search_knowledgebase tool: embed -> search -> dedupe
+│   │   ├── agent.py              # routing and the tool-calling loop; yields events
+│   │   ├── conversation.py       # memory in, answer out, the turn recorded
+│   │   ├── memory.py             # the history window, and what the classifier is shown
+│   │   ├── postprocess.py        # the streaming link filter; the fallback phrase match
+│   │   ├── cli.py                # python -m portfolio_ai.assistant
+│   │   ├── schemas.py            # ChatRequest / ChatResponse / Citation (step 4)
 │   │   └── prompts/
+│   │       ├── loader.py         # reads the files at import; each carries a version
 │   │       ├── classifier.md
 │   │       ├── rag_agent.md      # the "Rachel" system prompt
 │   │       ├── small_talk.md
-│   │       └── cluster_namer.md  # names question clusters for the digest
+│   │       ├── search_tool.md    # the retrieval tool's description
+│   │       ├── out_of_scope_reply.md
+│   │       └── cluster_namer.md  # names question clusters for the digest (step 7)
 │   ├── api/
 │   │   ├── main.py               # app factory, CORS, lifespan, exception handlers
 │   │   ├── security.py           # bearer auth, rate limiting
@@ -495,7 +510,9 @@ drift, and one that is more lenient than the real parser gives false confidence.
 validator *cannot* check — headings phrased as questions, sections that stand alone — live in
 that repository's `.claude/skills/knowledgebase-articles/` skill.
 
-Schedule: daily at **04:00 Europe/London** (configurable via `docker/crontab`).
+Schedule: **hourly, on the hour** (configurable via `docker/crontab`). A run that finds no
+changed blob SHAs writes nothing and spends nothing, so the frequency costs only a GitHub
+API call.
 
 ---
 
@@ -534,15 +551,20 @@ someone else's conversation. Re-voting updates the existing row rather than inse
 ### Request flow
 
 1. Auth, CORS, rate limit.
-2. Load the last 25 messages for `session_id`.
-3. Classify the message: `out_of_scope` | `small_talk` | `mihail_related`.
+2. Load the last `MEMORY_WINDOW_TURNS` exchanges for `session_id` (default 25, so 50 messages).
+3. Classify the message, **with the previous exchange for context**: `out_of_scope` |
+   `small_talk` | `mihail_related`. Structured output, so the label cannot arrive malformed.
 4. Branch:
    - `out_of_scope` — canned reply, **zero further LLM calls**.
    - `small_talk` — small-talk prompt, no retrieval.
-   - `mihail_related` — agent loop with the `search_knowledgebase` tool.
-5. Persist user and assistant messages with usage metrics, `top_score` and `fallback_used`.
-6. Post-process: strip any URL containing `/knowledgebase/` or `/projects/` as a hard code-level
-   guard, not just a prompt instruction.
+   - `mihail_related` — the tool loop. The **first call must search** (`tool_choice="required"`),
+     later rounds are the model's choice up to `AGENT_MAX_SEARCH_ROUNDS`, and the round after
+     that must answer.
+5. Persist the question and the answer as one transaction, with usage per call, `top_score`,
+   `fallback_used`, the retrieved chunk ids and the timings.
+6. Post-process **as it streams**: any URL containing `/knowledgebase/` or `/projects/` is removed
+   before the text leaves the process, holding back only the word in progress. A code-level
+   guarantee, not a prompt instruction.
 
 ### Retrieval
 
@@ -728,7 +750,7 @@ visitor asks something
   -> low top score / fallback / rephrase / thumbs-down
       -> clustered into a content_gaps row ("people keep asking about X")
           -> write or extend a knowledgebase/*.md article
-              -> daily ingest picks it up
+              -> the hourly ingest picks it up
                   -> analytics promote-case turns the original question into an eval case
                       -> future model/prompt changes are measured against it
 ```
@@ -881,7 +903,7 @@ services:
 `docker/crontab`:
 
 ```cron
-0 4 * * *   python -m portfolio_ai.ingestion          # daily, 04:00 Europe/London
+0 * * * *   python -m portfolio_ai.ingestion          # hourly, on the hour
 30 5 * * 1  python -m portfolio_ai.analytics digest   # weekly, Monday
 0 3 * * *   python -m portfolio_ai.analytics purge    # retention sweep
 ```
@@ -917,8 +939,7 @@ push to main
 ```
 
 The test and type gates run **before** the image is built, so a red build never produces a
-deployable tag. This folder is not a git repository yet — `git init` and creating the GitHub repo
-are part of step 1.
+deployable tag.
 
 ### Configuration
 
@@ -935,8 +956,10 @@ config rather than failing on the first request.
 | `GITHUB_TOKEN` | optional; raises the API rate limit, required if the repo goes private |
 | `CHAT_MODEL` / `CLASSIFIER_MODEL` / `EMBEDDING_MODEL` / `JUDGE_MODEL` | defaults `gpt-5-mini`, `gpt-5-mini`, `text-embedding-3-small`, `gpt-5` |
 | `EMBEDDING_DIMENSIONS` | `1536` — changing this requires a re-embed and a migration |
+| `CHAT_REASONING_EFFORT` / `CLASSIFIER_REASONING_EFFORT` | unset = the model's own default, which is what n8n sends. The largest lever on latency there is |
+| `AGENT_MAX_SEARCH_ROUNDS` | default `3`; the first search is always made |
 | `RETRIEVAL_TOP_K` | default `20` |
-| `MEMORY_WINDOW` | default `25` |
+| `MEMORY_WINDOW_TURNS` | default `25`, counted in exchanges (50 messages), as n8n counts it |
 | `LOW_SCORE_THRESHOLD` | cosine score below which a question counts as a content gap |
 | `RATE_LIMIT_SESSION` / `RATE_LIMIT_IP` | `20/15m` / `60/15m` (the IP limit is enforced in Express) |
 | `DAILY_SPEND_CAP_USD` | hard ceiling; on breach the API returns a polite refusal, not an error |
@@ -1019,10 +1042,13 @@ Non-negotiable from the first commit, because git history is published too:
 | Chat UI | Clean-sheet redesign, reusing the existing palette tokens | §8 |
 | Session continuity | Not preserved; `crypto.randomUUID()` in `localStorage` | §8 |
 | Streaming | SSE from day one | §8 |
+| Model API | OpenAI Responses API, `store=False`, reasoning passed back between tool calls | §8 |
+| Classifier context | The previous exchange, not the message alone as in n8n | §8 |
+| First retrieval | Forced, not left to the model, so every answer records a `top_score` | §8 |
 | Rate limits | 20/session/15m, 60/IP/15m, plus a daily spend ceiling | §8 |
 | Retention | 90 days raw; derived data kept indefinitely | §10 |
 | Digest delivery | Gmail SMTP via `smtplib`, recipient in env | §10 |
-| Ingestion schedule | Daily, 04:00 Europe/London | §11 |
+| Ingestion schedule | Hourly, on the hour | §11 |
 | Environments | Two: local (LAN server, dev-only) and production (EC2) | §11 |
 | Postgres access (prod) | Existing EC2 instance, same Docker network, by service name | §11 |
 | Local database | Existing pgvector container on the LAN server, **port 5433** | §11 |

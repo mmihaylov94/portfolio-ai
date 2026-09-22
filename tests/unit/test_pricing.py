@@ -21,6 +21,26 @@ def test_chat_models_bill_input_and_output_separately() -> None:
     assert cost_usd("gpt-5-mini", 1_000_000, 1_000_000) == Decimal("2.25")
 
 
+def test_a_dated_snapshot_is_priced_as_its_alias() -> None:
+    """Responses name the snapshot that ran, not the alias that was requested. The
+    first live call reported gpt-5-mini-2025-08-07 and was priced at $0."""
+    assert cost_usd("gpt-5-mini-2025-08-07", 1_000_000) == cost_usd("gpt-5-mini", 1_000_000)
+    assert cost_usd("gpt-5-mini-2025-08-07", 1_000_000) > Decimal(0)
+
+
+def test_cached_input_is_billed_at_the_cached_rate() -> None:
+    """A million input tokens of which 800k were cached: 200k at $0.25/M plus
+    800k at $0.025/M. The API counts cached tokens inside input_tokens, so they
+    must be subtracted, not added."""
+    assert cost_usd("gpt-5-mini", 1_000_000, 0, cached_tokens=800_000) == Decimal("0.07")
+
+
+def test_cached_tokens_never_make_the_uncached_part_negative() -> None:
+    # Cannot happen with real API figures. If it ever did, a negative term would
+    # quietly shrink the total, which is the wrong direction for a cost to be wrong in.
+    assert cost_usd("gpt-5-mini", 100, 0, cached_tokens=500) >= Decimal(0)
+
+
 def test_an_unknown_model_returns_zero_rather_than_raising() -> None:
     """A price this table has not caught up with is a reporting gap. Failing an
     ingestion run or an eval sweep over a stale constant would turn it into an
@@ -30,9 +50,9 @@ def test_an_unknown_model_returns_zero_rather_than_raising() -> None:
 
 
 def test_embedding_models_have_no_output_price() -> None:
-    for model, (_, output) in PRICES.items():
+    for model, price in PRICES.items():
         if model.startswith("text-embedding"):
-            assert output == Decimal(0)
+            assert price.output == Decimal(0)
 
 
 def test_estimate_tokens_never_returns_zero_for_real_text() -> None:

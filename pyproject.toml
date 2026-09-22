@@ -151,6 +151,11 @@ warn_required_dynamic_aliases = true
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 
+# Puts tests/ itself on the import path, so both suites can share helpers that are
+# not tests -- tests/openai_fake.py, the stand-in for the OpenAI API. Without it a
+# test in tests/unit can import only what sits in tests/unit.
+pythonpath = ["tests"]
+
 # Integration tests need a reachable Postgres, so they are opt-in. A default
 # suite that fails when you are on a train is a suite people stop running.
 #   uv run pytest                  unit only
