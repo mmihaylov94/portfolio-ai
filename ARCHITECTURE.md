@@ -483,6 +483,20 @@ automates, and keeping one curated source is what makes it work.
   run exits non-zero. One typo in one frontmatter block should not remove an article from the
   assistant's knowledge.
 
+### Validation at the source
+
+`portfolio-ai-validate` is a command in this package that runs the same `parse_document` and
+`chunk_document` against local files — no database, no network, no configuration. The portfolio
+repository calls it from the published image on every commit touching `knowledgebase/**`, so a
+malformed article fails in review rather than silently dropping out of the index days later.
+
+Keeping the rules in one place is the point: a separate checker in the other repository would
+drift, and one that is more lenient than the real parser gives false confidence. Conventions the
+validator *cannot* check — headings phrased as questions, sections that stand alone — live in
+that repository's `.claude/skills/knowledgebase-articles/` skill.
+
+Schedule: daily at **04:00 Europe/London** (configurable via `docker/crontab`).
+
 ---
 
 ## 8. Assistant API

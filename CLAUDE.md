@@ -55,6 +55,15 @@ Settled cross-repo decisions:
   Nothing about the old widget's UX needs reproducing.
 - **Existing conversations are not migrated.** `session_id` is just `crypto.randomUUID()` in
   `localStorage`; `mihaylov_chat_histories` is dropped at cutover.
+- **Article validation lives here, runs there.** `portfolio-ai-validate` is a command in *this*
+  package that calls the same `parse_document` and `chunk_document` the pipeline uses, so
+  "passes CI" and "will be indexed" cannot drift apart. The portfolio repo runs it from the
+  published image in `.github/workflows/knowledgebase.yml` on any commit touching
+  `knowledgebase/**`. **Never reimplement the rules over there** — a checker that disagrees with
+  the real parser is worse than no checker.
+- **`.claude/skills/knowledgebase-articles/` in the portfolio repo** carries the authoring
+  conventions the validator cannot check: H2 headings as questions, self-contained sections,
+  `doc_id` permanence, and why each section becomes one chunk.
 
 Watch out when proxying the streaming endpoint through Express: the response must be piped, not
 buffered, and compression disabled on that route, or SSE arrives as one chunk at the end.
@@ -192,6 +201,8 @@ uv run mypy                                      # types: src, tests and migrati
 uv run pytest                                    # unit; -m integration needs Docker running
 
 uv run alembic upgrade head                      # migrations (creates the portfolio_rag schema)
+
+uv run portfolio-ai-validate ../my-portfolio/knowledgebase   # check articles; no DB, no network
 
 uv run python -m portfolio_ai.ingestion --dry-run    # plan only, no DB writes, no spend
 uv run python -m portfolio_ai.ingestion              # incremental ingest

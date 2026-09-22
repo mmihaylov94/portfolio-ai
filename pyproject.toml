@@ -39,6 +39,13 @@ dev = [
     "types-pyyaml>=6.0",
 ]
 
+[project.scripts]
+# Installed onto PATH, which is what lets another repository run the checker
+# without knowing anything about this one's layout:
+#   docker run --rm -v ./knowledgebase:/kb ghcr.io/mmihaylov94/portfolio-ai \
+#       portfolio-ai-validate /kb
+portfolio-ai-validate = "portfolio_ai.ingestion.validate:app"
+
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"

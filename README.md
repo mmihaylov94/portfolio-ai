@@ -49,6 +49,7 @@ uv run alembic upgrade head                  # create the schema
 
 uv run python -m portfolio_ai.ingestion --dry-run   # plan an ingest; no writes, no spend
 uv run python -m portfolio_ai.ingestion             # sync the knowledge base
+uv run portfolio-ai-validate path/to/knowledgebase  # check articles; no DB, no network
 ```
 
 A Postgres instance with the `pgvector` extension is required. `DATABASE_URL` must point at it
