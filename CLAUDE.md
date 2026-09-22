@@ -2,6 +2,9 @@
 
 Context for Claude Code working in this repository. Read [ARCHITECTURE.md](ARCHITECTURE.md) for
 the full design; this file is the short version plus the working agreements.
+[docs/INGESTION.md](docs/INGESTION.md) and [docs/ASSISTANT.md](docs/ASSISTANT.md) walk through the
+code of the two built flows, module by module -- update them in the same change as the code they
+describe.
 
 ## What this project is
 

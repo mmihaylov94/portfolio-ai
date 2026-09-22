@@ -22,6 +22,8 @@ embedding call, vector query and agent loop iteration is visible in the source.
 ## Documentation
 
 - **[ARCHITECTURE.md](ARCHITECTURE.md)** — design, data model, decisions and the reasoning behind them
+- **[docs/INGESTION.md](docs/INGESTION.md)** — how ingestion works: one run step by step, which module does what, the libraries
+- **[docs/ASSISTANT.md](docs/ASSISTANT.md)** — how the assistant works: one question step by step, which module does what, the libraries
 - **[docs/DEPLOYMENT.md](docs/DEPLOYMENT.md)** — how it is deployed, and the one-command redeploy
 - **[docs/lessons/](docs/lessons/)** — the project built as a lesson series, one concept at a time
 - **[CLAUDE.md](CLAUDE.md)** — working context for Claude Code
