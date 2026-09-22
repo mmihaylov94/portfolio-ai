@@ -46,6 +46,9 @@ uv run pytest                                # unit tests
 uv run pytest -m integration                 # needs a reachable pgvector database
 
 uv run alembic upgrade head                  # create the schema
+
+uv run python -m portfolio_ai.ingestion --dry-run   # plan an ingest; no writes, no spend
+uv run python -m portfolio_ai.ingestion             # sync the knowledge base
 ```
 
 A Postgres instance with the `pgvector` extension is required. `DATABASE_URL` must point at it

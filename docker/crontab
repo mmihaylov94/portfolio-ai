@@ -13,8 +13,25 @@
 # ARCHITECTURE.md section 11 rather than something to work out later.
 
 # Re-read the knowledge base repository and re-embed anything that changed.
-# Overnight because it costs money and nobody is asking questions at 4am.
-0 4 * * *    python -m portfolio_ai.ingestion
+#
+# Hourly rather than daily, and it is worth being clear about why, because the
+# obvious reading is that this runs a hundred times more often than it needs to.
+#
+# A run with nothing to do costs one request to the GitHub tree API and about a
+# second: every file's blob SHA matches what is stored, so nothing is downloaded
+# and nothing is embedded. Twenty-four of those a day is not a cost.
+#
+# What the frequency buys is a bound on staleness -- an article published at
+# 09:05 is answerable by 10:00 rather than the following morning -- and, more
+# importantly, this is the only thing that proves the pipeline still works. A
+# webhook that stops firing is indistinguishable from a repository nobody has
+# committed to. A scheduled run that stops succeeding says so in the logs.
+#
+# It also reconciles drift that never came from a commit: a changed embedding
+# model, a half-finished run, rows removed by hand. Run `--dry-run` by hand when
+# you want to see what it would do, and run it without the flag when you have
+# just published something and do not want to wait for the hour.
+0 * * * *    python -m portfolio_ai.ingestion
 
 # The weekly digest: what visitors asked, what the assistant could not answer,
 # which content gaps are worth writing. Monday morning, before the week starts.

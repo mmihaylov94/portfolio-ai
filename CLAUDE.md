@@ -232,8 +232,12 @@ Production schedules live in `docker/crontab`, run by the `worker` container wit
 - **The database is across the network, not on a local socket.** Batch chunk inserts with
   `execute_many` or `COPY` rather than looping single statements; the round-trips are visible
   here in a way they would not be on localhost.
-- **The purge step needs its safety floor.** If discovery returns fewer documents than the
-  configured minimum, abort instead of deleting.
+- **The purge step is guarded by a share, not a count.** A run may delete at most
+  `INGESTION_MAX_PURGE_FRACTION` of what is stored (plus an `INGESTION_PURGE_GRACE` floor so a
+  tiny corpus is not frozen); beyond that it aborts. A fixed floor was tried first and rejected —
+  it stops protecting as the corpus grows, since a floor of 8 guards 11 documents and guards
+  nothing at 50. Checked twice: optimistically after discovery, before anything is fetched or
+  spent, and exactly at the purge itself.
 - **The n8n tables (`mihaylov_rag_documents`, `mihaylov_chat_histories`) are live production.**
   This project writes only to the `portfolio_rag` schema. Do not touch or drop the old tables
   until cutover is explicitly confirmed.

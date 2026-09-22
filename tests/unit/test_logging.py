@@ -64,6 +64,19 @@ def test_ordinary_fields_are_left_alone(field: str) -> None:
     assert _redact({field: "ordinary value"})[field] == "ordinary value"
 
 
+@pytest.mark.parametrize("field", ["total_tokens", "prompt_tokens", "token_count"])
+def test_token_counts_are_not_mistaken_for_tokens(field: str) -> None:
+    """A regression test for a bug that shipped and ran.
+
+    `token` was matched as a plain substring, so the first ingestion run logged
+    `"total_tokens": "***"` -- and every OpenAI call in the project reported its
+    usage as three asterisks. Nothing failed; the cost reporting just silently
+    returned nothing, which is exactly the over-matching failure the processor's
+    own docstring warned about.
+    """
+    assert _redact({field: 14363})[field] == 14363
+
+
 def test_matching_ignores_case() -> None:
     """An Authorization header arrives capitalised."""
     assert _redact({"Authorization": "Bearer xyz"})["Authorization"] == "***"

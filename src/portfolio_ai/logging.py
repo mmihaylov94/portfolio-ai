@@ -53,14 +53,32 @@ def _redact_secrets(
     ``api_key``, ``private_key`` and ``signing_key`` while leaving those alone.
     Anything genuinely sensitive is almost always qualified.
 
-    Add terms as new ones turn up. Missing one leaks; over-matching quietly
-    replaces data you needed, which is harder to notice.
+    ``token`` needed the same treatment, and did not get it until it bit. It was
+    matched as a plain substring, which also catches ``total_tokens`` and
+    ``prompt_tokens`` -- so the first ingestion run reported ``"total_tokens":
+    "***"`` and every OpenAI call in the project logged its usage as three
+    asterisks. Nothing failed. The cost reporting simply returned nothing, which
+    is precisely the failure this docstring already warned about and did not
+    prevent: over-matching quietly replaces data you needed, and it is much harder
+    to notice than a leak.
+
+    So a secret ``token`` is the whole field name or the end of it, and a count is
+    not. ``github_token`` and ``access_token`` are redacted; ``total_tokens`` and
+    ``token_count`` are left alone.
+
+    Add terms as new ones turn up, and think about the plural each time.
     """
     for key in list(event_dict):
-        if any(
-            word in key.lower()
-            for word in ("_key", "apikey", "token", "password", "secret", "authorization")
-        ):
+        lowered = key.lower()
+
+        # No legitimate field name in this project contains any of these.
+        substring_match = any(
+            word in lowered for word in ("_key", "apikey", "password", "secret", "authorization")
+        )
+        # "token" is a credential; "tokens" is a quantity of them.
+        token_match = lowered == "token" or lowered.endswith("_token")
+
+        if substring_match or token_match:
             event_dict[key] = "***"
 
     return event_dict

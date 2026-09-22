@@ -69,12 +69,58 @@ class Settings(BaseSettings):
     # SecretStr rather than str: see the lesson. Printing this gives "**********".
     openai_api_key: SecretStr
 
+    # How long to wait on an OpenAI call, and how many times the SDK retries a
+    # failure of its own accord. The SDK retries connection errors, timeouts, 429s
+    # and 5xx with exponential backoff; anything else surfaces immediately.
+    openai_timeout_seconds: float = Field(default=30.0, gt=0)
+    openai_max_retries: int = Field(default=3, ge=0, le=10)
+
     embedding_model: str = "text-embedding-3-small"
     # Changing either of these invalidates every vector already stored, so they are
     # configuration in the sense of "recorded", not "tweakable".
     embedding_dimensions: int = Field(default=1536, ge=1)
+    # Inputs per embeddings request. The corpus is ~111 chunks, so this is one or
+    # two calls -- but a batch that grows without a ceiling eventually meets the
+    # per-request token limit, and finding that boundary in production is worse
+    # than never approaching it.
+    embedding_batch_size: int = Field(default=64, ge=1, le=2048)
 
     retrieval_top_k: int = Field(default=20, ge=1, le=100)
+
+    # --- Ingestion source -----------------------------------------------------
+    # The repository ingestion reads from. Public, so the token below is optional.
+    github_repo: str = "mmihaylov94/my-portfolio"
+    github_branch: str = "main"
+    # Only files under this folder are indexed. Widening it is a decision with
+    # consequences -- see ARCHITECTURE.md section 7: the answer to "the assistant
+    # could not answer that" is a new article, not a bigger crawl.
+    github_docs_path: str = "knowledgebase"
+    # Optional. Unauthenticated GitHub API calls are limited to 60 per hour per IP
+    # and a run makes one, so this is headroom rather than a requirement -- but it
+    # becomes required if the repository is ever made private.
+    github_token: SecretStr | None = None
+
+    # --- Ingestion behaviour --------------------------------------------------
+    # How many files to fetch at once. The limit exists to be polite to
+    # raw.githubusercontent.com rather than because anything here is heavy.
+    ingestion_concurrency: int = Field(default=5, ge=1, le=20)
+    # The purge guard. Ingestion deletes any document it did not see this run,
+    # which is how a deleted file leaves the index -- and also exactly how a partial
+    # GitHub failure would wipe the knowledge base.
+    #
+    # The limit is a share of what is stored rather than a fixed count, because a
+    # fixed count stops protecting as the corpus grows: a floor of eight guards
+    # eleven documents and guards nothing at fifty, where a collapse to nine would
+    # clear forty-one and still pass.
+    #
+    # 0.3 allows a run to remove roughly a third of the knowledge base. Removing
+    # more than that in one commit is either a mistake or something worth
+    # confirming by hand.
+    ingestion_max_purge_fraction: float = Field(default=0.3, ge=0.0, le=1.0)
+    # ...except that a share is useless on a small corpus: a third of three
+    # documents is one, so removing a single article from a three-article corpus
+    # would abort. This many deletions are always allowed, whatever the share.
+    ingestion_purge_grace: int = Field(default=2, ge=0)
 
     log_level: Literal["DEBUG", "INFO", "WARNING", "ERROR"] = "INFO"
 

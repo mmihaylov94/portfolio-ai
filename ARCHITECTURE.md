@@ -468,11 +468,20 @@ automates, and keeping one curated source is what makes it work.
 - **Idempotent.** Re-running with no repo changes is a no-op beyond `indexed_at` bumps.
 - **Transactional per document.** A mid-run failure leaves earlier documents correctly updated
   and never leaves a document with zero chunks.
-- **Purge is guarded.** If discovery returns fewer than a configured floor of documents, abort
-  rather than wipe the knowledge base — the n8n version had no such guard.
+- **Purge is guarded, proportionally.** A run may delete at most `INGESTION_MAX_PURGE_FRACTION`
+  of the stored documents — with an `INGESTION_PURGE_GRACE` floor so a three-article corpus is
+  not frozen by its own arithmetic — and aborts rather than wiping the knowledge base. The n8n
+  version has no guard at all. A fixed minimum was the first design and was rejected: it stops
+  protecting as the corpus grows, since a floor of 8 is a real guard over 11 documents and none
+  at 50, where a collapse to 9 would clear 41 and still pass.
 - **Dry run** prints the plan without touching the DB or spending on embeddings.
-
-Schedule: daily at **04:00 Europe/London** (configurable via `docker/crontab`).
+- **`doc_id` collisions are rejected, not merged.** Two files claiming one `doc_id` would
+  otherwise both be embedded while one silently overwrote the other's chunks — reported as two
+  documents indexed and one stored, with no error and one article absent from the index.
+- **A document that fails to parse keeps its last good version.** The file still exists upstream,
+  so it counts as seen and is not purged; its `indexed_at` is deliberately not advanced, and the
+  run exits non-zero. One typo in one frontmatter block should not remove an article from the
+  assistant's knowledge.
 
 ---
 

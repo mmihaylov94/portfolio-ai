@@ -24,7 +24,13 @@ written down rather than assumed.
 import asyncio
 import sys
 
-from portfolio_ai.exceptions import ConfigError, PortfolioAIError, PurgeSafetyError
+from portfolio_ai.exceptions import (
+    ConfigError,
+    DocumentRejectedError,
+    EmbeddingError,
+    PortfolioAIError,
+    PurgeSafetyError,
+)
 
 # Windows picks an event loop that psycopg's async mode cannot use. Without this,
 # the first database call fails with:
@@ -51,6 +57,8 @@ __version__ = "0.1.0"
 
 __all__ = [
     "ConfigError",
+    "DocumentRejectedError",
+    "EmbeddingError",
     "PortfolioAIError",
     "PurgeSafetyError",
     "__version__",
