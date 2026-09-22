@@ -22,6 +22,7 @@ embedding call, vector query and agent loop iteration is visible in the source.
 ## Documentation
 
 - **[ARCHITECTURE.md](ARCHITECTURE.md)** — design, data model, decisions and the reasoning behind them
+- **[docs/DEPLOYMENT.md](docs/DEPLOYMENT.md)** — how it is deployed, and the one-command redeploy
 - **[docs/lessons/](docs/lessons/)** — the project built as a lesson series, one concept at a time
 - **[CLAUDE.md](CLAUDE.md)** — working context for Claude Code
 
