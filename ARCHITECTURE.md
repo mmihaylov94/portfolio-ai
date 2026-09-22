@@ -363,9 +363,10 @@ ai_assistant/
 │   ├── compose.yaml              # optional: run the image locally to verify it before deploy
 │   ├── compose.prod.yaml         # EC2 deploy template (external Postgres, traefik_proxy network)
 │   └── crontab                   # supercronic schedule: ingest daily, analytics weekly
+├── alembic.ini                   # minimal; the database URL comes from Settings, not here
 ├── migrations/                   # alembic
-│   ├── env.py
-│   └── versions/
+│   ├── env.py                    # URL rewriting, schema creation, version_table_schema
+│   └── versions/                 # 0001 knowledge base, 0002 chat+analytics, 0003 evals
 ├── src/portfolio_ai/
 │   ├── config.py                 # Settings (pydantic-settings), single source of env truth
 │   ├── logging.py                # structlog JSON logging

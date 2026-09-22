@@ -20,7 +20,7 @@ Read them in order. Later ones assume the earlier ones.
 | 4 | [Structured logging](04-structured-logging.md) | `logging.py` | ☑ |
 | 5 | [Async Python](05-async-python.md) | `cli.py`, `concurrency.py` | ☑ |
 | 6 | [Postgres with psycopg 3](06-postgres-with-psycopg.md) | `db/pool.py` | ☑ |
-| 7 | Migrations with Alembic | `migrations/`, the full schema | ☐ |
+| 7 | [Migrations with Alembic](07-migrations-with-alembic.md) | `migrations/`, the full schema | ☑ |
 | 8 | Testing | `tests/`, testcontainers | ☐ |
 | 9 | Types and linting | strict mypy, ruff rules | ☐ |
 | 10 | Docker and CI | `Dockerfile`, GitHub Actions | ☐ |

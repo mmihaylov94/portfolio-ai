@@ -51,6 +51,10 @@ packages = ["src/portfolio_ai"]
 [tool.ruff]
 line-length = 100
 target-version = "py312"
+# Lesson files contain Python snippets, and some of them are deliberately wrong --
+# the blocking call in lesson 5, the f-string SQL in lesson 6. Formatting them
+# would quietly rewrite the examples the lessons are teaching from.
+extend-exclude = ["docs"]
 
 [tool.mypy]
 python_version = "3.12"
