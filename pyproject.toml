@@ -36,7 +36,6 @@ dev = [
     "mypy>=1.14",
     "pytest>=8.3",
     "pytest-asyncio>=0.25",
-    "testcontainers[postgres]>=4.9",
     "types-pyyaml>=6.0",
 ]
 
@@ -58,3 +57,22 @@ extend-exclude = ["docs"]
 
 [tool.mypy]
 python_version = "3.12"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+# Integration tests need a reachable Postgres, so they are opt-in. A default
+# suite that fails when you are on a train is a suite people stop running.
+#   uv run pytest                  unit only
+#   uv run pytest -m integration   the rest
+addopts = "-m 'not integration'"
+markers = [
+    "integration: needs a real Postgres. Creates and drops a throwaway schema.",
+]
+
+# Treat every async test as an asyncio test without needing a decorator on each
+# one. The alternative is @pytest.mark.asyncio on everything, and forgetting it
+# does not fail -- pytest builds the coroutine, never awaits it, and reports a
+# pass. That is the lesson 5 trap wearing a different hat.
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"

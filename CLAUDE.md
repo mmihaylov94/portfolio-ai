@@ -86,7 +86,7 @@ learn Python and Python-for-AI properly. That changes how to work here:
 | Config | pydantic-settings, all from env, validated at startup |
 | Logging | structlog, JSON to stdout |
 | Lint / format / types | ruff, mypy (strict) |
-| Tests | pytest, pytest-asyncio; integration tests use `testcontainers`, never the dev database |
+| Tests | pytest, pytest-asyncio; integration tests use a throwaway `pytest_*` schema, never `portfolio_rag` |
 | Local dev | App on the dev machine via `uv run`; pgvector is a container on a LAN server, **port 5433** |
 | Mail | `smtplib` (stdlib) via Gmail SMTP — app password, not the account password |
 | CI/CD | GitHub Actions → GHCR; ruff, mypy and pytest gate the image build |
@@ -221,9 +221,10 @@ Production schedules live in `docker/crontab`, run by the `worker` container wit
 - **Port 5433, not 5432.** Only 5433 has pgvector. A wrong port connects fine and then fails at
   the first migration with `type "vector" does not exist`, which reads like a broken migration
   rather than a wrong host.
-- **Tests must never point at the development database.** Integration tests get a throwaway
-  `testcontainers` instance; if a fixture ever resolves to the LAN host, that is a bug, not a
-  shortcut.
+- **Tests must never touch the `portfolio_rag` schema.** Integration tests create their own
+  `pytest_*` schema on the same instance, migrate into it, and drop it. A test that reads or
+  writes `portfolio_rag` is a bug, not a shortcut. The fixture refuses to run unless
+  `ENVIRONMENT` is `local`, because it drops schemas.
 - **The pgvector container is the user's, not this project's.** Do not add a Postgres service to
   a dev compose file, do not run migrations that drop anything outside `portfolio_rag`, and do
   not assume `CREATE EXTENSION vector` has been run — the first migration should fail loudly if

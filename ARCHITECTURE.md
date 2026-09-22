@@ -161,7 +161,7 @@ correcting either way — and it is a neat illustration of the drift deliverable
 | Session identity | **New scheme; existing conversations are not migrated** | A clean break was accepted, so the id is ours to design rather than inherited from the widget |
 | Packaging | **uv** + `pyproject.toml`, `src/` layout | Fast, reproducible lockfile |
 | Lint / format | **ruff** (lint + format), **mypy** strict | |
-| Tests | **pytest** + `pytest-asyncio`; `testcontainers` for a real pgvector in integration tests | Vector SQL cannot be meaningfully mocked |
+| Tests | **pytest** + `pytest-asyncio`; integration tests run the real migrations into a throwaway schema | Vector SQL cannot be meaningfully mocked |
 | Response delivery | **SSE streaming** from day one | A few seconds per answer is long enough that a spinner feels broken; retrofitting means a second pass across FastAPI, Express and Vue |
 | Index scope | **`knowledgebase/**/*.md` only** | Already supersedes the site copy; duplicates would compete for retrieval on an 11-document corpus |
 | Digest delivery | **Gmail SMTP** (`smtplib`, app password) | No new vendor or account; recipient is env config |
@@ -425,7 +425,7 @@ ai_assistant/
 │   └── golden_v1.yaml            # version-controlled eval cases
 └── tests/
     ├── unit/
-    └── integration/              # testcontainers pgvector
+    └── integration/              # real Postgres, throwaway schema
 ```
 
 **Prompts live in `.md` files, not string literals** — they are long, they are the main tuning
@@ -815,11 +815,17 @@ embedding inserts pays LAN round-trips. Use `execute_many`/`COPY` for chunk inse
 a loop of single statements — worth doing anyway, but noticeable here in a way it would not be
 on a local socket.
 
-**Tests never touch the development database.** Integration tests start their own throwaway
-pgvector container via `testcontainers`, on a pinned image, so local runs, CI and production all
-exercise the same Postgres and pgvector versions. A session-scoped fixture starts it once per
-run. Docker must be running to execute the integration suite; unit tests have no such dependency
-and stay runnable either way.
+**Tests never touch the `portfolio_rag` schema.** Integration tests create a uniquely named
+`pytest_*` schema on the same instance, run the real migrations into it, and drop it afterwards.
+A session-scoped fixture does this once per run, and orphans from a crashed run are swept at the
+start of the next one. The fixture refuses to run unless `ENVIRONMENT` is `local`.
+
+Unit tests need nothing external and are the default suite; integration tests are opt-in with
+`-m integration`, so the whole suite does not require the database to be reachable.
+
+Testcontainers was the original plan and was dropped: Docker is not installed on the development
+machine. CI pins a pgvector service container instead, which is where version parity actually
+matters.
 
 ### Production (EC2)
 
@@ -924,7 +930,7 @@ this repository is public.
 
 1. **Foundations** — `git init` and create the public GitHub repo, `pyproject.toml`, settings,
    logging, DB pool, Alembic and the initial migration against the **existing local pgvector
-   container**, testcontainers fixtures, lint/type/test commands, and the Actions workflow. Set
+   container**, pytest fixtures, lint/type/test commands, and the Actions workflow. Set
    the hygiene rules up front (§12) rather than scrubbing history later.
 2. **Ingestion** — GitHub client, frontmatter parser, chunker, embeddings, pipeline, CLI.
    Verify: row counts and chunk boundaries match what n8n produced.
@@ -994,7 +1000,7 @@ Non-negotiable from the first commit, because git history is published too:
 | Postgres access (prod) | Existing EC2 instance, same Docker network, by service name | §11 |
 | Local database | Existing pgvector container on the LAN server, **port 5433** | §11 |
 | Local dev loop | App on the dev machine via `uv run`; Docker only to verify the image | §11 |
-| Test database | `testcontainers`, pinned image — never the dev database | §11 |
+| Test database | Throwaway `pytest_*` schema on the dev instance; CI pins a service container | §11 |
 | Build / deploy | GitHub Actions → GHCR, server pulls | §11 |
 | Repo visibility | Public, with the hygiene rules in §12 | §12 |
 
