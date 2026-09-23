@@ -5,9 +5,10 @@ thing anyone will tune, and a change to one should read as a diff of prose rathe
 than a diff of a Python string full of escaped quotes.
 
 Each file opens with a small YAML block: a ``version``, where the text came from,
-and what was changed on the way in. The five here were ported from the n8n workflow
-this project replaces and are word for word what production runs today, apart from
-the two corrections listed in ``rag_agent.md``.
+and what was changed on the way in. Five were ported from the n8n workflow this
+project replaces and are word for word what production runs today, apart from the
+two corrections listed in ``rag_agent.md``. The sixth, the reply sent once the daily
+spending limit is reached, is new: n8n had no limit.
 
 **The version is recorded with every answer** (``chat_messages.llm_calls``) and will
 be recorded with every eval run, so a score can always be traced to the prompt that
@@ -54,7 +55,7 @@ class Prompt:
         """A short hash of the text, which the version-pinning test compares against.
 
         Twelve hex characters is 48 bits. The question it answers is "did this text
-        change", asked of five files, so collisions are not a real consideration.
+        change", asked of a handful of files, so collisions are not a real consideration.
         """
         return hashlib.sha256(self.text.encode("utf-8")).hexdigest()[:12]
 
@@ -96,5 +97,8 @@ SEARCH_TOOL = load("search_tool")
 # Not a prompt at all: the fixed reply to out-of-scope questions, which costs no
 # model call. It lives here because it is tuned wording like the rest.
 OUT_OF_SCOPE_REPLY = load("out_of_scope_reply")
+# Also fixed wording: what the API says instead of answering once the day's spending
+# limit is reached (DAILY_SPEND_CAP_USD). Visitors read it, so it is versioned too.
+DAILY_LIMIT_REPLY = load("daily_limit_reply")
 
-ALL = (CLASSIFIER, SMALL_TALK, RAG_AGENT, SEARCH_TOOL, OUT_OF_SCOPE_REPLY)
+ALL = (CLASSIFIER, SMALL_TALK, RAG_AGENT, SEARCH_TOOL, OUT_OF_SCOPE_REPLY, DAILY_LIMIT_REPLY)

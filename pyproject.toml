@@ -17,8 +17,9 @@ dependencies = [
     "pydantic-settings>=2.7",
     # Structured JSON logging
     "structlog>=24.4",
-    # HTTP API
-    "fastapi>=0.115",
+    # HTTP API. The streaming endpoint uses fastapi.sse, which the previous floor
+    # (0.115) predates; 0.141 is the version it was built and tested against.
+    "fastapi>=0.141",
     "uvicorn[standard]>=0.34",
     # Outbound HTTP (GitHub API)
     "httpx>=0.28",

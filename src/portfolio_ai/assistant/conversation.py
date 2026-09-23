@@ -18,16 +18,25 @@ from portfolio_ai.assistant import agent
 from portfolio_ai.assistant.agent import AssistantConfig, Done, Event
 from portfolio_ai.config import get_settings
 from portfolio_ai.db import chat as chat_db
+from portfolio_ai.db.chat import ClientInfo
 
 
 async def chat(
-    session_id: str, message: str, *, config: AssistantConfig | None = None
+    session_id: str,
+    message: str,
+    *,
+    client: ClientInfo | None = None,
+    config: AssistantConfig | None = None,
 ) -> AsyncIterator[Event]:
     """Answer ``message`` in the conversation ``session_id``, and store the turn.
 
     Yields the same events as :func:`agent.respond`, except that the final
     ``Done`` carries the stored answer's ``message_id`` -- which is what the browser
     needs to attach a thumbs up or down to it later.
+
+    ``client`` is where the conversation came from, as the API was told by the
+    proxy in front of it; it is recorded once, when the session is first seen. The
+    terminal chat has no such thing and passes nothing.
 
     No database connection is held while the model is working. The session and its
     history are read before the first call, and the turn is written after the last
@@ -37,7 +46,7 @@ async def chat(
     settings = get_settings()
     asked_at = dt.datetime.now(dt.UTC)
 
-    session_pk = await chat_db.ensure_session(session_id)
+    session_pk = await chat_db.ensure_session(session_id, client)
     history = await chat_db.load_recent_messages(
         session_pk,
         # Exchanges to messages: a window of 25 turns is the last 50 rows.

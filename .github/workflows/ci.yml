@@ -201,8 +201,38 @@ jobs:
           docker run --rm portfolio-ai:ci python -c "
           from portfolio_ai.assistant.prompts.loader import ALL
           print('prompts in the image:', ', '.join(prompt.ref for prompt in ALL))
-          assert len(ALL) == 5
+          assert len(ALL) == 6
           "
+
+      # Start the image exactly as production does -- its default command -- and ask
+      # it for /healthz. This is what catches a server that cannot start: a missing
+      # dependency, a broken import, a lifespan that fails. The unit tests build the
+      # app in-process and never run the command the container runs.
+      #
+      # The database it is pointed at does not exist. That is fine and deliberate:
+      # the connection pool retries in the background, /healthz does not touch it,
+      # and a server that refused to start without its database would restart in a
+      # loop during any database outage instead of reporting it on /readyz.
+      - name: Check the image serves the API
+        run: |
+          docker run -d --name api-check -p 8000:8000 \
+            -e ENVIRONMENT=production \
+            -e DATABASE_URL=postgresql://nobody:nothing@localhost:5432/nothing \
+            -e OPENAI_API_KEY=not-a-real-key-ci-only \
+            -e PORTFOLIO_AI_API_KEY=not-a-real-key-ci-only-not-a-real-key-ci-only \
+            -e IP_HASH_SALT=not-a-real-salt-ci-only-not-a-real-salt-ci-only \
+            portfolio-ai:ci
+          for attempt in $(seq 1 30); do
+            if curl -fsS http://localhost:8000/healthz; then
+              echo
+              docker logs api-check
+              exit 0
+            fi
+            sleep 1
+          done
+          echo "the API did not answer /healthz within 30 s"
+          docker logs api-check
+          exit 1
 
       - name: Build
         uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0

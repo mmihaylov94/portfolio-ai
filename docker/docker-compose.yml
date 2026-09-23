@@ -16,23 +16,42 @@
 # invisibly whenever a container restarts.
 
 services:
-  # The chat API. Commented out until it exists: the module this runs lands with
-  # build step 4, and until then the container would start, fail and restart
-  # forever -- churn and log noise on a server shared with the live site and n8n.
-  # Uncomment the whole block when the API is built, then run deploy-portfolio-ai.
-  #
-  # api:
-  #   image: ghcr.io/mmihaylov94/portfolio-ai:latest
-  #   container_name: portfolio-ai
-  #   command: uvicorn portfolio_ai.api.main:app --host 0.0.0.0 --port 8000
-  #   env_file: .env
-  #   networks: [traefik_proxy]
-  #   restart: unless-stopped
-  #   # No Traefik labels, deliberately. This service is not on the internet: the
-  #   # only thing that talks to it is the Express API, from inside the network, at
-  #   # http://portfolio-ai:8000. Publishing it and then guarding it with a bearer
-  #   # token would be two defences where one is needed, and the weaker one would be
-  #   # the one exposed.
+  # The chat API. Nothing outside the Docker network can reach it: the only caller
+  # is the portfolio's Express API, at http://portfolio-ai:8000, with the bearer
+  # key attached server-side.
+  api:
+    image: ghcr.io/mmihaylov94/portfolio-ai:latest
+    container_name: portfolio-ai
+    command: python -m portfolio_ai.api
+    env_file: .env
+    networks: [traefik_proxy]
+    restart: unless-stopped
+    # How long Docker waits after asking the container to stop before killing it.
+    # Its default of 10 s would cut off an answer mid-sentence on every deploy.
+    # The API needs up to 40: 30 for open requests to finish, then 10 for answers
+    # still being written for visitors who already left (api/main.py).
+    stop_grace_period: 45s
+    # Declared here rather than in the Dockerfile, because the worker runs the same
+    # image and serves no HTTP. The image has no curl; Python it has. /healthz says
+    # the process answers, and nothing more -- a database blip should not make
+    # Docker report the API unhealthy. /readyz is for the deploy script.
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/healthz', timeout=3)
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+    labels:
+      # No routing labels, deliberately: this service is not on the internet. And
+      # this one, so that stays true whatever Traefik's defaults are -- with
+      # exposedByDefault on, a container with no labels at all would get a route.
+      # Publishing it and then guarding it with a bearer token would be two
+      # defences where one is needed, and the exposed one would be the weaker.
+      traefik.enable: "false"
 
   worker:
     image: ghcr.io/mmihaylov94/portfolio-ai:latest
@@ -45,6 +64,9 @@ services:
       TZ: Europe/London
     networks: [traefik_proxy]
     restart: unless-stopped
+    labels:
+      # The same image, so the same EXPOSE 8000 -- and the same reason as above.
+      traefik.enable: "false"
     # Both services run the same image and differ only in what they run. One
     # build, one tag, one thing to roll back.
 

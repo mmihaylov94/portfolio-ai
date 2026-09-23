@@ -22,6 +22,7 @@ PINNED = {
     "rag_agent": (1, "7cbb3c6d8e57"),
     "search_tool": (1, "e8ed50f414ec"),
     "out_of_scope_reply": (1, "915ed598f0a1"),
+    "daily_limit_reply": (1, "f4daad636fed"),
 }
 
 # The n8n export the prompts were ported from. Gitignored -- it carries n8n instance
@@ -83,8 +84,9 @@ def test_an_empty_prompt_is_refused() -> None:
 def test_version_one_prompts_are_word_for_word_what_n8n_runs() -> None:
     """The port is verbatim, apart from the two corrections rag_agent.md lists.
 
-    Only version-1 prompts are compared. Once a prompt is deliberately changed and
-    its version bumped, it has left n8n behind on purpose.
+    Only version-1 prompts that came from n8n are compared. Once a prompt is
+    deliberately changed and its version bumped, it has left n8n behind on purpose;
+    and a prompt written here, like the daily-limit reply, has no original at all.
     """
     nodes = {
         node["name"]: node["parameters"]
@@ -105,5 +107,5 @@ def test_version_one_prompts_are_word_for_word_what_n8n_runs() -> None:
     }
 
     for prompt in ALL:
-        if prompt.version == 1:
+        if prompt.version == 1 and prompt.name in originals:
             assert prompt.text == originals[prompt.name].strip(), prompt.name

@@ -8,9 +8,9 @@
 # is supercronic rather than cron: no MAILTO, no /var/log, nothing to go and read
 # inside a container.
 #
-# None of these modules exist yet. They land with the ingestion, analytics and
-# retention steps; the schedule is here because it is a decision from
-# ARCHITECTURE.md section 11 rather than something to work out later.
+# A line whose command does not exist yet stays commented out until it does. A
+# job that fails every time it runs is noise in the logs, and noise is how a real
+# failure gets missed.
 
 # Re-read the knowledge base repository and re-embed anything that changed.
 #
@@ -35,9 +35,12 @@
 
 # The weekly digest: what visitors asked, what the assistant could not answer,
 # which content gaps are worth writing. Monday morning, before the week starts.
-30 5 * * 1   python -m portfolio_ai.analytics digest
+# Lands with build step 7, once there is traffic worth a digest.
+# 30 5 * * 1   python -m portfolio_ai.analytics digest
 
 # Retention sweep. Chat messages and feedback older than CHAT_RETENTION_DAYS are
-# deleted; content gaps, aggregates and promoted eval cases are kept, so the
-# insight outlives the conversation it came from.
+# deleted, and so are sessions nobody has come back to; content gaps, aggregates
+# and promoted eval cases are kept, so the insight outlives the conversation it
+# came from. Nightly, so nothing outlives the promise by more than a day. Run it
+# with --dry-run by hand to see what it would delete.
 0 3 * * *    python -m portfolio_ai.analytics purge

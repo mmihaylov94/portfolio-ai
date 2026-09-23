@@ -40,7 +40,13 @@ from portfolio_ai.exceptions import (
 #
 # which names an internal class and suggests nothing you would guess. It has to be
 # set before any event loop starts, so the only place that reliably covers scripts,
-# tests, one-liners and the API alike is here, at import.
+# tests and one-liners alike is here, at import.
+#
+# One thing it cannot cover: a server that builds its own loop before importing any
+# of this. uvicorn does exactly that, which is why the API's entry point names its
+# loop outright (api/__main__.py). The development server, run with --reload, gets
+# a compatible loop anyway: uvicorn runs the app in a subprocess then, and picks the
+# selector loop for subprocesses.
 #
 # Doing work on import is exactly what config.py and logging.py avoid, and the
 # trade is worth stating plainly: the alternative is two lines of boilerplate in

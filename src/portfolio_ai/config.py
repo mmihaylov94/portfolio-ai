@@ -12,12 +12,13 @@ arrives as a string that each caller parses in its own way, and a missing variab
 discovered halfway through serving a request rather than when the process boots.
 """
 
+from decimal import Decimal
 from functools import lru_cache
-from typing import Annotated, Literal
+from typing import Literal
 from urllib.parse import urlparse
 
 from pydantic import Field, SecretStr, ValidationError, field_validator, model_validator
-from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
+from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from portfolio_ai.exceptions import ConfigError
 
@@ -25,6 +26,10 @@ from portfolio_ai.exceptions import ConfigError
 # says nothing about which of the two local databases it is, and the same digits then
 # have to be repeated in the error message.
 _LOCAL_PGVECTOR_PORT = 5433
+
+# The shortest API key or hashing key accepted. 32 characters of hex is 128 bits,
+# which nobody guesses; the generator suggested in the error gives 64.
+_MIN_SECRET_LENGTH = 32
 
 # How hard a reasoning model thinks before answering. Declared here rather than next
 # to the code that sends it (llm/responses.py) because Settings needs it, and this
@@ -56,6 +61,13 @@ class Settings(BaseSettings):
         # cause. This checks the .env file and explicit arguments; the surrounding
         # OS environment is not policed, so PATH and friends are unaffected.
         extra="forbid",
+        # Leave the offending value out of validation errors. By default Pydantic
+        # quotes it, which is helpful for a typo and a leak for everything else in
+        # this file: a mistyped key in .env printed its value, and the port check
+        # below printed the whole set of inputs -- database password and OpenAI key
+        # included -- into a traceback that the API logs when it fails to start.
+        # The error still names the variable, which is the part anyone needs.
+        hide_input_in_errors=True,
     )
 
     # Which environment this process is running in. Literal rather than str, so a
@@ -150,31 +162,74 @@ class Settings(BaseSettings):
     # would abort. This many deletions are always allowed, whatever the share.
     ingestion_purge_grace: int = Field(default=2, ge=0)
 
+    # --- API ------------------------------------------------------------------
+    # The bearer token the Express API sends with every request, and the key that
+    # visitors' IP addresses are hashed with. Optional here because only the API
+    # needs them -- the worker and the terminal chat run without -- and the API
+    # refuses to start when either is missing (api/security.py).
+    #
+    # The hashing key is a secret, and has to be. There are only four billion IPv4
+    # addresses, so a plain hash of one is a lookup table away from the address it
+    # was meant to hide; a hash keyed with a secret is not.
+    portfolio_ai_api_key: SecretStr | None = None
+    ip_hash_salt: SecretStr | None = None
+
+    # Questions one conversation may ask in a rolling window. Twenty in fifteen
+    # minutes is more than a person types and less than a loop sends.
+    session_rate_limit: int = Field(default=20, ge=1)
+    session_rate_window_minutes: int = Field(default=15, ge=1)
+    # Answers being written at the same moment, across every visitor. Mostly this
+    # bounds the spend cap below: the cap is checked before an answer starts, so it
+    # can only be overshot by what is already in flight when it is reached.
+    max_concurrent_turns: int = Field(default=10, ge=1, le=100)
+    # The most visitors can spend in any 24 hours, in dollars. Past it, every
+    # message gets a polite "back tomorrow" instead of an answer. 0 turns the chat
+    # off without a deploy. Decimal, like the cost_usd column it is compared with:
+    # binary floats cannot hold 0.1, and this is money.
+    daily_spend_cap_usd: Decimal = Field(default=Decimal("1.00"), ge=0)
+
+    # --- Retention ------------------------------------------------------------
+    # Days a chat message is kept before the nightly purge deletes it, with its
+    # feedback. Promises made in a privacy policy are kept by this number. 0 turns
+    # the purge off, which the purge then says loudly every night.
+    chat_retention_days: int = Field(default=90, ge=0)
+
     log_level: Literal["DEBUG", "INFO", "WARNING", "ERROR"] = "INFO"
 
-    # NoDecode turns off the JSON parsing that pydantic-settings applies to list
-    # fields by default, so the validator below sees the raw string.
-    cors_origins: Annotated[list[str], NoDecode] = Field(default_factory=list)
-
-    @field_validator("cors_origins", mode="before")
-    @classmethod
-    def _split_comma_separated(cls, value: object) -> object:
-        """Accept ``a, b`` as a list, since env vars have no notion of a list."""
-        if isinstance(value, str):
-            return [item.strip() for item in value.split(",") if item.strip()]
-        return value
-
-    @field_validator("classifier_reasoning_effort", "chat_reasoning_effort", mode="before")
+    @field_validator(
+        "classifier_reasoning_effort",
+        "chat_reasoning_effort",
+        "portfolio_ai_api_key",
+        "ip_hash_salt",
+        mode="before",
+    )
     @classmethod
     def _blank_means_unset(cls, value: object) -> object:
         """Read ``CHAT_REASONING_EFFORT=`` as "not set" rather than as an invalid value.
 
         An empty assignment is how a lot of people write "leave this at the default"
         in a .env file. Without this it would fail validation as not one of the four
-        allowed words, which is technically correct and helps nobody.
+        allowed words, which is technically correct and helps nobody -- and for the
+        two secrets, a blank line copied from .env.example would fail the length
+        check below on every command, including the ones that never use them.
         """
         if isinstance(value, str) and not value.strip():
             return None
+        return value
+
+    @field_validator("portfolio_ai_api_key", "ip_hash_salt")
+    @classmethod
+    def _long_enough(cls, value: SecretStr | None) -> SecretStr | None:
+        """Refuse a short secret, and say how to make a proper one.
+
+        A custom check rather than ``Field(min_length=32)``, which works on a
+        SecretStr but reports "at least 32 items" -- correct, and puzzling to read.
+        """
+        if value is not None and len(value.get_secret_value()) < _MIN_SECRET_LENGTH:
+            raise ValueError(
+                f"must be at least {_MIN_SECRET_LENGTH} characters. Generate one with: "
+                'python -c "import secrets; print(secrets.token_hex(32))"'
+            )
         return value
 
     @model_validator(mode="after")

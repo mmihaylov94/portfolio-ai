@@ -131,7 +131,12 @@ USER app
 
 EXPOSE 8000
 
-# The API. This module does not exist yet -- it lands with the API step -- so the
-# image currently builds correctly and this command currently fails. That is
-# deliberate and preferable to a placeholder that would need remembering later.
-CMD ["uvicorn", "portfolio_ai.api.main:app", "--host", "0.0.0.0", "--port", "8000"]
+# The API. `python -m portfolio_ai.api` rather than the uvicorn command, so the
+# server's settings live in one place in code and every log line is JSON from the
+# first (see src/portfolio_ai/api/__main__.py). The worker overrides this with its
+# own command in docker-compose.yml.
+#
+# No HEALTHCHECK here, although the API has one: the worker runs this same image
+# and serves no HTTP, so an image-level check would mark it unhealthy forever. The
+# check is declared on the api service in docker-compose.yml instead.
+CMD ["python", "-m", "portfolio_ai.api"]
