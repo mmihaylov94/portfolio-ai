@@ -86,6 +86,12 @@ learn Python and Python-for-AI properly. That changes how to work here:
   implementation that needs them.
 - When there is a genuine Python choice to make (sync vs async, dataclass vs Pydantic model,
   `TypedDict` vs class), say which and why in one or two sentences, then get on with it.
+- **Review before the owner does.** When a change is ready to hand over, run the `code-reviewer`
+  agent ([.claude/agents/code-reviewer.md](.claude/agents/code-reviewer.md)) on it first, fix or
+  answer every finding, and include its report in the handover. It starts without the session
+  that wrote the code, which is the point: it checks the repo's own rules, the docs against the
+  code and the tests' isolation, and proves what it can by running. **Never use Claude Code's
+  built-in `/code-review`** in this repository, in any form; the owner has ruled it out.
 
 ## Stack
 
