@@ -24,6 +24,7 @@ embedding call, vector query and agent loop iteration is visible in the source.
 - **[ARCHITECTURE.md](ARCHITECTURE.md)** — design, data model, decisions and the reasoning behind them
 - **[docs/INGESTION.md](docs/INGESTION.md)** — how ingestion works: one run step by step, which module does what, the libraries
 - **[docs/ASSISTANT.md](docs/ASSISTANT.md)** — how the assistant works: one question step by step, which module does what, the libraries
+- **[docs/API.md](docs/API.md)** — how the HTTP API works: one request step by step, the contract, the limits, the libraries
 - **[docs/DEPLOYMENT.md](docs/DEPLOYMENT.md)** — how it is deployed, and the one-command redeploy
 - **[docs/lessons/](docs/lessons/)** — the project built as a lesson series, one concept at a time
 - **[CLAUDE.md](CLAUDE.md)** — working context for Claude Code
@@ -38,9 +39,12 @@ Under construction, and useful already.
 - **Assistant core** — the assistant answers end to end from a terminal: it classifies each
   message, searches the knowledge base, answers from what it finds, remembers the conversation and
   records what every answer cost.
+- **API** — the assistant over HTTP, private to the server's Docker network: authenticated,
+  rate-limited, capped on daily spend, streaming answers as server-sent events, with thumbs
+  up/down feedback and a nightly 90-day retention sweep.
 
-Next is the HTTP API, which is what the site will talk to. The build order is in
-[ARCHITECTURE.md](ARCHITECTURE.md) §12.
+Next are the evals, which establish the baseline the assistant is judged against before the site
+switches over. The build order is in [ARCHITECTURE.md](ARCHITECTURE.md) §12.
 
 ## Getting started
 
@@ -64,6 +68,9 @@ uv run portfolio-ai-validate path/to/knowledgebase  # check articles; no DB, no 
 uv run python -m portfolio_ai.assistant             # chat with the assistant in the terminal
 uv run python -m portfolio_ai.assistant -v          # and show what each search found
 uv run python -m portfolio_ai.assistant -m "..."    # ask one question and exit
+
+uv run uvicorn portfolio_ai.api.main:app --reload   # the API, reloading on changes; /docs for the schema
+uv run python -m portfolio_ai.analytics purge --dry-run   # what the retention sweep would delete
 ```
 
 A Postgres instance with the `pgvector` extension is required. `DATABASE_URL` must point at it

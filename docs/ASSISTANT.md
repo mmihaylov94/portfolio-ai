@@ -2,7 +2,7 @@
 
 How a question becomes an answer: what happens during one turn, which module does which part, and
 what each library is used for. Today the assistant runs from a terminal
-(`python -m portfolio_ai.assistant`). The HTTP API the site will call arrives in step 4, and it
+(`python -m portfolio_ai.assistant`) and behind the HTTP API ([API.md](API.md)), and the API
 wraps exactly what is described here. The reasoning behind the design is in
 [ARCHITECTURE.md](../ARCHITECTURE.md) §8. This document is about the code.
 
@@ -13,7 +13,7 @@ reads the events of the layer below it with `async for`, adds one thing, and `yi
 events upward. No layer waits for the answer to be finished before passing it on.
 
 ```
-cli.py   (and in step 4, the API)   prints each event / sends it to the browser
+cli.py, api/turns.py                prints each event / sends it to the browser
  └─ conversation.chat()             + history before, storage after, the stored message id
      └─ agent.respond()             + classification, the link filter, the final result
          └─ agent._route()          + one of three paths, including the search loop
@@ -30,8 +30,8 @@ The design was chosen because three requirements all want this shape:
 
 - A visitor should see the first words while the rest is still being written, so every piece of
   text is yielded upward the moment OpenAI sends it.
-- The API in step 4 should have nothing to assemble. It will forward the events to the browser as
-  server-sent events, one for one.
+- The API should have nothing to assemble. It forwards the events to the browser as server-sent
+  events, one for one (see [API.md](API.md)).
 - The evals in step 5 must not write chat rows. They will call `respond()`, one layer below where
   anything is stored, and keep only the final event.
 
@@ -53,7 +53,8 @@ Follow "What projects has Mihail worked on?" through a saved conversation. The t
 real run on 2026-09-22, with the default settings.
 
 **Memory.** `conversation.chat(session_id, message)` finds or creates the session's row
-(`db.chat.ensure_session`) and loads its last 50 messages (`load_recent_messages`): 25 exchanges,
+(`db.chat.ensure_session`, which the API also hands where the visitor came from, recorded once)
+and loads its last 50 messages (`load_recent_messages`): 25 exchanges,
 which is what n8n's memory setting meant. History holds questions and final answers only, as n8n
 stored it. The searches behind earlier answers are not replayed, because a follow-up gets a fresh
 search written for the question actually being asked. The database connection goes back to the
@@ -198,8 +199,8 @@ nothing can be referred to by id later, so the reasoning is requested in encrypt
 The SDK also does the embedding, through `embed_texts()` from ingestion. It retries connection
 errors, timeouts, rate limits and server errors on its own, three times, as configured in
 `llm/client.py`. Whatever still fails arrives as an `openai.APIError`, which `domain_error()` turns
-into an `AssistantError`, or a `ConfigError` if the key was rejected. The API in step 4 will then
-have one error to translate into a polite "try again in a moment". One surprise in the installed
+into an `AssistantError`, or a `ConfigError` if the key was rejected. The API then has one error
+to translate into a polite "try again in a moment" (`api/errors.py`). One surprise in the installed
 version, 3.16: the SDK does its HTTP through `httpx2`, a separate package from the `httpx`
 ingestion uses. It wraps network failures in its own exceptions, so catching `APIError` is enough,
 but it is also why the test fake is built on `httpx2`.

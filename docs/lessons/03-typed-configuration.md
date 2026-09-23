@@ -143,6 +143,17 @@ value to the declared type, which is too late here — there is nothing sensible
 comma-separated string into. A "before" validator runs first, on the raw input, and hands back
 something the normal machinery can then work with.
 
+> **Since changed.** `cors_origins` was removed when the API was built. CORS is a rule browsers
+> apply to web pages, and nothing in a browser ever calls this API: the portfolio site's own
+> server does. The pattern above is still how to read a list from the environment, and
+> `git show de50815:src/portfolio_ai/config.py` shows the field as this lesson built it. The same
+> change set `hide_input_in_errors=True` on the settings, because a validation error quoting its
+> input turned out to print database passwords into the API's startup logs.
+>
+> If your `.env` still has a `CORS_ORIGINS` line, delete it. With the field gone, `extra="forbid"`
+> rejects the key, so everything that reads the settings refuses to start: the tests, the command
+> line tools and the API.
+
 Two small details in there worth naming, since they are Python idioms you will see constantly.
 `@classmethod` is required because the validator runs during class construction, before any
 instance exists. And `default_factory=list` rather than `default=[]` avoids the mutable-default
@@ -331,7 +342,8 @@ real code the project keeps.
    code can still get the value out?
 2. What would go wrong with `settings = Settings()` at the bottom of `config.py`?
 3. `extra="forbid"` means a stale key in `.env` now breaks startup. What does that buy?
-4. Why does the `cors_origins` validator need `mode="before"`?
+4. Why does the `cors_origins` validator need `mode="before"`? (The field has since been removed;
+   the question stands.)
 5. What does `from exc` add, and what happens if you leave it out?
 6. `database_url` has no default while `db_schema` does. What is the rule being applied?
 

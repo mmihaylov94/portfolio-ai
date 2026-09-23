@@ -49,7 +49,7 @@ host ports at all.
 | Services | **Two from one image** — `api` (FastAPI) and `worker` (supercronic) | §2 |
 | Database | **Its own database, `portfolio_ai`**, on the Postgres already on the box | §5 |
 | Schema | **`portfolio_rag`**, owned entirely by this project | §5, §11 |
-| Exposure | **None.** No published ports, no Traefik labels, internal only | §2 |
+| Exposure | **None.** No published ports, no routing labels (`traefik.enable=false`), internal only | §2 |
 | Auth | Bearer token, checked by FastAPI, attached server-side by the Express API | §6, §12 |
 | Migrations | **Alembic, run as a one-shot before the containers start** | §8, §9 |
 | Timezone | **`TZ=Europe/London`** on the worker | §6, §11 |
@@ -83,7 +83,7 @@ the host part of `DATABASE_URL`. §5a finds it and §5g proves it resolves.
                                       v
                               +---------------+
                               |  portfolio-ai |   FastAPI, no host port,
-                              |     :8000     |   no Traefik labels
+                              |     :8000     |   no routing labels
                               +---------------+
                                       |
         +-----------------------------+----------------+
@@ -98,12 +98,14 @@ the host part of `DATABASE_URL`. §5a finds it and §5g proves it resolves.
                         all of the above on: traefik_proxy
 ```
 
-- **`portfolio-ai`** — the chat API. **Deliberately has no Traefik labels and publishes no ports.**
-  The only thing that talks to it is the Express API, from inside the network. Putting it on the
-  internet and then guarding it with a bearer token would be two defences where one is needed, and
-  the exposed one would be the weaker.
+- **`portfolio-ai`** — the chat API. **Deliberately has no routing labels and publishes no
+  ports**; its one label, `traefik.enable=false`, keeps it off Traefik whatever Traefik's defaults
+  are. The only thing that talks to it is the Express API, from inside the network. Putting it on
+  the internet and then guarding it with a bearer token would be two defences where one is needed,
+  and the exposed one would be the weaker. [API.md](API.md) walks through the code and the
+  contract.
 - **`portfolio-ai-worker`** — the same image, running `supercronic /etc/crontab` instead: hourly
-  ingestion, the weekly digest, the retention sweep. Hourly sounds excessive and is not: a run
+  ingestion and the nightly retention sweep, and the weekly digest once step 7 builds it. Hourly sounds excessive and is not: a run
   with nothing to do costs one request to the GitHub tree API and about a second, because every
   file's blob SHA matches what is stored. What the frequency buys is a bound on staleness and,
   more importantly, a heartbeat — a webhook that stops firing looks exactly like a repository
@@ -405,9 +407,8 @@ chmod 644 docker-compose.yml
 
 ### `.env`
 
-Every key here matches a field on `Settings` in `src/portfolio_ai/config.py`. Unrecognised keys are
-**rejected at startup**, not ignored — a typo stops the container with a message naming it, rather
-than quietly falling back to a default. Start from `.env.example` in the repository, which is
+Every key here matches a field on `Settings` in `src/portfolio_ai/config.py`, apart from `TZ`, which
+is for the container rather than the app. Start from `.env.example` in the repository, which is
 always current, and set these for production:
 
 ```bash
@@ -422,8 +423,19 @@ DB_SCHEMA=portfolio_rag
 OPENAI_API_KEY=<real key>
 
 # Must be IDENTICAL to PORTFOLIO_AI_API_KEY in the Express API's own .env (§12).
+# At least 32 characters; the API will not start without it.
 # Generate with: openssl rand -hex 32
 PORTFOLIO_AI_API_KEY=<generated>
+
+# The key visitors' IP addresses are hashed with before they are stored. Not shared
+# with anything. At least 32 characters; the API will not start without it.
+# Generate with: openssl rand -hex 32
+IP_HASH_SALT=<generated>
+
+# The most visitors can spend in any 24 hours, in dollars. Past it, every message
+# gets a polite "back tomorrow" instead of an answer. 1.00 is about 250 answers.
+# 0 turns the chat off. See "The daily spending limit" in §11.
+DAILY_SPEND_CAP_USD=1.00
 
 # Source of the knowledge base. The defaults are already correct for this
 # deployment, so these are here to be findable rather than because they need
@@ -437,10 +449,16 @@ GITHUB_DOCS_PATH=knowledgebase
 
 TZ=Europe/London
 LOG_LEVEL=INFO
-CORS_ORIGINS=https://mihaylov.io
 ```
 
-Everything else in `.env.example` has a working default and can be left out. Two are worth
+> **A misspelt key is ignored here, not rejected.** Locally, `Settings` reads `.env` itself and
+> refuses a key it does not know (`extra="forbid"`). In the containers it never sees the file:
+> Compose hands its lines over as environment variables, and settings are read from the
+> environment by name -- a variable that matches no setting is simply not looked at. So on this
+> box `DAILY_SPEND_CAP_UDS=5` would be ignored and the cap would stay at its default. Check what
+> the containers actually see with the command in §8 step 2, after any edit.
+
+Everything else in `.env.example` has a working default and can be left out. A few are worth
 knowing about before you need them:
 
 - **`INGESTION_MAX_PURGE_FRACTION`** (default `0.3`) caps how much of the knowledge base one run
@@ -449,6 +467,9 @@ knowing about before you need them:
   one run rather than lowering the guard permanently.
 - **`EMBEDDING_MODEL`** and **`EMBEDDING_DIMENSIONS`** are recorded, not tunable. Changing either
   invalidates every stored vector and needs a full re-embed and a migration.
+- **`SESSION_RATE_LIMIT`** (20 per `SESSION_RATE_WINDOW_MINUTES`, 15) and **`MAX_CONCURRENT_TURNS`**
+  (10) are the API's other limits. The per-IP limit is the Express API's.
+- **`CHAT_RETENTION_DAYS`** (90) is how long chat is kept; the nightly purge enforces it.
 
 > **`ENVIRONMENT=production` matters more than it looks.** Two guards in this codebase key off it:
 > the port validator in `config.py` (which would reject a 5432 URL if this said `local`), and the
@@ -498,10 +519,18 @@ cd /opt/portfolio-ai
 docker compose pull
 
 # 2. Check what the container thinks its configuration is, before it tries to use it.
-#    Settings validates at import, so a bad .env fails here with a message naming the
-#    variable -- which is a much better place to find out than mid-migration.
-docker compose run --rm --no-deps worker \
-    python -c "from portfolio_ai.config import get_settings; s=get_settings(); print(s.environment, s.db_schema)"
+#    A value that does not validate fails here with a message naming the variable --
+#    a much better place to find out than mid-migration. A misspelt key does not
+#    fail at all (see the note in §6), which is why this prints what was read.
+docker compose run --rm --no-deps worker python -c "
+from portfolio_ai.config import get_settings
+s = get_settings()
+print('environment   ', s.environment, s.db_schema)
+print('API secrets   ', 'key set' if s.portfolio_ai_api_key else 'KEY MISSING', '/', 'salt set' if s.ip_hash_salt else 'SALT MISSING')
+print('limits        ', s.session_rate_limit, 'per', s.session_rate_window_minutes, 'min;', s.max_concurrent_turns, 'in flight')
+print('spending cap  ', '$' + str(s.daily_spend_cap_usd), 'a day')
+print('retention     ', s.chat_retention_days, 'days')
+"
 
 # 3. Migrate. Creates the portfolio_rag schema and eleven tables. Additive only --
 #    it touches nothing outside its own schema.
@@ -543,12 +572,53 @@ And that the Express API can reach it, from the Express container rather than th
 is not on the network and a `curl` from there proves nothing:
 
 ```bash
-docker exec my-portfolio-api wget -qO- http://portfolio-ai:8000/healthz
+docker exec my-portfolio-api wget -qO- http://portfolio-ai:8000/healthz   # {"status":"ok"}
 ```
 
-> **`/healthz` and `/readyz` do not exist yet.** They land with the API step. Until then the check
-> is `docker compose ps` showing the container up and the logs showing no traceback. The deploy
-> script treats a missing health endpoint as "skipped", not "failed" — see §9.
+Then the key and the database, from another container on the network, the way the Express API
+will call it. Only reads and a 404, so nothing is written: a real question here would be stored
+among visitors' conversations, which is why the answer path is checked with the terminal chat's
+`--no-save` instead (§11).
+
+```bash
+docker compose run --rm --no-deps -T worker python - <<'EOF'
+import json, os, urllib.error, urllib.request
+
+def status(path, body=None, key=None):
+    request = urllib.request.Request(
+        "http://portfolio-ai:8000" + path,
+        data=json.dumps(body).encode() if body else None,
+        headers={"Content-Type": "application/json"},
+    )
+    if key:
+        request.add_header("Authorization", "Bearer " + key)
+    try:
+        with urllib.request.urlopen(request, timeout=10) as response:
+            return response.status
+    except urllib.error.HTTPError as error:
+        return error.code
+
+vote = {"session_id": "deploy-check-0000", "rating": 1}
+key = os.environ["PORTFOLIO_AI_API_KEY"]
+print("readyz                     ", status("/readyz"), "(expect 200)")
+print("feedback without the key   ", status("/v1/messages/1/feedback", vote), "(expect 401)")
+print("feedback with the key      ", status("/v1/messages/1/feedback", vote, key), "(expect 404)")
+EOF
+```
+
+The 404 is the point of the third line: it means the key was accepted and the database was
+queried, and no answer 1 belongs to a conversation called `deploy-check-0000`.
+
+And that nothing outside can reach it:
+
+```bash
+# From anywhere: the site answers this path, not the API. Expect 405 from the site's
+# nginx -- the API would have said 401.
+curl -s -o /dev/null -w '%{http_code}\n' -X POST https://mihaylov.io/v1/chat
+
+# On the host: nothing listens on 8000.
+curl -s -m 3 http://localhost:8000/healthz || echo "nothing on port 8000, as intended"
+```
 
 ---
 
@@ -574,7 +644,10 @@ In order it:
    `alembic current` prints `(head)` when the database is up to date, and does not otherwise.
 4. **Migrates.** A no-op when nothing is pending.
 5. **Restarts** with `up -d`.
-6. **Probes readiness**, from inside the container, and treats a 404 as "not built yet".
+6. **Verifies**: the worker is running, and the API is healthy (Docker's own check) and ready (it
+   can reach the database). How soon Docker runs its first check depends on the engine: within
+   seconds on current releases, only after the 30-second `interval` on older ones. So this step
+   waits up to a minute.
 7. **Prunes old images of this project only.**
 
 `set -euo pipefail` is what makes step 3 meaningful: a failed dump aborts before step 4, so the
@@ -637,8 +710,8 @@ cd "$DEPLOY_DIR" || die "$DEPLOY_DIR does not exist"
 compose() { docker compose -f "$COMPOSE_FILE" "$@"; }
 
 # One-off commands run in a throwaway container from the worker's definition:
-# same image, same .env, same network. The worker rather than the api, because
-# the worker is the service that exists and works today.
+# same image, same .env, same network. The worker rather than the api, because the
+# scheduled jobs run in it, so a command that works here works for them.
 oneshot() { compose run --rm --no-deps -T worker "$@"; }
 
 # --- 1. Record what is running now, as the rollback target -------------------
@@ -731,19 +804,23 @@ worker_state="$(docker inspect --format '{{.State.Status}}' "$worker_cid")"
 [ "$worker_state" = "running" ] || die "worker is '$worker_state' -- see: docker compose -f $COMPOSE_FILE logs worker"
 echo "  worker: running"
 
-# The API cannot run until the API module exists (build step 4). Reported, not
-# treated as a failure, so the deploy is usable for the worker in the meantime.
+# The API has to become healthy -- Docker's own check against /healthz -- and then
+# ready, which needs the database. The first check comes within seconds on a current
+# Docker engine and after the 30 s interval on an older one, so this waits up to a
+# minute before giving up.
 api_cid="$(compose ps -q api 2>/dev/null || true)"
-if [ -z "$api_cid" ]; then
-  echo "  api: not deployed"
-else
-  api_state="$(docker inspect --format '{{.State.Status}}' "$api_cid")"
-  if [ "$api_state" = "running" ]; then
-    echo "  api: running"
-  else
-    echo "  api: $api_state (expected until the API is built)"
-  fi
-fi
+[ -n "$api_cid" ] || die "api container was not created -- see: docker compose -f $COMPOSE_FILE logs api"
+api_health="starting"
+for _ in $(seq 1 30); do
+  api_health="$(docker inspect --format '{{.State.Health.Status}}' "$api_cid")"
+  [ "$api_health" = "starting" ] || break
+  sleep 2
+done
+[ "$api_health" = "healthy" ] || die "api is '$api_health' -- see: docker compose -f $COMPOSE_FILE logs api"
+compose exec -T api python -c \
+  "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/readyz', timeout=5)" \
+  || die "api is up but not ready -- usually the database; see: docker compose -f $COMPOSE_FILE logs api"
+echo "  api: healthy and ready"
 
 # The real check: exactly what the worker does every hour, minus the writing.
 # Proves the image runs, .env is valid, GitHub and the database are reachable,
@@ -785,6 +862,37 @@ The dump runs as `portfolio_ai`, which owns the database and so can read all of 
 `docker exec` into the Postgres container. That relies on the official image trusting
 connections over the local socket, which is also what let you open `psql` without a password
 in §5b.
+
+### Releases that change the box's own files
+
+Most releases need nothing but `deploy-portfolio-ai`: the image carries the code, and the script
+pulls it. A release that changes `docker-compose.yml`, `.env` or one of these scripts needs those
+changed on the box first, because nothing copies them there.
+
+The API release (build step 4) is one. On a box that already runs ingestion:
+
+1. **`.env`.** Add `IP_HASH_SALT`, generated with `openssl rand -hex 32`, and
+   `DAILY_SPEND_CAP_USD=1.00`. Check that `PORTFOLIO_AI_API_KEY` is set and at least 32 characters
+   long, since the API will not start otherwise. Delete `CORS_ORIGINS` if it is there. The setting
+   is gone, and the containers ignore the line rather than fail on it (§6), so nothing will remind
+   you.
+2. **`docker-compose.yml`.** Copy the repository's `docker/docker-compose.yml` over the one on the
+   box. It enables the `api` service, with its health check and its 45 s stop grace period, and
+   puts `traefik.enable=false` on both services.
+3. **The scripts.** Replace `/usr/local/bin/deploy-portfolio-ai` with the script above, and
+   `/usr/local/bin/rollback-portfolio-ai` with the one in §10. Both now wait for the API to be
+   healthy and ready. The deploy script from before this release does not know the API exists.
+4. **Check what the containers will read**, with §8 step 2. A misspelt key shows up there as a
+   setting still at its default.
+5. **Deploy** with `deploy-portfolio-ai`. This release has no migration, so no backup is taken.
+6. **Check it from the network**, with the calls at the end of §8, none of which writes anything:
+   `/healthz` from the Express container, then readiness, a 401 and a feedback 404, then that nothing
+   outside can reach it.
+7. **The next morning**, confirm the retention sweep ran: `docker compose logs --since 12h worker`
+   shows a `retention_purged` line. On a new deployment it deletes nothing, because no chat is 90
+   days old yet.
+
+Then set a monthly budget on the OpenAI project, if there is not one already (§11, Cost).
 
 ---
 
@@ -877,13 +985,30 @@ fi
 say "Starting on the recorded images"
 compose -f "$OVERRIDE" up -d
 
-# Same check as the deploy: the worker has to come up and stay up.
+# The same checks as the deploy. The worker has to come up and stay up.
 sleep 5
 worker_cid="$(compose ps -q worker 2>/dev/null || true)"
 [ -n "$worker_cid" ] || die "worker container was not created -- see: docker compose logs worker"
 worker_state="$(docker inspect --format '{{.State.Status}}' "$worker_cid")"
 [ "$worker_state" = "running" ] || die "worker is '$worker_state' -- see: docker compose logs worker"
 echo "  worker: running"
+
+# And the API, if this compose file defines one, has to become healthy and then ready.
+if grep -qx api <<<"$defined"; then
+  api_cid="$(compose ps -q api 2>/dev/null || true)"
+  [ -n "$api_cid" ] || die "api container was not created -- see: docker compose logs api"
+  api_health="starting"
+  for _ in $(seq 1 30); do
+    api_health="$(docker inspect --format '{{.State.Health.Status}}' "$api_cid")"
+    [ "$api_health" = "starting" ] || break
+    sleep 2
+  done
+  [ "$api_health" = "healthy" ] || die "api is '$api_health' -- see: docker compose logs api"
+  compose exec -T api python -c \
+    "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/readyz', timeout=5)" \
+    || die "api is up but not ready -- usually the database; see: docker compose logs api"
+  echo "  api: healthy and ready"
+fi
 
 say "Rolled back"
 echo "Pinned until the next deploy-portfolio-ai, which moves forward on :latest again."
@@ -901,13 +1026,20 @@ It pins images through a Compose override rather than editing `docker-compose.ym
 is not sticky: the next `deploy-portfolio-ai` runs without it and moves forward on `:latest` again.
 Rollback is a way to stop the bleeding, not a state to live in — fix the bad build before deploying.
 
-Two things it guards against that the first version did not:
+Three things it guards against that the first version did not:
 
 - **A service that has since been commented out is skipped**, not pinned. Otherwise it would land
   in the override with nothing but an image — no `.env`, no network, no command — and Compose would
   start a container with exactly that.
 - **No terminal to answer from counts as "no".** Run from a script without `--yes`, it says
   `aborted, nothing changed` rather than exiting silently.
+- **The API is checked as well as the worker**, the same way the deploy checks it. A rollback that
+  left the API unhealthy would otherwise report success.
+
+The first rollback after the API release is a special case. Before that release the API was not
+running, so no image was recorded for it: the rollback pins the worker only, and the API stays on
+the new image. If the API is the thing to undo, `docker compose stop api` takes it out of service.
+Nothing calls it until the site's own API does, in build step 6.
 
 ---
 
@@ -921,7 +1053,16 @@ Everything is JSON, one object per line, on stdout — collected by Docker.
 cd /opt/portfolio-ai
 docker compose logs -f worker
 docker compose logs --since 24h worker | grep -v '"level":"info"'
+docker compose logs -f api
 ```
+
+The API writes one `request` line per request -- method, route, status, duration -- and never the
+body. The route is the one the code declares, such as `/v1/messages/{message_id}/feedback`, never
+the path as sent, which could hold anything the caller put in it; `null` means no route matched.
+Each carries a `request_id`, the same id the caller receives in the `X-Request-ID` header, and so
+does every line logged while serving it, including the
+answer's own `llm_call` and `turn_answered` lines, which can arrive after the request line if the
+visitor left early. Docker's health probes are logged at debug, so they do not appear at `INFO`.
 
 **Check the daemon's rotation policy before this box has been running for a year.** Without
 `max-size`, a container's log file grows until the disk is full, and on a shared box that takes
@@ -964,6 +1105,39 @@ docker compose run --rm worker python -m portfolio_ai.ingestion --force
 > **`--dry-run` first, every time, against production.** It plans and prints and writes nothing,
 > and it is the only cheap way to find out that a change to chunking is about to re-embed the
 > entire corpus.
+
+### The API
+
+**The daily spending limit.** `DAILY_SPEND_CAP_USD` is compared with what answers cost over the
+last 24 hours (a rolling window, not a calendar day). At or past it, every message gets the fixed
+"back tomorrow" reply instead of an answer, and a `daily_spend_cap_reached` warning is logged.
+Setting it to `0` turns the chat off entirely, without a deploy. What was spent:
+
+```bash
+docker exec <postgres-container> psql -U portfolio_ai -d portfolio_ai -c "
+  select coalesce(sum(cost_usd), 0) as last_24h_usd, count(*) as answers
+  from portfolio_rag.chat_messages
+  where role = 'assistant' and created_at > now() - interval '24 hours';"
+```
+
+**Changing any setting** means editing `.env` and then `docker compose up -d api`, which recreates
+the container with the new environment. `docker compose restart api` does not: a restart keeps the
+environment the container was created with, and looks as if it worked.
+
+**What the statuses mean**, when the Express API starts reporting them: 409 is a visitor sending a
+second message before the first answer finished; 429 is one conversation past 20 messages in 15
+minutes; 503 is OpenAI or the database unavailable, or `MAX_CONCURRENT_TURNS` answers already in
+flight. None of them needs action unless it is constant.
+
+### The retention sweep
+
+`python -m portfolio_ai.analytics purge` runs at 03:00 and deletes chat older than
+`CHAT_RETENTION_DAYS` (90). Its log line is `retention_purged`, with counts. To see what it would
+delete without deleting it:
+
+```bash
+docker compose run --rm worker python -m portfolio_ai.analytics purge --dry-run
+```
 
 ### Asking the assistant something, on the server
 
@@ -1044,9 +1218,11 @@ Two things spend money, and neither is bounded by anything in Docker:
 
 - **Ingestion** re-embeds only what changed, so a normal day is effectively free. A `--force` run
   re-embeds all eleven documents, which is fractions of a cent.
-- **Chat** is the real number, and it scales with visitors. `DAILY_SPEND_CAP_USD` is the actual
-  protection — on breach the API returns a polite refusal rather than an error. Set it before the
-  chat is reachable from the site, not after.
+- **Chat** is the real number, and it scales with visitors. `DAILY_SPEND_CAP_USD` (default $1.00
+  a day, about 250 answers) is the actual protection — on breach the API returns a polite refusal
+  rather than an error. Set it before the chat is reachable from the site, not after. Behind it,
+  set a monthly budget on the OpenAI project itself: the one limit that holds even if this code
+  is wrong.
 
 ### Rotating the API key
 
@@ -1079,7 +1255,9 @@ When the assistant, the API and the new chat UI are all ready:
 2. **Point the Express API at FastAPI.** `api/src/server.js` gains `/api/chat` and
    `/api/chat/feedback`, attaching the bearer key server-side, exactly as its contact handler
    already does. Watch for the streaming route: the response must be **piped, not buffered**, and
-   compression disabled on it, or SSE arrives as a single chunk at the end.
+   compression disabled on it, or SSE arrives as a single chunk at the end. The whole contract --
+   the `X-Visitor-*` headers, `trust proxy`, which statuses to retry -- is in
+   [API.md](API.md#what-the-proxy-has-to-do-build-step-6).
 3. **Deploy the new front end** — `@n8n/chat` removed entirely.
 4. **Watch for a week.** Both systems still work; only the traffic has moved.
 5. **Then, and only then**, disable the n8n workflows and drop `mihaylov_chat_histories`.
@@ -1106,8 +1284,10 @@ until then the assistant is describing itself inaccurately to the people asking 
   hazard — two databases on one host, only one with pgvector.
 - **`DATABASE_URL` uses the Postgres service name**, not `localhost` and not an IP. The container
   is not the host.
-- **Unrecognised `.env` keys stop the container.** `extra="forbid"` is deliberate; a typo fails
-  loudly at boot instead of silently using a default.
+- **A misspelt `.env` key is ignored on this box, not rejected.** Locally `extra="forbid"`
+  refuses it; in the containers the file arrives as environment variables and an unknown one is
+  never looked at, so the setting keeps its default. §8 step 2 prints what the containers read.
+- **`docker compose restart` does not re-read `.env`.** `docker compose up -d` does.
 - **Never `COPY .env` into the image.** A layer is immutable, the image is public, and deleting
   the file later does not remove it from history.
 - **`docker image prune -a` on this box reaches other projects.** The deploy script's prune is
@@ -1127,8 +1307,14 @@ until then the assistant is describing itself inaccurately to the people asking 
 - **`PORTFOLIO_AI_API_KEY` lives in two `.env` files.** Rotate both, restart both.
 - **`--dry-run` before any production ingestion.**
 - **`DAILY_SPEND_CAP_USD` before the chat is reachable**, not after.
-- **No Traefik labels on `portfolio-ai`** — it is internal, and exposing it would make the bearer
-  token the only thing between the internet and an OpenAI bill.
+- **No routing labels on `portfolio-ai`, and `traefik.enable=false`** — it is internal, and
+  exposing it would make the bearer token the only thing between the internet and an OpenAI bill.
+- **`stop_grace_period: 45s` on the api.** Docker's default of 10 s would cut answers off
+  mid-sentence on every deploy; the API needs up to 40 s to finish them.
+- **No test chats through the production API.** Every answer it gives is stored with the
+  visitors' conversations. Check it with the non-writing calls in §8, and check OpenAI with the
+  terminal chat's `--no-save` (§11).
+- **`DAILY_SPEND_CAP_USD=0` turns the chat off**, then `docker compose up -d api`.
 - **Docker log rotation applies at container creation.** Changing `daemon.json` and restarting the
   daemon leaves existing containers uncapped while looking done.
 - **A private GHCR package needs a PAT that expires.** A deploy failing with `denied` long after

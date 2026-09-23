@@ -2,9 +2,10 @@
 
 Context for Claude Code working in this repository. Read [ARCHITECTURE.md](ARCHITECTURE.md) for
 the full design; this file is the short version plus the working agreements.
-[docs/INGESTION.md](docs/INGESTION.md) and [docs/ASSISTANT.md](docs/ASSISTANT.md) walk through the
-code of the two built flows, module by module -- update them in the same change as the code they
-describe.
+[docs/INGESTION.md](docs/INGESTION.md), [docs/ASSISTANT.md](docs/ASSISTANT.md) and
+[docs/API.md](docs/API.md) walk through the code of the three built flows, module by module --
+update them in the same change as the code they describe. API.md also holds the contract the
+Express proxy has to meet in step 6.
 
 ## What this project is
 
@@ -51,8 +52,9 @@ Settled cross-repo decisions:
 - **The proxy is the existing Express API.** `api/src/server.js` gains `/api/chat` and
   `/api/chat/feedback`, mirroring its contact handler: attach the bearer key server-side,
   forward to FastAPI. Nuxt rendering, the nginx image and Traefik routing are all untouched.
-  **FastAPI gets no Traefik labels** — it is private to the Docker network. A Nitro route, a
-  public FastAPI and minted session tokens were considered and rejected (ARCHITECTURE.md §3).
+  **FastAPI gets no routing labels**, only `traefik.enable=false` — it is private to the Docker
+  network. A Nitro route, a public FastAPI and minted session tokens were considered and rejected
+  (ARCHITECTURE.md §3).
 - **The chat UI is a clean-sheet redesign.** `@n8n/chat` is removed entirely, along with the
   DOM-querying in `useAiChat.ts` and the MutationObserver that injects the "Start over" button.
   Nothing about the old widget's UX needs reproducing.
@@ -115,8 +117,9 @@ src/portfolio_ai/
   ingestion/     github, frontmatter, chunking, pipeline, cli
   assistant/     classifier, retrieval, agent (the loop), conversation (memory + storage),
                  postprocess (link filter, fallback), memory, cli, prompts/*.md + loader
-  api/           main, security, deps, routers/
-  analytics/     signals, clustering, digest, cli
+  api/           main (app + lifespan), __main__ (the server), deps (admission), turns (answers in
+                 flight), security, errors, schemas, middleware, routers/
+  analytics/     retention, cli; later signals, clustering, digest
   evals/         datasets, runner, judge, metrics, report, cli
 migrations/      datasets/      tests/unit  tests/integration      docker/
 ```
@@ -133,7 +136,17 @@ migrations/      datasets/      tests/unit  tests/integration      docker/
 - **Typed boundaries.** Pydantic models for anything crossing a boundary (HTTP, DB rows, LLM
   structured output). Plain dataclasses are fine for internal-only structures.
 - **Errors:** raise domain exceptions from `portfolio_ai`; translate to HTTP status codes in one
-  place in `api/main.py`. Never leak an OpenAI or psycopg exception to a client response.
+  place, `api/errors.py` -- used both by the exception handlers and by the stream's `error`
+  event, which is why it is not in `main.py`. Never leak an OpenAI or psycopg exception to a
+  client response.
+- **A turn outlives its request.** The API runs every answer in a task of its own
+  (`api/turns.py`) and the endpoints only read its events from a queue, so a visitor who leaves
+  mid-answer cancels the reading, not the answer -- it is still stored and counted against the
+  limits. Never iterate `conversation.chat()` directly inside an endpoint.
+- **Every refusal happens before the first byte.** Checks live in the admission dependency
+  (`api/deps.py`), which takes the request body itself; the chat endpoints take nothing else,
+  because FastAPI validates an endpoint's own parameters after its dependencies have run. The
+  streaming endpoint never raises -- a failure after the first event is an `error` event.
 - **Every OpenAI call records tokens, model and latency.** Cost visibility is a feature, not
   an afterthought.
 - **Unit tests never read `.env`.** `tests/unit/conftest.py` switches the file off and gives
@@ -189,8 +202,10 @@ migrations/      datasets/      tests/unit  tests/integration      docker/
   stack, education and contact details they hold. If the assistant cannot answer something, the
   fix is to **write a knowledge base article, never to widen the crawl.**
 - **Rate limits:** 20 messages per session per 15 min (FastAPI), 60 per IP per 15 min (Express),
-  plus a daily spend ceiling that returns a polite refusal rather than an error. The daily cap is
-  the real protection; the others just stop casual abuse.
+  one answer in flight per session (409), `MAX_CONCURRENT_TURNS` in flight overall (503), plus
+  `DAILY_SPEND_CAP_USD` over a rolling 24 hours (default $1.00, about 250 answers) that returns
+  a polite refusal rather than an error; `0` turns the chat off. The daily cap is the real
+  protection; the others just stop casual abuse.
 - **Retention is 90 days** for raw `chat_messages` and feedback. `content_gaps`, aggregates and
   promoted `eval_cases` are kept indefinitely, so insight outlives the conversation.
 
@@ -234,7 +249,10 @@ uv run python -m portfolio_ai.assistant               # chat with Rachel in the 
 uv run python -m portfolio_ai.assistant --no-save -v  # store nothing; show what searches found
 uv run python -m portfolio_ai.assistant -m "..."      # ask one question and exit
 
-uv run uvicorn portfolio_ai.api.main:app --reload     # dev API
+uv run uvicorn portfolio_ai.api.main:app --reload     # dev API; /docs for the schema
+uv run python -m portfolio_ai.api                     # the API as production runs it
+
+uv run python -m portfolio_ai.analytics purge --dry-run   # retention sweep, counting only
 
 uv run eval run --dataset golden_v1 --model gpt-5-mini --label baseline
 uv run eval compare baseline some-other-run
@@ -243,12 +261,11 @@ uv run analytics report --since 7d                    # digest to stdout
 uv run analytics digest                               # build + email it (Gmail SMTP)
 uv run analytics gaps --status open                   # ranked content-writing queue
 uv run analytics promote-case <message_id> --expected-doc <doc_id>
-uv run analytics purge                                # retention sweep (90 days)
 ```
 
 Production schedules live in `docker/crontab`, run by the `worker` container with
-`TZ=Europe/London`: ingest hourly on the hour, digest Mondays at 05:30, purge daily at
-03:00. Hourly rather than daily because a run that finds nothing changed costs nothing --
+`TZ=Europe/London`: ingest hourly on the hour, purge daily at 03:00, and -- once step 7 builds
+it -- the digest on Mondays at 05:30 (commented out until then). Hourly rather than daily because a run that finds nothing changed costs nothing --
 it compares git blob SHAs and stops.
 
 ## Guardrails
@@ -289,6 +306,9 @@ it compares git blob SHAs and stops.
 - **The terminal chat will not write to production.** `python -m portfolio_ai.assistant`
   refuses to run with `ENVIRONMENT=production` unless `--no-save` is given, because a smoke
   test typed into the chat tables is indistinguishable from a visitor afterwards.
+- **No test chats through the production API.** Every turn it answers is stored. Check a
+  deployment with the non-writing calls in docs/DEPLOYMENT.md §8 (health, readiness, a 401, a
+  feedback 404) and check OpenAI with the terminal chat's `--no-save`.
 - **Embedding dimension changes are migrations.** Changing `EMBEDDING_DIMENSIONS` or the
   embedding model invalidates every stored vector and requires a full re-embed.
 - **Evals cost money.** A full run makes one chat call plus one judge call per case. Mention the
@@ -296,23 +316,30 @@ it compares git blob SHAs and stops.
 - **Ask before changing the tuned prompts.** They came from a working production system; changes
   should be justified by an eval run, not by taste.
 - **Chat logs are real visitors' words.** People volunteer identifying details in a chat box
-  ("I'm hiring for a Laravel role at Acme"). Hash IPs with a salt, honour `CHAT_RETENTION_DAYS`,
-  never publish the digest, and do not paste raw conversation content into anything external.
+  ("I'm hiring for a Laravel role at Acme"). IPs are stored only as an HMAC keyed with
+  `IP_HASH_SALT`, `CHAT_RETENTION_DAYS` is enforced nightly, nothing a visitor types goes into a
+  log line, never publish the digest, and do not paste raw conversation content into anything
+  external.
 
 ## Current state
 
-Steps 1-3 of the build order (ARCHITECTURE.md §12) are done, and **every open requirement
+Steps 1-4 of the build order (ARCHITECTURE.md §12) are built, and **every open requirement
 question is closed** (the decisions log is ARCHITECTURE.md §13).
 
 - **Foundations** — packaging, settings, logging, the async pool, migrations, tests, CI and the
   image on GHCR. Written up as ten lessons in `docs/lessons/`.
 - **Ingestion** — deployed and running hourly: 11 documents, 111 chunks.
 - **Assistant core** — Rachel answers end to end from the terminal: classify, search, answer,
-  remember, record. No HTTP yet, so nothing is reachable from the site.
+  remember, record.
+- **API** — FastAPI over the assistant, private to the Docker network: bearer auth, per-session
+  and global limits, the daily spend cap, answers as JSON or streamed as server-sent events, the
+  feedback endpoint, and the nightly retention purge. Nothing calls it until the Express routes
+  land in step 6.
 
-Next is **step 4, the API**: FastAPI, bearer auth, rate limits, SSE streaming, and the feedback
-endpoint. Then evals (5), the front end and cutover (6), analytics reporting (7).
+Next is **step 5, evals**: the golden dataset, the runner, the judge, and the `gpt-5-mini`
+baseline that proves parity before cutover. Then the front end and cutover (6), analytics
+reporting (7).
 
-Analytics reporting is last on purpose — it needs real traffic to be worth writing. But the
-*capture* (feedback endpoint, `top_score`, `fallback_used`) ships in step 4, because none of it
-can be reconstructed after the fact.
+Analytics reporting is last on purpose — it needs real traffic to be worth writing. The
+*capture* (feedback, `top_score`, `fallback_used`, where a conversation came from) shipped with
+the API, because none of it can be reconstructed after the fact.

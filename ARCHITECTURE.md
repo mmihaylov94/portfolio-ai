@@ -3,8 +3,8 @@
 Python replacement for the two n8n workflows that currently power the AI chat box on
 [mihaylov.io](https://mihaylov.io), plus an evaluation harness and an analytics/feedback loop.
 
-**Status:** design agreed, implementation not started.
-**Last updated:** 2026-09-20
+**Status:** build steps 1-4 done (foundations, ingestion, assistant core, API); evals next.
+**Last updated:** 2026-09-23
 
 ---
 
@@ -206,7 +206,7 @@ correcting either way — and it is a neat illustration of the drift deliverable
   +---------------------+     +---------------------+   |
   | Express API         |---->| api container       |---+-----------> OpenAI API
   | rate limit,reCAPTCHA|     | FastAPI /v1/chat    |   |  chat
-  | holds the bearer key|<----| (no Traefik labels) |   |
+  | holds the bearer key|<----| (no routing labels) |   |
   +---------------------+     +---------------------+   |
    mihaylov.io/api             private to the           v
    (already exists)            Docker network
@@ -405,7 +405,6 @@ ai_assistant/
 │   │   ├── memory.py             # the history window, and what the classifier is shown
 │   │   ├── postprocess.py        # the streaming link filter; the fallback phrase match
 │   │   ├── cli.py                # python -m portfolio_ai.assistant
-│   │   ├── schemas.py            # ChatRequest / ChatResponse / Citation (step 4)
 │   │   └── prompts/
 │   │       ├── loader.py         # reads the files at import; each carries a version
 │   │       ├── classifier.md
@@ -413,11 +412,17 @@ ai_assistant/
 │   │       ├── small_talk.md
 │   │       ├── search_tool.md    # the retrieval tool's description
 │   │       ├── out_of_scope_reply.md
+│   │       ├── daily_limit_reply.md  # what the API says once the day's spend cap is reached
 │   │       └── cluster_namer.md  # names question clusters for the digest (step 7)
 │   ├── api/
-│   │   ├── main.py               # app factory, CORS, lifespan, exception handlers
-│   │   ├── security.py           # bearer auth, rate limiting
-│   │   ├── deps.py
+│   │   ├── main.py               # app factory, lifespan (startup checks, shutdown order)
+│   │   ├── __main__.py           # python -m portfolio_ai.api: uvicorn, JSON logs, event loop
+│   │   ├── deps.py               # admission: validation, limits, spend cap, then start
+│   │   ├── turns.py              # answers in flight; each outlives the request that asked
+│   │   ├── security.py           # bearer auth, visitor headers, the IP hash
+│   │   ├── errors.py             # exception -> status + public sentence, in one place
+│   │   ├── schemas.py            # request, response and event models
+│   │   ├── middleware.py         # request id, one log line per request
 │   │   └── routers/
 │   │       ├── chat.py           # POST /v1/chat, POST /v1/chat/stream
 │   │       ├── feedback.py       # POST /v1/messages/{id}/feedback
@@ -518,26 +523,37 @@ API call.
 
 ## 8. Assistant API
 
+As built in step 4. [docs/API.md](docs/API.md) walks through the code and holds the full contract,
+including what the Express proxy must do.
+
 ### `POST /v1/chat`
 
 ```jsonc
-// request
+// request -- the same body for /v1/chat/stream
 { "message": "Does Mihail work with Laravel?", "session_id": "uuid-from-localStorage" }
 
 // response
 {
-  "reply": "Yes — Laravel is one of the frameworks Mihail works with most...",
-  "message_id": 4812,                  // needed so the browser can attach feedback
+  "reply": "Yes -- he works with Laravel as part of his backend toolkit...",
   "session_id": "uuid",
+  "message_id": 4812,                  // needed so the browser can attach feedback; null if nothing was stored
   "classification": "mihail_related",
-  "citations": [ { "doc_id": "skills-backend", "title": "Backend Skills", "url": null, "section": "php-laravel" } ],
-  "usage": { "prompt_tokens": 2841, "completion_tokens": 96, "model": "gpt-5-mini", "latency_ms": 1840 }
+  "citations": [ { "doc_id": "tech-stack", "title": "Tech Stack", "url": "https://mihaylov.io/#about", "section": "php-laravel" } ],
+  "usage": { "model": "gpt-5-mini-2025-08-07", "prompt_tokens": 7089, "completion_tokens": 312, "latency_ms": 14638, "first_token_ms": 10097 }
 }
 ```
 
-`POST /v1/chat/stream` returns the same content as SSE token deltas for a typing effect — an
-upgrade over the n8n webhook, which could only return the finished answer. The `message_id`
-is emitted as a final SSE event so feedback still works in streaming mode.
+`POST /v1/chat/stream` returns the same answer as server-sent events while it is written -- an
+upgrade over the n8n webhook, which could only return the finished answer. The events, in order:
+`route` (the classification), `search` (one per search, deliberately empty: the query is model
+text that never passes the link filter), `token` (a word at a time), then exactly one of `done`
+(`message_id`, citations, usage) or `error`. What an answer cost is never sent to a caller.
+
+**A turn outlives its request.** Each answer runs in an asyncio task of its own and the endpoint
+only reads its events from a queue, so a visitor who closes the tab mid-answer stops the reading,
+not the answer: it is still stored, with its full cost, and counted against the limits below. The
+alternative -- the answer dying with the request -- would leave the classifier and search calls
+already paid for uncounted, and the daily cap is only a bound if everything spent is counted.
 
 ### `POST /v1/messages/{message_id}/feedback`
 
@@ -545,12 +561,22 @@ is emitted as a final SSE event so feedback still works in streaming mode.
 { "rating": -1, "comment": "That's not what I asked", "session_id": "uuid" }
 ```
 
-Requires the `session_id` to match the one that owns the message, so a caller cannot vote on
-someone else's conversation. Re-voting updates the existing row rather than inserting.
+204 on success. Requires the `session_id` to match the one that owns the message, and the message
+to be an answer: a question's id, a missing id and someone else's conversation are all the same
+404, so a caller learns nothing by guessing. Re-voting updates the existing row rather than
+inserting. The check and the write are one SQL statement.
+
+### Health
+
+`GET /healthz` (the process answers; Docker's health check) and `GET /readyz` (the database
+answers; the deploy script). Neither needs the key.
 
 ### Request flow
 
-1. Auth, CORS, rate limit.
+1. Auth, validation, then admission: two database reads (the session's recent questions, the
+   last 24 hours' spend) and the limits, in order, with no `await` between the checks and the
+   start -- so two requests cannot both pass the "one answer at a time" check. All of it happens
+   before a byte of the response is sent; after that, a failure is an `error` event.
 2. Load the last `MEMORY_WINDOW_TURNS` exchanges for `session_id` (default 25, so 50 messages).
 3. Classify the message, **with the previous exchange for context**: `out_of_scope` |
    `small_talk` | `mihail_related`. Structured output, so the label cannot arrive malformed.
@@ -596,14 +622,22 @@ Whatever the front end ends up looking like, these hold:
 
   | Limit | Value | Enforced in |
   |---|---|---|
-  | Per session | 20 messages / 15 min | FastAPI |
+  | Per session | 20 messages / rolling 15 min (429, `Retry-After`) | FastAPI |
+  | Per session, in flight | one answer at a time (409) | FastAPI |
+  | In flight, overall | `MAX_CONCURRENT_TURNS`, default 10 (503) | FastAPI |
   | Per IP | 60 messages / 15 min | Express (`express-rate-limit`) |
-  | Global daily spend | configurable USD ceiling | FastAPI |
+  | Spend | `DAILY_SPEND_CAP_USD` over a rolling 24 h, default $1.00 | FastAPI |
 
   The per-request limits stop casual abuse. **The daily cap is what actually protects the bill**,
-  because it bounds the worst case however the other two are worked around. On breach it returns
-  a polite "back tomorrow" message rather than an error, so a visitor never sees a stack trace.
-- Max message length, and a max turns per session, to keep any one conversation bounded.
+  because it bounds the worst case however the other limits are worked around -- overshot, at
+  most, by the answers already in flight when it is reached, which the in-flight limit bounds.
+  On breach it returns a polite "back tomorrow" message as an ordinary answer rather than an
+  error, so a visitor never sees a stack trace. `0` turns the chat off without a deploy.
+- A message is at most 2,000 characters, without control characters. There is **no per-session
+  lifetime cap**, although earlier drafts planned one: the browser mints session ids, so clearing
+  `localStorage` resets it, and the memory window already bounds what one turn can cost.
+- **No CORS.** The browser never calls FastAPI, and CORS is a rule browsers apply to pages; a
+  CORS setting here would only suggest otherwise.
 - reCAPTCHA v3 is already wired up for contact and can gate chat session creation if abuse
   appears.
 
@@ -616,15 +650,18 @@ POST /api/chat           -> FastAPI POST /v1/chat
 POST /api/chat/feedback  -> FastAPI POST /v1/messages/{id}/feedback
 ```
 
-It attaches `Authorization: Bearer ${PORTFOLIO_AI_API_KEY}` server-side and forwards to
-`${PORTFOLIO_AI_URL}`. Nothing about the Nuxt build, the nginx image or the Traefik routing
-changes — the browser is already calling `mihaylov.io/api` for contact, so chat joins the same
+It attaches `Authorization: Bearer ${PORTFOLIO_AI_API_KEY}` server-side, sends the visitor's
+address, user agent and page as `X-Visitor-IP`, `X-Visitor-User-Agent` and `X-Visitor-Referrer`,
+and forwards to `${PORTFOLIO_AI_URL}`. The address is only correct once Express trusts the proxy
+in front of it: it has no `trust proxy` setting today, so `req.ip` is Traefik's address -- which
+also makes the contact form's rate limit one bucket for every visitor. Nothing about the Nuxt
+build, the nginx image or the Traefik routing changes — the browser is already calling `mihaylov.io/api` for contact, so chat joins the same
 origin. Expect roughly 40 lines plus a rate limiter.
 
 Three things this buys:
 
-- **FastAPI is never public.** No Traefik labels; it is reachable only by service name on the
-  Docker network. Scanners cannot reach the LLM endpoint at all.
+- **FastAPI is never public.** No routing labels, only `traefik.enable=false`; it is reachable only
+  by service name on the Docker network. Scanners cannot reach the LLM endpoint at all.
 - **The rate limiting already exists.** `express-rate-limit` is configured and working; chat
   gets its own limiter alongside the contact one (which is 5 per 15 minutes — chat needs
   something considerably more generous).
@@ -792,13 +829,19 @@ a week is too coarse.
 This stores real visitors' typed input, and on a portfolio site people volunteer things like
 "I'm hiring for a Laravel role at Acme". That needs deciding **before** go-live, not retrofitting:
 
-- **Retention: 90 days** for raw `chat_messages` and their feedback rows, enforced by a daily
-  purge in the worker container. Derived data — `content_gaps`, aggregate metrics, and any
+- **Retention: 90 days** for raw `chat_messages` and their feedback rows, enforced nightly by
+  `python -m portfolio_ai.analytics purge` in the worker container (built with the API in step 4,
+  so it runs from before the first visitor's message is stored). Sessions not seen for that long
+  go too, taking the hashed address and browser string with them. Derived data — `content_gaps`, aggregate metrics, and any
   question promoted into `eval_cases` — is kept indefinitely, so the learning survives the
   deletion of the conversation it came from. Long enough to build eval sets and see seasonal
   patterns; short enough to state plainly in a privacy policy.
-- IP addresses stored hashed with a salt, never raw. No cookies beyond the existing
-  `localStorage` session id.
+- IP addresses stored only as an HMAC-SHA256 keyed with `IP_HASH_SALT`, never raw -- the
+  database layer is never even handed one. A keyed hash rather than a plain one, because all four
+  billion IPv4 addresses can be hashed in an afternoon. Referrers are kept without their query
+  string. No cookies beyond the existing `localStorage` session id.
+- Nothing a visitor types goes into a log line; logs record counts, routes, scores and timings,
+  and have no retention policy of their own.
 - A line in the site's privacy policy, and a short note in the chat UI that conversations are
   retained to improve the assistant.
 - The digest is for the site owner only; it is not published.
@@ -886,11 +929,15 @@ services:
   api:
     image: ghcr.io/mmihaylov94/portfolio-ai:latest
     container_name: portfolio-ai
-    command: uvicorn portfolio_ai.api.main:app --host 0.0.0.0 --port 8000
+    command: python -m portfolio_ai.api
     env_file: .env
     networks: [traefik_proxy]
     restart: unless-stopped
-    # deliberately no traefik labels — internal only, reached at http://portfolio-ai:8000
+    stop_grace_period: 45s          # 30 s for open streams, then 10 s for answers in flight
+    healthcheck:                    # here, not in the Dockerfile: the worker shares the image
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/healthz', timeout=3)"]
+    labels:
+      traefik.enable: "false"       # internal only, reached at http://portfolio-ai:8000
 
   worker:
     image: ghcr.io/mmihaylov94/portfolio-ai:latest
@@ -904,8 +951,8 @@ services:
 
 ```cron
 0 * * * *   python -m portfolio_ai.ingestion          # hourly, on the hour
-30 5 * * 1  python -m portfolio_ai.analytics digest   # weekly, Monday
 0 3 * * *   python -m portfolio_ai.analytics purge    # retention sweep
+# 30 5 * * 1  python -m portfolio_ai.analytics digest # weekly, Monday -- enabled in step 7
 ```
 
 Set `TZ=Europe/London` on the worker so those times mean what they say.
@@ -951,7 +998,7 @@ config rather than failing on the first request.
 | `OPENAI_API_KEY` | one key for embeddings, chat and judge |
 | `DATABASE_URL` | `postgresql://...` |
 | `DB_SCHEMA` | default `portfolio_rag` |
-| `PORTFOLIO_AI_API_KEY` | bearer token; also set in the Express API's `.env` |
+| `PORTFOLIO_AI_API_KEY` | bearer token, at least 32 characters; also set in the Express API's `.env`. The API will not start without it |
 | `GITHUB_REPO` / `GITHUB_BRANCH` / `GITHUB_DOCS_PATH` | `mmihaylov94/my-portfolio` / `main` / `knowledgebase` |
 | `GITHUB_TOKEN` | optional; raises the API rate limit, required if the repo goes private |
 | `CHAT_MODEL` / `CLASSIFIER_MODEL` / `EMBEDDING_MODEL` / `JUDGE_MODEL` | defaults `gpt-5-mini`, `gpt-5-mini`, `text-embedding-3-small`, `gpt-5` |
@@ -961,18 +1008,21 @@ config rather than failing on the first request.
 | `RETRIEVAL_TOP_K` | default `20` |
 | `MEMORY_WINDOW_TURNS` | default `25`, counted in exchanges (50 messages), as n8n counts it |
 | `LOW_SCORE_THRESHOLD` | cosine score below which a question counts as a content gap |
-| `RATE_LIMIT_SESSION` / `RATE_LIMIT_IP` | `20/15m` / `60/15m` (the IP limit is enforced in Express) |
-| `DAILY_SPEND_CAP_USD` | hard ceiling; on breach the API returns a polite refusal, not an error |
-| `CHAT_RETENTION_DAYS` | default `90`; `0` disables the purge job |
-| `IP_HASH_SALT` | salt for hashing client IPs |
+| `SESSION_RATE_LIMIT` / `SESSION_RATE_WINDOW_MINUTES` | `20` / `15`; the per-IP limit (60 / 15 min) is Express's own setting |
+| `MAX_CONCURRENT_TURNS` | default `10`: answers being written at once, across all visitors |
+| `DAILY_SPEND_CAP_USD` | default `1.00`, over a rolling 24 hours; on breach the API returns a polite refusal, not an error; `0` turns the chat off |
+| `CHAT_RETENTION_DAYS` | default `90`; `0` disables the purge job, which then warns every night |
+| `IP_HASH_SALT` | the key visitors' IPs are HMAC-hashed with, at least 32 characters. The API will not start without it |
 | `SMTP_HOST` / `SMTP_PORT` / `SMTP_USER` / `SMTP_APP_PASSWORD` | `smtp.gmail.com` / `587` / the Gmail address / **app password, not the account password** |
 | `DIGEST_TO_EMAIL` | digest recipient — env only, never committed |
 | `TZ` | `Europe/London`, so the crontab times mean what they say |
-| `CORS_ORIGINS` | comma-separated |
 | `LOG_LEVEL` / `ENVIRONMENT` | |
 
-`.env.example` ships with placeholder values for every one of these and real values for none —
-this repository is public.
+`.env.example` has an entry for every variable the code reads today, with placeholders and never a
+real value: this repository is public. The others in the table arrive with the steps that use
+them: `JUDGE_MODEL` with the evals, `LOW_SCORE_THRESHOLD`, the `SMTP_*` settings and
+`DIGEST_TO_EMAIL` with the analytics reporting. `TZ` is the container's, not the app's.
+`extra="forbid"` means none of them can be listed in `.env.example` before `Settings` knows them.
 
 ---
 
@@ -988,7 +1038,8 @@ this repository is public.
    Verify: spot-check answers against the live n8n bot.
 4. **API** — FastAPI, auth, rate limiting, SSE streaming, health checks, **plus the feedback
    endpoint and the analytics columns**. Capture is cheap to build now and impossible to
-   backfill later.
+   backfill later. The retention purge landed here too: it has to be running before the first
+   visitor's message is stored, not after.
 5. **Evals** — dataset, runner, metrics, judge, reporting. Establish the `gpt-5-mini` baseline.
 6. **Front end + cutover** — add `/api/chat` and `/api/chat/feedback` to the Express API, build
    the redesigned Vue chat component (streaming, citations, thumbs up/down, retention notice),
@@ -1045,7 +1096,12 @@ Non-negotiable from the first commit, because git history is published too:
 | Model API | OpenAI Responses API, `store=False`, reasoning passed back between tool calls | §8 |
 | Classifier context | The previous exchange, not the message alone as in n8n | §8 |
 | First retrieval | Forced, not left to the model, so every answer records a `top_score` | §8 |
-| Rate limits | 20/session/15m, 60/IP/15m, plus a daily spend ceiling | §8 |
+| Rate limits | 20/session/15m, 60/IP/15m, one answer in flight per session, plus a daily spend ceiling | §8 |
+| Visitor disconnects mid-answer | The answer finishes and is stored and counted; it runs in its own task, not the request | §8 |
+| Spend ceiling | Rolling 24 hours, default $1.00, `0` turns chat off; refusal is a polite answer | §8 |
+| CORS | None: the browser never calls FastAPI | §8 |
+| Per-session lifetime cap | Dropped: the browser mints session ids, so it would not hold | §8 |
+| Retention purge | Built with the API (step 4), before any visitor data exists | §10 |
 | Retention | 90 days raw; derived data kept indefinitely | §10 |
 | Digest delivery | Gmail SMTP via `smtplib`, recipient in env | §10 |
 | Ingestion schedule | Hourly, on the hour | §11 |

@@ -277,6 +277,13 @@ The default `CMD` points at `portfolio_ai.api.main:app`, which does not exist ye
 builds; the command fails. That is deliberate — a placeholder that returns something harmless
 would work perfectly and need remembering later, which is a worse outcome than a clear error.
 
+> **Since changed.** The API was built in step 4, and the `CMD` became
+> `python -m portfolio_ai.api` instead of the `uvicorn` command. Started from Python, uvicorn
+> installs no logging of its own, so every line the container writes is JSON, and the event loop
+> is chosen in code; [API.md](../API.md#uvicorn) explains both. CI now starts the built image and
+> asks it for `/healthz`. `git show 66a4eb9:docker/Dockerfile` shows the file as this lesson built
+> it.
+
 ### `docker/compose.yaml` and `docker/docker-compose.yml`
 
 The local one exists to answer one question before CI does: does the thing we are about to push
@@ -293,6 +300,11 @@ which is the interesting decision: the API is not on the internet at all. The on
 talks to it is the portfolio's Express API, from inside the network. Publishing it and then
 guarding it with a bearer token would be two defences where one is needed, and the exposed one
 would be the weaker.
+
+> **Since changed.** Each service now carries one Traefik label, `traefik.enable=false`, and still
+> no routing labels. It changes nothing while Traefik routes only the containers that ask to be
+> routed, as the site's own services do with `traefik.enable=true`. What it buys is that this stays
+> true if that default is ever flipped.
 
 ### `.github/workflows/ci.yml`
 
