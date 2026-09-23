@@ -7,6 +7,7 @@ bookkeeping -- is the real code.
 """
 
 from decimal import Decimal
+from types import SimpleNamespace
 
 import pytest
 from openai_fake import FakeOpenAI, install_fake_openai
@@ -17,6 +18,7 @@ from portfolio_ai.assistant.memory import HistoryMessage
 from portfolio_ai.assistant.prompts.loader import OUT_OF_SCOPE_REPLY
 from portfolio_ai.db import documents as docs_db
 from portfolio_ai.db.documents import RetrievedChunk
+from portfolio_ai.llm import responses
 
 CONFIG = AssistantConfig(
     chat_model="gpt-5-mini",
@@ -236,6 +238,28 @@ async def test_searching_stops_after_the_configured_number_of_rounds(fake: FakeO
         "none",
     ]
     assert result.reply == "Answering now."
+
+
+def test_a_search_request_that_does_not_parse_searches_for_the_question(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The visitor's own words still find something, just less precisely. The log
+    line says it happened and how long the arguments were, never what they said:
+    they are the model's rewrite of the visitor's question."""
+    logged: list[dict[str, object]] = []
+
+    def warning(event: str, **fields: object) -> None:
+        logged.append({"event": event, **fields})
+
+    monkeypatch.setattr(agent, "log", SimpleNamespace(warning=warning))
+    call = responses.FunctionCall(
+        call_id="call_1", name="search_knowledgebase", arguments='{"query": "hiring at Acme'
+    )
+
+    query = agent._query_from(call, "Is Mihail open to a Laravel role?")
+
+    assert query == "Is Mihail open to a Laravel role?"
+    assert logged == [{"event": "search_query_missing", "arguments_length": len(call.arguments)}]
 
 
 # --- the result -------------------------------------------------------------

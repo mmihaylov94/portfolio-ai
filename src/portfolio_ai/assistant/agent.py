@@ -264,7 +264,9 @@ def _query_from(call: responses.FunctionCall, message: str) -> str:
         query = ""
 
     if not query:
-        log.warning("search_query_missing", arguments=call.arguments[:200])
+        # The length, never the text: the arguments are the model's rewrite of the
+        # visitor's question, and nothing a visitor typed goes in a log line.
+        log.warning("search_query_missing", arguments_length=len(call.arguments))
 
     return query or message
 
