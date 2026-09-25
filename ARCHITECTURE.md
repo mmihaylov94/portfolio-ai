@@ -3,8 +3,9 @@
 Python replacement for the two n8n workflows that currently power the AI chat box on
 [mihaylov.io](https://mihaylov.io), plus an evaluation harness and an analytics/feedback loop.
 
-**Status:** build steps 1-4 done (foundations, ingestion, assistant core, API); evals next.
-**Last updated:** 2026-09-23
+**Status:** build steps 1-4 done (foundations, ingestion, assistant core, API); step 5's eval
+harness built, its baseline runs next.
+**Last updated:** 2026-09-24
 
 ---
 
@@ -127,7 +128,9 @@ cost to weigh, not a wall.
    up/down)" and the knowledge base article `projects/portfolio-ai-assistant.md` claims
    "Thumbs-up and thumbs-down feedback capture on every answer". Neither is true — the
    portfolio's own `CLAUDE.md` already flags the README as out of date. Deliverable 4 builds
-   this for the first time; it is not a port, so budget for it accordingly.
+   this for the first time; it is not a port, so budget for it accordingly. (The article's
+   claim, and the reCAPTCHA one below, were removed in a knowledge base fact-check on
+   2026-09-23. The README's remains.)
 2. **The chat endpoint is currently unauthenticated and unprotected.** The KB article also
    claims "Google reCAPTCHA to protect the endpoint from abuse" — reCAPTCHA guards the *contact
    form* only. The chat webhook is public today, so anyone can spend the OpenAI budget by
@@ -336,24 +339,35 @@ we answer it badly", and closing it means writing a knowledge base article.
 ### Evals
 
 ```sql
-eval_datasets (id, name unique, description, created_at)
-eval_cases    (id, dataset_id fk, question, category,          -- mihail_related|small_talk|out_of_scope
-               expected_doc_ids text[], reference_answer,
-               must_include text[], must_not_include text[],
-               source_message_id bigint null,                  -- promoted from real traffic
+eval_datasets (id, name unique, description, content_hash,     -- frozen once a run of it completes
+               created_at)
+eval_cases    (id, dataset_id fk, key,                          -- unique per dataset; names a case in reports
+               question, category,                              -- mihail_related|small_talk|out_of_scope
+               also_accept text[],                              -- other routes that are right too
+               history jsonb,                                   -- the exchange before a follow-up
+               expected_doc_ids text[], expect_fallback bool,
+               reference_answer, must_include text[], must_not_include text[],
+               source_message_id bigint null,                   -- promoted from real traffic
                notes)
-eval_runs     (id, dataset_id fk, label, config jsonb,         -- model, embed model, top_k, prompt version, git sha
-               status, started_at, finished_at, totals jsonb)
+eval_runs     (id, dataset_id fk, label unique, config jsonb,   -- models, efforts, top_k, prompt versions,
+               status, started_at, finished_at, totals jsonb)   --   judge, corpus fingerprint, git sha
 eval_results  (id, run_id fk, case_id fk, answer, classification,
                retrieved_chunk_ids bigint[], retrieved_doc_ids text[],
                recall_at_k, precision_at_k, mrr,
                judge_scores jsonb, judge_rationale text,
-               rule_violations jsonb,                          -- forbidden links, persona breaks
-               prompt_tokens, completion_tokens, cost_usd, latency_ms)
+               rule_violations jsonb,                           -- forbidden links, persona breaks
+               prompt_tokens, completion_tokens, cost_usd, judge_cost_usd,
+               latency_ms, first_token_ms, top_score, fallback_used, links_removed,
+               searches jsonb,
+               calls jsonb,                                     -- every OpenAI call, the judge's too
+               error)
 ```
 
 `eval_cases.source_message_id` is the join that closes the loop: a real question that retrieved
-badly becomes a permanent regression test once the missing content is written.
+badly becomes a permanent regression test once the missing content is written. Migration 0003 laid
+these tables out; 0005 added what building the harness showed they lacked (keys, history, the
+expected fallback, accepted routes, unique labels, first-word time, the assistant's signals, and
+every OpenAI call behind a result with its reasoning tokens).
 
 ---
 
@@ -374,7 +388,8 @@ ai_assistant/
 ├── alembic.ini                   # minimal; the database URL comes from Settings, not here
 ├── migrations/                   # alembic
 │   ├── env.py                    # URL rewriting, schema creation, version_table_schema
-│   └── versions/                 # 0001 knowledge base, 0002 chat+analytics, 0003 evals
+│   └── versions/                 # 0001 knowledge base, 0002 chat+analytics, 0003 evals,
+│                                 # 0004 turn details, 0005 eval harness
 ├── src/portfolio_ai/
 │   ├── config.py                 # Settings (pydantic-settings), single source of env truth
 │   ├── logging.py                # structlog JSON logging
@@ -413,6 +428,7 @@ ai_assistant/
 │   │       ├── search_tool.md    # the retrieval tool's description
 │   │       ├── out_of_scope_reply.md
 │   │       ├── daily_limit_reply.md  # what the API says once the day's spend cap is reached
+│   │       ├── judge.md          # the eval judge's rubric (step 5)
 │   │       └── cluster_namer.md  # names question clusters for the digest (step 7)
 │   ├── api/
 │   │   ├── main.py               # app factory, lifespan (startup checks, shutdown order)
@@ -435,12 +451,12 @@ ai_assistant/
 │   │   ├── retention.py          # the 90-day purge
 │   │   └── cli.py                # report | digest | refresh-gaps | gaps | promote-case | purge
 │   └── evals/
-│       ├── datasets.py           # load/seed golden sets from YAML
-│       ├── runner.py             # run a dataset against a config, in parallel
-│       ├── judge.py              # LLM-as-judge rubric
-│       ├── metrics.py            # recall@k, precision@k, MRR, rule checks
-│       ├── report.py             # terminal table + markdown diff between runs
-│       └── cli.py
+│       ├── datasets.py           # the YAML format, its validation, the hash that freezes it
+│       ├── runner.py             # prepare (every check) and execute (the run), a few cases at once
+│       ├── judge.py              # the judge's brief and structured verdict
+│       ├── metrics.py            # document-level recall, precision, MRR; the rule checks
+│       ├── report.py             # a run's totals; tables and comparisons
+│       └── cli.py                # python -m portfolio_ai.evals: check | run | list | show | compare
 ├── datasets/
 │   └── golden_v1.yaml            # version-controlled eval cases
 └── tests/
@@ -588,9 +604,10 @@ answers; the deploy script). Neither needs the key.
      that must answer.
 5. Persist the question and the answer as one transaction, with usage per call, `top_score`,
    `fallback_used`, the retrieved chunk ids and the timings.
-6. Post-process **as it streams**: any URL containing `/knowledgebase/` or `/projects/` is removed
-   before the text leaves the process, holding back only the word in progress. A code-level
-   guarantee, not a prompt instruction.
+6. Post-process **as it streams**: any URL with a `/knowledgebase` or `/projects` path is taken
+   out before the text leaves the process, holding back only the word in progress. A bare one
+   on the site becomes the nearest real page, a Markdown link keeps its label, and another
+   site's URL is dropped. A code-level guarantee, not a prompt instruction.
 
 ### Retrieval
 
@@ -705,50 +722,78 @@ for light and dark mode. Even with a full redesign, those tokens are a free star
 **Question it answers:** if the assistant switches to model X, does it actually get better —
 and what does it cost?
 
+[docs/EVALS.md](docs/EVALS.md) walks through the harness as built.
+
 ### Dataset
 
-`datasets/golden_v1.yaml`, version controlled, roughly 40–60 cases spanning:
+`datasets/golden_v1.yaml`, version controlled: 54 cases written from the eleven articles.
+- 31 answerable questions, including multi-document ones and two false premises, each with
+  `expected_doc_ids` (every article with a section that answers it) and a `reference_answer`
+- 5 questions the knowledge base cannot answer, where the right answer is the fallback
+- 4 follow-ups that carry the previous exchange
+- 5 small talk and 5 out of scope
+- 4 adversarial cases:
+  - prompt injection
+  - "pretend to be Mihail"
+  - a request for a `/projects/` link, which no article contains, so the case tempts the model
+    into building one
+  - "tell me everything"
 
-- `mihail_related` questions with known-correct `expected_doc_ids` (retrieval ground truth)
-  and a `reference_answer` (quality ground truth)
-- `small_talk` cases
-- `out_of_scope` cases (classification must route away)
-- Adversarial cases: prompt injection, "are you Mihail?", questions whose answer is genuinely
-  absent (the correct answer is the "I do not have that information" fallback), and questions
-  whose source content contains a `/knowledgebase/` URL (the link rule must hold)
+Its contact cases check answers for Mihail's two published addresses exactly; no other email
+address appears in it.
 
-Seeded into `eval_cases` from YAML. Real questions get promoted into the dataset via
-`analytics promote-case` (§10), which is how the set grows beyond what was imagined up front.
+Stored in `eval_cases` when first run, and **frozen once a run of it completes**: a changed file
+under the same name is refused, because scores are only comparable on identical cases, and
+changes go into `golden_v2`. A run that failed part-way does not freeze it. Real questions get promoted via `analytics promote-case` (§10) into a new version,
+which is how the set grows beyond what was imagined up front.
 
 ### Metrics
 
-**Retrieval** (deterministic, cheap, no LLM):
-- `recall@k` — did the expected documents appear in the top k?
-- `precision@k`, `MRR` — how well ranked?
+**Retrieval** (deterministic, cheap, no LLM), on documents rather than chunks: the chunks shown
+to the model reduced to their documents in first-seen order. It reports:
+- recall, the share of expected documents found
+- precision, the share shown that were expected
+- MRR
+- hit rate
 
-**Classification:** accuracy against the labelled category.
+**Classification:** accuracy against the labelled category, or a route the case also accepts.
 
-**Answer quality** (LLM-as-judge, a strong model scoring 1–5 with a written rationale):
-- *Faithfulness* — grounded in retrieved context, nothing invented
-- *Completeness* — versus the reference answer
-- *Style / persona* — concise, third person, conversational, not a CV dump
+**Answer quality** (LLM-as-judge, `gpt-5` scoring 1–5 with a written rationale):
+- *Faithfulness*: grounded in the passages shown, nothing invented. Links are left to the rules.
+- *Completeness*: against the reference answer.
+- *Style / persona*: concise, third person, conversational, not a CV dump.
+- *Declined*: whether the answer said it did not know, in any wording.
 
-**Rule checks** (deterministic): forbidden-link regex, refusal-when-unknown behaviour,
-first-person-as-Mihail detection, length bounds.
+**Rule checks** (deterministic):
+- a forbidden link attempted or present
+- an invented link, meaning one in neither the prompts' list nor the passages
+- `must_include` / `must_not_include`
+- headers, lists and length
+- an unprompted greeting or self-introduction
+- first-person-as-Mihail, a heuristic
+- the fallback expected against the one given
 
-**Operational:** p50/p95 latency, tokens, `cost_usd` per answer.
+The judge's `declined` is compared with the `fallback_used` phrase match, which measures how
+often the stored analytics signal is wrong.
+
+**Operational:** p50/p95 whole-answer and first-word time, tokens (reasoning tokens apart: they
+are what a lower effort saves), and cost per answer, with the judge's cost kept apart.
 
 ### Usage
 
 ```bash
-uv run eval run --dataset golden_v1 --model gpt-5-mini --label baseline
-uv run eval run --dataset golden_v1 --model gpt-5      --label gpt5-test
-uv run eval compare baseline gpt5-test        # side-by-side table + per-case regressions
+uv run python -m portfolio_ai.evals run --dataset golden_v1 --label baseline \
+    --chat-effort default --classifier-effort default
+uv run python -m portfolio_ai.evals run --dataset golden_v1 --label effort-low \
+    --chat-effort low --classifier-effort default     # only the chat effort differs
+uv run python -m portfolio_ai.evals compare baseline effort-low    # totals, and every case that moved
 ```
 
-Every run stores its full config (chat model, embedding model, `top_k`, prompt versions, git
-SHA) so results stay comparable months later. The judge model is pinned independently of the
-model under test, and the judge is **never** the same call that produced the answer.
+Every run stores its full config (models, efforts, `top_k`, search rounds, every prompt version,
+the judge, the knowledge base's fingerprint, git SHA) so results stay comparable months later.
+The judge model is pinned independently of the model under test, and the judge is **never** the
+same call that produced the answer. Evals run locally against the development database; the
+command refuses production.
 
 ---
 
@@ -1019,10 +1064,10 @@ config rather than failing on the first request.
 | `LOG_LEVEL` / `ENVIRONMENT` | |
 
 `.env.example` has an entry for every variable the code reads today, with placeholders and never a
-real value: this repository is public. The others in the table arrive with the steps that use
-them: `JUDGE_MODEL` with the evals, `LOW_SCORE_THRESHOLD`, the `SMTP_*` settings and
-`DIGEST_TO_EMAIL` with the analytics reporting. `TZ` is the container's, not the app's.
-`extra="forbid"` means none of them can be listed in `.env.example` before `Settings` knows them.
+real value: this repository is public. The others in the table arrive with the step that uses
+them: `LOW_SCORE_THRESHOLD`, the `SMTP_*` settings and `DIGEST_TO_EMAIL` with the analytics
+reporting. `TZ` is the container's, not the app's. `extra="forbid"` means none of them can be
+listed in `.env.example` before `Settings` knows them.
 
 ---
 
@@ -1041,6 +1086,8 @@ them: `JUDGE_MODEL` with the evals, `LOW_SCORE_THRESHOLD`, the `SMTP_*` settings
    backfill later. The retention purge landed here too: it has to be running before the first
    visitor's message is stored, not after.
 5. **Evals** — dataset, runner, metrics, judge, reporting. Establish the `gpt-5-mini` baseline.
+   Parity is by construction: the baseline is the new assistant at n8n's settings, and the live
+   n8n bot is not scored. Runs at lower reasoning effort measure the latency lever against it.
 6. **Front end + cutover** — add `/api/chat` and `/api/chat/feedback` to the Express API, build
    the redesigned Vue chat component (streaming, citations, thumbs up/down, retention notice),
    remove `@n8n/chat` and its DOM coupling, then deactivate the n8n workflows and drop
@@ -1053,9 +1100,10 @@ them: `JUDGE_MODEL` with the evals, `LOW_SCORE_THRESHOLD`, the `SMTP_*` settings
 Step 5 sits before cutover because the baseline is what proves parity. Step 7 sits after it
 because it needs traffic — but step 4 must already be recording the data it will read.
 
-Also in step 6, independent of the code: **fix `knowledgebase/projects/portfolio-ai-assistant.md`**,
-which currently describes an n8n-based system with feedback capture and reCAPTCHA-protected chat.
-After cutover almost none of that article is true. Since this repository is public, the rewritten
+Also in step 6, independent of the code: **rewrite `knowledgebase/projects/portfolio-ai-assistant.md`**,
+which describes the n8n-based system. (Its claims of feedback capture and reCAPTCHA-protected
+chat, which that system never had, went in the 2026-09-23 fact-check.) After cutover almost none
+of that article is true. Since this repository is public, the rewritten
 article can link to it — which is a decent part of the reason for making it public.
 
 ### Public-repo hygiene
@@ -1063,9 +1111,10 @@ article can link to it — which is a decent part of the reason for making it pu
 Non-negotiable from the first commit, because git history is published too:
 
 - `.env` gitignored; `.env.example` carries placeholder values only.
-- **No personal email addresses** anywhere in code or docs. The digest recipient is
-  `DIGEST_TO_EMAIL`; the addresses in `knowledgebase/contact.md` are already public by choice and
-  are not this repository's concern.
+- **No personal email addresses** anywhere in code or docs, except Mihail's two published ones:
+  the hiring address on his CV and the one for projects and general inquiries (the site lists both),
+  public by his choice, which the eval dataset checks answers against. The digest recipient is
+  `DIGEST_TO_EMAIL`, because it is configuration.
 - **No IPs or hostnames in committed files** — not the LAN address of the dev server, not the
   EC2 host, not container names. They belong in `.env` only. A private-range address is low risk
   by itself, but it maps out your network for anyone reading, and it accretes: one IP in a README
@@ -1102,6 +1151,11 @@ Non-negotiable from the first commit, because git history is published too:
 | CORS | None: the browser never calls FastAPI | §8 |
 | Per-session lifetime cap | Dropped: the browser mints session ids, so it would not hold | §8 |
 | Retention purge | Built with the API (step 4), before any visitor data exists | §10 |
+| Eval parity | By construction: the new assistant at n8n's settings is the baseline; the live n8n bot is not scored | §9 |
+| Eval datasets | Frozen by content hash once a run of them completes (a failed run doesn't count); changes go into a new version | §9 |
+| Where evals run | Locally, against the development database; refused in production | §9 |
+| Eval retrieval score | Documents, not chunks, in first-seen order; any expected document is a hit | §9 |
+| Eval judge | `gpt-5`, pinned apart from the chat model; grades claims, and leaves links to the rules | §9 |
 | Retention | 90 days raw; derived data kept indefinitely | §10 |
 | Digest delivery | Gmail SMTP via `smtplib`, recipient in env | §10 |
 | Ingestion schedule | Hourly, on the hour | §11 |

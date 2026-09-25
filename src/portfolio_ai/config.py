@@ -127,6 +127,12 @@ class Settings(BaseSettings):
     # has gone wrong, which is when a lower one is cheaper.
     agent_max_search_rounds: int = Field(default=3, ge=1, le=10)
 
+    # --- Evals ----------------------------------------------------------------
+    # The model that grades answers in an eval run. Stronger than the model under
+    # test, and pinned separately from it, so changing the chat model changes what
+    # is being measured and never the ruler measuring it.
+    judge_model: str = "gpt-5"
+
     # --- Ingestion source -----------------------------------------------------
     # The repository ingestion reads from. Public, so the token below is optional.
     github_repo: str = "mmihaylov94/my-portfolio"

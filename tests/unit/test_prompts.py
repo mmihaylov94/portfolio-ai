@@ -23,6 +23,7 @@ PINNED = {
     "search_tool": (1, "e8ed50f414ec"),
     "out_of_scope_reply": (1, "915ed598f0a1"),
     "daily_limit_reply": (1, "f4daad636fed"),
+    "judge": (1, "17a5b3808a98"),
 }
 
 # The n8n export the prompts were ported from. Gitignored -- it carries n8n instance

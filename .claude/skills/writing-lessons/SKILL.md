@@ -192,8 +192,8 @@ Find the one idea, rebuild around it, and say plainly that the explanation was t
 ## Constraints
 
 - **The repository is public.** No IP addresses, no hostnames beyond ones already public, no real
-  credentials in examples, no personal email addresses. The same rules that apply to code apply to
-  lesson text.
+  credentials in examples, no personal email addresses beyond Mihail's two published ones. The same
+  rules that apply to code apply to lesson text.
 - **Keep the index current.** `docs/lessons/README.md` lists every lesson and tracks progress;
   update it in the same commit.
 - **One lesson per commit**, with a message explaining what it teaches and why — the commits are

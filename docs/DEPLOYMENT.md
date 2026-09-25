@@ -1263,10 +1263,12 @@ When the assistant, the API and the new chat UI are all ready:
 5. **Then, and only then**, disable the n8n workflows and drop `mihaylov_chat_histories`.
    `mihaylov_rag_documents` can go once the new ingestion has a month of clean runs behind it.
 
-There is also a correction owed: `knowledgebase/projects/portfolio-ai-assistant.md` currently tells
-visitors the assistant has thumbs up/down feedback and reCAPTCHA-protected chat. Neither is true
-today. It becomes true at cutover, and the article should be fixed **in the same change**, because
-until then the assistant is describing itself inaccurately to the people asking about it.
+The knowledge base article `knowledgebase/projects/portfolio-ai-assistant.md` changes too. It
+describes the n8n system, which stops being true at cutover, so rewrite it to describe the new
+one **in the same change**: otherwise the assistant describes itself inaccurately to the people
+asking about it. (Its claims of thumbs up/down feedback, reCAPTCHA and an Express proxy, none of
+which the n8n bot has, were removed in the fact-check of 2026-09-23.) golden_v1's `assistant-how`
+and `n8n-work` cases describe the n8n system as well, so they change in a new dataset version.
 
 ---
 

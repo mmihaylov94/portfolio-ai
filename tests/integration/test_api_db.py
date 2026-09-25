@@ -217,8 +217,8 @@ async def test_the_sweep_removes_what_is_old_and_keeps_what_is_not() -> None:
     )
     dataset = await _one("insert into eval_datasets (name) values ('golden') returning id")
     await _execute(
-        "insert into eval_cases (dataset_id, question, category, source_message_id) "
-        "values (%s, 'A question?', 'mihail_related', %s)",
+        "insert into eval_cases (dataset_id, key, question, category, source_message_id) "
+        "values (%s, 'promoted', 'A question?', 'mihail_related', %s)",
         (dataset["id"], old_answer - 1),
     )
 

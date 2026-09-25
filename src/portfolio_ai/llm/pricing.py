@@ -63,6 +63,16 @@ PRICES: dict[str, ModelPrice] = {
 _PER_MILLION = Decimal(1_000_000)
 
 
+def is_priced(model: str) -> bool:
+    """Whether this table has a price for ``model``, dated snapshot names included.
+
+    An eval run checks every model it will call against this before spending
+    anything. A misspelt model name would otherwise fail on every call it makes, and
+    an unpriced one would report its cost as exactly $0.
+    """
+    return model in PRICES or _SNAPSHOT_DATE.sub("", model) in PRICES
+
+
 def cost_usd(
     model: str,
     input_tokens: int,

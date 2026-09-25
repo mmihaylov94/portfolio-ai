@@ -2,10 +2,10 @@
 
 Context for Claude Code working in this repository. Read [ARCHITECTURE.md](ARCHITECTURE.md) for
 the full design; this file is the short version plus the working agreements.
-[docs/INGESTION.md](docs/INGESTION.md), [docs/ASSISTANT.md](docs/ASSISTANT.md) and
-[docs/API.md](docs/API.md) walk through the code of the three built flows, module by module --
-update them in the same change as the code they describe. API.md also holds the contract the
-Express proxy has to meet in step 6.
+[docs/INGESTION.md](docs/INGESTION.md), [docs/ASSISTANT.md](docs/ASSISTANT.md),
+[docs/API.md](docs/API.md) and [docs/EVALS.md](docs/EVALS.md) walk through the code of the four
+built flows, module by module -- update them in the same change as the code they describe.
+API.md also holds the contract the Express proxy has to meet in step 6.
 
 ## What this project is
 
@@ -43,9 +43,9 @@ Current state there, as of 2026-09-20: the chat is the stock `@n8n/chat` widget 
 from the browser to n8n (unauthenticated); the Express API handles only `/api/health` and
 `/api/contact`; the site is fully prerendered with no Nitro runtime in production; session id
 lives in `localStorage["n8n-chat/sessionId"]`. **There is no feedback endpoint**, despite the
-README and the `projects/portfolio-ai-assistant.md` knowledge base article both claiming thumbs
-up/down exists — that article also needs correcting, since the assistant is currently telling
-visitors false things about itself.
+README claiming thumbs up/down exists. The `projects/portfolio-ai-assistant.md` knowledge base
+article made the same claim, and an Express proxy and reCAPTCHA besides, until a fact-check of
+every article on 2026-09-23 removed them; at cutover it is rewritten to describe the new system.
 
 Settled cross-repo decisions:
 
@@ -179,7 +179,9 @@ migrations/      datasets/      tests/unit  tests/integration      docker/
   keep short keyword-style topical queries. This measurably improves retrieval.
 - **Link rule:** never emit a URL containing `/knowledgebase/` or `/projects/`. Enforced both in
   the prompt and as a hard filter in code -- one that works on the token stream, holding back
-  only the word in progress, so a forbidden URL never reaches a visitor even mid-answer.
+  only the word in progress, so a forbidden URL never reaches a visitor even mid-answer. A
+  bare one is swapped for the nearest real page (`https://mihaylov.io/#projects`, or the home
+  page), both on the prompt's allowed list, so the sentence around it still reads.
 - **Answer style:** 2–4 sentences, conversational, no section headers, no bullet lists unless
   asked. Offer more detail rather than dumping it.
 - **Defaults carried over from n8n:** chat model `gpt-5-mini`, embeddings `text-embedding-3-small`
@@ -220,7 +222,13 @@ migrations/      datasets/      tests/unit  tests/integration      docker/
 This repository is public on GitHub, and **git history is published too**. From the first commit:
 
 - `.env` gitignored; `.env.example` carries placeholders only.
-- **No personal email addresses** in code or docs. The digest recipient is `DIGEST_TO_EMAIL`.
+- **No personal email addresses in code or docs, except Mihail's two published ones**: the
+  hiring address printed on his CV and the one for projects and general inquiries; the site
+  lists both.
+  They are public by his choice (confirmed 2026-09-24), and golden_v1's contact cases check
+  answers for them exactly. Nobody else's address goes in, least of all a visitor's in a
+  question promoted from real traffic; a unit test checks every dataset for that. The digest
+  recipient still comes from `DIGEST_TO_EMAIL`, because it is configuration.
 - **No IPs or hostnames in committed files** — not the LAN dev server, not the EC2 host, not
   container names. They live in `.env`. `docker/docker-compose.yml` is a template, and `mihaylov.io` is
   the only host that should appear anywhere in the repo.
@@ -260,8 +268,13 @@ uv run python -m portfolio_ai.api                     # the API as production ru
 
 uv run python -m portfolio_ai.analytics purge --dry-run   # retention sweep, counting only
 
-uv run eval run --dataset golden_v1 --model gpt-5-mini --label baseline
-uv run eval compare baseline some-other-run
+uv run python -m portfolio_ai.evals check datasets/golden_v1.yaml     # no DB, no network
+uv run python -m portfolio_ai.evals run --dataset golden_v1 --label baseline \
+    --chat-effort default --classifier-effort default --dry-run      # the plan; spends nothing
+uv run python -m portfolio_ai.evals run --dataset golden_v1 --label effort-low \
+    --chat-effort low --classifier-effort default   # one setting changed from the baseline
+uv run python -m portfolio_ai.evals show baseline --failures
+uv run python -m portfolio_ai.evals compare baseline effort-low
 
 uv run analytics report --since 7d                    # digest to stdout
 uv run analytics digest                               # build + email it (Gmail SMTP)
@@ -317,8 +330,15 @@ it compares git blob SHAs and stops.
   feedback 404) and check OpenAI with the terminal chat's `--no-save`.
 - **Embedding dimension changes are migrations.** Changing `EMBEDDING_DIMENSIONS` or the
   embedding model invalidates every stored vector and requires a full re-embed.
-- **Evals cost money.** A full run makes one chat call plus one judge call per case. Mention the
-  rough cost before running a large sweep.
+- **Evals cost money.** A full golden_v1 run is about $0.70, most of it the `gpt-5` judge
+  (`--no-judge` about $0.20). Say what a run or a sweep will cost before starting it.
+- **Evals run locally, against the dev database.** `run` refuses `ENVIRONMENT=production`. The
+  dev `.env` sets both reasoning efforts to `low`, so a run meant to match production passes
+  `--chat-effort default --classifier-effort default`; read the dry run's configuration first.
+- **A dataset freezes once a run of it completes.** Scores are only comparable on identical
+  cases, so a changed golden_v1.yaml is refused after its first complete run -- copy it to
+  golden_v2 instead. Never run a dataset still under review, even one case of it: a complete
+  `--only` run freezes it too. Smoke-test the harness on a throwaway dataset file.
 - **Ask before changing the tuned prompts.** They came from a working production system; changes
   should be justified by an eval run, not by taste.
 - **Chat logs are real visitors' words.** People volunteer identifying details in a chat box
@@ -329,8 +349,8 @@ it compares git blob SHAs and stops.
 
 ## Current state
 
-Steps 1-4 of the build order (ARCHITECTURE.md §12) are built, and **every open requirement
-question is closed** (the decisions log is ARCHITECTURE.md §13).
+Steps 1-4 of the build order (ARCHITECTURE.md §12) are built and step 5's harness is, and
+**every open requirement question is closed** (the decisions log is ARCHITECTURE.md §13).
 
 - **Foundations** — packaging, settings, logging, the async pool, migrations, tests, CI and the
   image on GHCR. Written up as ten lessons in `docs/lessons/`.
@@ -342,9 +362,13 @@ question is closed** (the decisions log is ARCHITECTURE.md §13).
   feedback endpoint, and the nightly retention purge. Nothing calls it until the Express routes
   land in step 6.
 
-Next is **step 5, evals**: the golden dataset, the runner, the judge, and the `gpt-5-mini`
-baseline that proves parity before cutover. Then the front end and cutover (6), analytics
-reporting (7).
+- **Evals** — `python -m portfolio_ai.evals`: golden_v1 (54 cases from the eleven articles),
+  deterministic retrieval and rule checks, a `gpt-5` judge, and runs stored with their full
+  configuration for comparison. Proven live on a throwaway dataset.
+
+Still to do in **step 5**: golden_v1 reviewed by the owner, then the `gpt-5-mini` baseline at
+n8n's settings (parity by construction) and runs at chat effort `low` and `minimal`, with the
+results in docs/EVALS.md. Then the front end and cutover (6), analytics reporting (7).
 
 Analytics reporting is last on purpose — it needs real traffic to be worth writing. The
 *capture* (feedback, `top_score`, `fallback_used`, where a conversation came from) shipped with

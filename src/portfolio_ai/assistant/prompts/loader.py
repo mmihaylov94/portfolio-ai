@@ -7,12 +7,12 @@ than a diff of a Python string full of escaped quotes.
 Each file opens with a small YAML block: a ``version``, where the text came from,
 and what was changed on the way in. Five were ported from the n8n workflow this
 project replaces and are word for word what production runs today, apart from the
-two corrections listed in ``rag_agent.md``. The sixth, the reply sent once the daily
-spending limit is reached, is new: n8n had no limit.
+two corrections listed in ``rag_agent.md``. Two are new: the reply sent once the
+daily spending limit is reached (n8n had no limit), and the eval judge's rubric.
 
-**The version is recorded with every answer** (``chat_messages.llm_calls``) and will
-be recorded with every eval run, so a score can always be traced to the prompt that
-produced it. That only works if the version actually changes when the text does, so
+**The version is recorded with every answer** (``chat_messages.llm_calls``) and with
+every eval run (``eval_runs.config``), so a score can always be traced to the prompt
+that produced it. That only works if the version actually changes when the text does, so
 ``tests/unit/test_prompts.py`` pins each prompt's content hash to its version. Edit a
 prompt without bumping its version and CI fails -- which is CLAUDE.md's "ask before
 changing the tuned prompts", written as something a machine checks.
@@ -100,5 +100,17 @@ OUT_OF_SCOPE_REPLY = load("out_of_scope_reply")
 # Also fixed wording: what the API says instead of answering once the day's spending
 # limit is reached (DAILY_SPEND_CAP_USD). Visitors read it, so it is versioned too.
 DAILY_LIMIT_REPLY = load("daily_limit_reply")
+# Not Rachel's at all: the rubric the eval harness grades her answers with. Versioned
+# like the rest, because a change to how answers are graded moves every score as
+# surely as a change to how they are written.
+JUDGE = load("judge")
 
-ALL = (CLASSIFIER, SMALL_TALK, RAG_AGENT, SEARCH_TOOL, OUT_OF_SCOPE_REPLY, DAILY_LIMIT_REPLY)
+ALL = (
+    CLASSIFIER,
+    SMALL_TALK,
+    RAG_AGENT,
+    SEARCH_TOOL,
+    OUT_OF_SCOPE_REPLY,
+    DAILY_LIMIT_REPLY,
+    JUDGE,
+)

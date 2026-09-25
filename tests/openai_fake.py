@@ -133,6 +133,25 @@ class FakeOpenAI:
         """A structured reply that does not match the schema."""
         self._replies.append(_Reply("structured", text='{"category": "banana"}'))
 
+    def judge(
+        self,
+        *,
+        faithfulness: int | None = 5,
+        completeness: int | None = 5,
+        style: int = 5,
+        declined: bool = False,
+        rationale: str = "Scripted verdict.",
+    ) -> None:
+        """A structured reply in the shape of the eval judge's verdict."""
+        verdict = {
+            "faithfulness": faithfulness,
+            "completeness": completeness,
+            "style": style,
+            "declined": declined,
+            "rationale": rationale,
+        }
+        self._replies.append(_Reply("structured", text=json.dumps(verdict)))
+
     def say(self, text: str, *, usage: Usage | None = None) -> None:
         self._replies.append(_Reply("text", text=text, usage=usage or Usage()))
 

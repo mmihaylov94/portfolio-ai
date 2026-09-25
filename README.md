@@ -25,6 +25,7 @@ embedding call, vector query and agent loop iteration is visible in the source.
 - **[docs/INGESTION.md](docs/INGESTION.md)** — how ingestion works: one run step by step, which module does what, the libraries
 - **[docs/ASSISTANT.md](docs/ASSISTANT.md)** — how the assistant works: one question step by step, which module does what, the libraries
 - **[docs/API.md](docs/API.md)** — how the HTTP API works: one request step by step, the contract, the limits, the libraries
+- **[docs/EVALS.md](docs/EVALS.md)** — how the evals work: the golden dataset, what is measured, the judge, reading a comparison
 - **[docs/DEPLOYMENT.md](docs/DEPLOYMENT.md)** — how it is deployed, and the one-command redeploy
 - **[docs/lessons/](docs/lessons/)** — the project built as a lesson series, one concept at a time
 - **[CLAUDE.md](CLAUDE.md)** — working context for Claude Code
@@ -42,9 +43,12 @@ Under construction, and useful already.
 - **API** — the assistant over HTTP, private to the server's Docker network: authenticated,
   rate-limited, capped on daily spend, streaming answers as server-sent events, with thumbs
   up/down feedback and a nightly 90-day retention sweep.
+- **Evals** — a harness that scores the assistant against a golden dataset of 54 questions:
+  retrieval, routing, the style and safety rules, an LLM judge's grades, latency and cost, with
+  every run stored alongside the configuration that produced it.
 
-Next are the evals, which establish the baseline the assistant is judged against before the site
-switches over. The build order is in [ARCHITECTURE.md](ARCHITECTURE.md) §12.
+Next is the baseline run the assistant is judged against before the site switches over. The
+build order is in [ARCHITECTURE.md](ARCHITECTURE.md) §12.
 
 ## Getting started
 
@@ -71,6 +75,10 @@ uv run python -m portfolio_ai.assistant -m "..."    # ask one question and exit
 
 uv run uvicorn portfolio_ai.api.main:app --reload   # the API, reloading on changes; /docs for the schema
 uv run python -m portfolio_ai.analytics purge --dry-run   # what the retention sweep would delete
+
+uv run python -m portfolio_ai.evals check datasets/golden_v1.yaml    # validate the golden set
+uv run python -m portfolio_ai.evals run --label my-run --dry-run     # plan an eval run; no spend
+uv run python -m portfolio_ai.evals compare baseline my-run          # two runs, case by case
 ```
 
 A Postgres instance with the `pgvector` extension is required. `DATABASE_URL` must point at it

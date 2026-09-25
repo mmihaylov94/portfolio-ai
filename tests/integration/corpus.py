@@ -70,8 +70,12 @@ async def seed(
 
 
 async def clear() -> None:
-    """Empty the tables these tests write to, leaving the schema in place."""
+    """Empty the tables these tests write to, leaving the schema in place.
+
+    Deleting a dataset takes its cases, runs and results with it (on delete cascade).
+    """
     pool = await get_pool()
     async with pool.connection() as conn:
+        await conn.execute("delete from eval_datasets")
         await conn.execute("delete from documents")
         await conn.execute("delete from chat_sessions")

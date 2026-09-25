@@ -40,7 +40,9 @@ In order:
 
 1. **Anything published that can't be taken back.** The repository is public, and so is its
    history. An IP address, a hostname of the owner's infrastructure (mihaylov.io is the only one
-   allowed), a personal email address, the real name of a container or database, a secret, or
+   allowed), a personal email address other than Mihail's two published ones (the hiring
+   address on his CV and the one for projects and general inquiries), the real name of a container or
+   database, a secret, or
    text from a real visitor's chat stays public for good once it is pushed. The documentation
    address ranges (192.0.2.0/24, 198.51.100.0/24, 203.0.113.0/24, 2001:db8::/32), loopback,
    0.0.0.0 and the service names in the repo's own compose template are fine.
@@ -125,6 +127,29 @@ Look for these first; each one has cost real time here.
 - A Typer app with a single command treats that command's name as an unexpected argument unless
   the app has an `@app.callback()`.
 - `docker compose restart` doesn't re-read `.env`; `docker compose up -d` does.
+- `\b` counts an apostrophe as a boundary, so `I'm Mihail\b` matches inside "I'm Mihail's
+  assistant". A pattern that must not match a possessive needs `(?!')` after it.
+- A hash over `model_dump()` depends on the code as well as the data: a new optional field adds
+  `"field": null` to every dump and changes every hash. Hash with `exclude_defaults=True`.
+- YAML keeps the last of two equal keys without a word, and `extra="forbid"` never sees the
+  first. A hand-edited YAML file needs a loader that refuses repeated keys.
+- On Windows, `shutil.which` searches the current directory first unless
+  `NoDefaultCurrentDirectoryInExePath` is set, which it isn't by default. It doesn't stop a
+  planted executable there the way it does on Linux.
+- A dataset's `must_include` or `must_not_include` phrase is a hard rule, and a correct
+  paraphrase can fail it: "solution architect" for "Solutions Architect", or a retired label
+  quoted as retired. Try a few faithful rewordings against each one before a dataset's first
+  complete run freezes it. A `must_not_include` meant to catch a retired label names the label
+  ("RPA Developer"), never a word the knowledge base still uses fairly elsewhere ("RPA").
+- The prepare step checks that each expected document is indexed, not that it is current. A
+  dataset written against edited articles has to run after those edits are pushed and ingested,
+  or the run that freezes it grades against the old text.
+- `re.sub` never re-checks its own replacements, so a replacement can join the text next to it
+  into a new match. A filter whose output must be clean has to run again on that output, or
+  accept the gap and say so.
+- A migration edited after it was applied doesn't run again. The dev database keeps the old
+  shape, and the edited downgrade fails on what was never added. Check `alembic current` against
+  what changed.
 
 When a finding is a new kind of mistake, suggest a one-line entry for this list.
 
@@ -134,9 +159,11 @@ You are read-only. Never create, change or delete a file inside the repository, 
 git command that changes state: add, commit, stash, checkout, switch, restore, reset, clean,
 rebase, merge or push. The uncommitted work you are reviewing may exist nowhere else.
 
-Don't run the project's own commands: the assistant, ingestion, the API server or analytics. They
-reach OpenAI, GitHub or the database, and some of them spend money or write rows. The test suites
-are your only route to the database. Don't start servers or other long-running processes, and
+Don't run the project's own commands: the assistant, ingestion, the API server, analytics or an
+eval run. They reach OpenAI, GitHub or the database, and some of them spend money or write rows.
+A complete eval run also freezes the dataset it runs, for good. `python -m portfolio_ai.evals check`
+and `run --dry-run` are the exceptions: both are free and write nothing. The test suites are
+your only other route to the database. Don't start servers or other long-running processes, and
 don't read `.env`; `.env.example` lists every variable. When a check needs something you may not
 do, list it under "Not checked" for the author to run.
 

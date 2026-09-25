@@ -80,6 +80,15 @@ class AssistantError(PortfolioAIError):
     """
 
 
+class EvalError(PortfolioAIError):
+    """An eval run was refused before it spent anything.
+
+    A dataset that changed after it was scored, a run label already taken, a case
+    naming a document that is not indexed. Each would produce numbers that look
+    comparable with earlier runs and are not, which is worse than no numbers.
+    """
+
+
 class PurgeSafetyError(PortfolioAIError):
     """A run would have deleted an implausible share of the knowledge base.
 

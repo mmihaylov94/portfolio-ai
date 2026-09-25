@@ -60,7 +60,7 @@ async def test_alembic_recorded_the_latest_revision() -> None:
     # should not contain the pattern.
     rows = await _fetch_all("select version_num from alembic_version")
 
-    assert [row["version_num"] for row in rows] == ["0004"]
+    assert [row["version_num"] for row in rows] == ["0005"]
 
 
 async def test_chunks_cascade_when_a_document_is_deleted() -> None:

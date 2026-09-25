@@ -32,8 +32,8 @@ The design was chosen because three requirements all want this shape:
   text is yielded upward the moment OpenAI sends it.
 - The API should have nothing to assemble. It forwards the events to the browser as server-sent
   events, one for one (see [API.md](API.md)).
-- The evals in step 5 must not write chat rows. They will call `respond()`, one layer below where
-  anything is stored, and keep only the final event.
+- The evals must not write chat rows. They call `respond()`, one layer below where anything is
+  stored, and keep the search events and the final one (see [EVALS.md](EVALS.md)).
 
 The events themselves are four small classes in `agent.py`:
 
@@ -116,10 +116,19 @@ is now `"auto"`, so the model may search again, up to `AGENT_MAX_SEARCH_ROUNDS` 
 back as it is written. 16.9 seconds, most of them spent reasoning before the first word.
 
 **Filter.** Each piece of text passes through a `LinkFilter` before `respond()` yields it as a
-`Token`. The filter removes any URL containing `/knowledgebase/` or `/projects/`, and it can do
+`Token`. The filter takes out any URL containing `/knowledgebase/` or `/projects/`, and it can do
 that mid-stream because it holds back only what might still turn out to be part of such a URL: the
 word in progress, or a Markdown link whose `[` has opened and not yet closed. Everything before
 that goes out at once.
+
+What goes in the link's place is the reason the filter replaces rather than deletes. By the time
+a URL arrives, the words that led up to it ("you can read about it at") have already been sent, so
+deleting the URL left "read about it at ." behind, and "at **." when the link was in bold. A bare
+forbidden URL now becomes the nearest real page, the site's projects section for a `/projects/`
+URL and its home page otherwise, with the emphasis, brackets and punctuation around it left where
+they were. Both pages are on the prompt's own list of allowed links, and a unit test keeps them
+there. A Markdown link to a forbidden page keeps its label and loses the link instead: "[the case
+study](…)" pointing at the projects section would promise a page it isn't.
 
 **Result.** When the stream ends, `respond()` builds a `TurnResult` — the reply as the visitor saw
 it, the route, each search, the chunk ids, the best score, whether the reply was the "I don't have
@@ -165,9 +174,9 @@ the wait is. See [What the numbers look like](#what-the-numbers-look-like).
 Three of them deserve a little more than a table cell.
 
 `AssistantConfig` gathers the knobs — both models, both reasoning efforts, `top_k` and the number of
-search rounds — into one frozen object, built from the settings by default. It exists for step 5:
-an eval can run the same questions with `chat_model="gpt-5"` without touching the environment, and
-store `config.as_record()`, which includes every prompt's version, alongside the scores.
+search rounds — into one frozen object, built from the settings by default. It exists for the evals:
+a run can ask the same questions with `chat_model="gpt-5"` without touching the environment, and
+stores `config.as_record()`, which includes every prompt's version, alongside the scores.
 
 `llm/responses.py` is the only module that talks to OpenAI's chat models, and it is deliberately
 thin. It doesn't retry, because the SDK already does. It exists so that each call site doesn't have
@@ -301,7 +310,7 @@ to the same value:
 | `minimal` | 5.9s | 9.2s | $0.0024 |
 
 All three made the same search and named the same projects. The default stays at n8n parity until
-the evals in step 5 show what the lower settings cost in quality. `CHAT_REASONING_EFFORT` and
+the evals (EVALS.md) show what the lower settings cost in quality. `CHAT_REASONING_EFFORT` and
 `CLASSIFIER_REASONING_EFFORT` in `.env` change it for a session.
 
 Two things about retrieval are worth knowing before reading any scores. First, the scale depends on
@@ -327,8 +336,8 @@ him, and comes 44th. Rewriting strips the name and the question form, and fixes 
 Laravel, though, the keywords match individual projects' tech-stack sections better than the
 general one. With
 `top_k = 20` both Laravel sections are still retrieved and the answer is right; at `top_k = 5`
-they would not be. These are three examples, not an evaluation, and step 5 measures this
-properly. For now: be careful about reducing `top_k`.
+they would not be. These are three examples, not an evaluation; an eval run at a lower `--top-k`
+measures it properly. Until one has: be careful about reducing `top_k`.
 
 ## How it is tested
 

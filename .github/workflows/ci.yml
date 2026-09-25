@@ -201,7 +201,7 @@ jobs:
           docker run --rm portfolio-ai:ci python -c "
           from portfolio_ai.assistant.prompts.loader import ALL
           print('prompts in the image:', ', '.join(prompt.ref for prompt in ALL))
-          assert len(ALL) == 6
+          assert len(ALL) == 7
           "
 
       # Start the image exactly as production does -- its default command -- and ask
