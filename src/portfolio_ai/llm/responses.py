@@ -33,7 +33,7 @@ from typing import cast
 
 import pydantic
 import structlog
-from openai import APIError, AuthenticationError, PermissionDeniedError, omit
+from openai import APIError, AuthenticationError, PermissionDeniedError, not_given, omit
 from openai.types.responses import (
     FunctionToolParam,
     Response,
@@ -213,8 +213,12 @@ async def parse[T: pydantic.BaseModel](  # ruff: ignore[too-many-arguments]
     text_format: type[T],
     effort: ReasoningEffort | None = None,
     prompt: str | None = None,
+    request_timeout: float | None = None,
 ) -> Parsed[T]:
     """One call whose answer is an instance of ``text_format``.
+
+    ``request_timeout`` overrides ``OPENAI_TIMEOUT_SECONDS`` for this call alone, for a
+    caller that knows its call is slower than a visitor-facing one should be.
 
     The model is constrained to ``text_format``'s JSON schema by the API itself
     (structured outputs), so it cannot reply with prose. It can still refuse, or be
@@ -235,6 +239,9 @@ async def parse[T: pydantic.BaseModel](  # ruff: ignore[too-many-arguments]
             text_format=text_format,
             reasoning=_reasoning(effort) or omit,
             store=False,
+            # not_given, unlike None, keeps the client's own timeout: None would
+            # mean "no timeout at all".
+            timeout=request_timeout if request_timeout is not None else not_given,
         )
     except pydantic.ValidationError:
         # The output was JSON that did not match the schema -- a truncated reply,

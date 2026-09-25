@@ -117,6 +117,9 @@ class FakeOpenAI:
         self._replies: deque[_Reply] = deque()
         # Every /v1/responses request body, in order.
         self.requests: list[dict[str, Any]] = []
+        # The read timeout each of those requests was sent with, in the same order.
+        # The SDK passes it to httpx as a request extension, not in the body.
+        self.read_timeouts: list[float | None] = []
         # Every text sent to /v1/embeddings.
         self.embedded: list[str] = []
         # Tests that care which chunks a query finds set vectors here.
@@ -181,6 +184,7 @@ class FakeOpenAI:
             return self._embeddings(body)
 
         self.requests.append(body)
+        self.read_timeouts.append(request.extensions.get("timeout", {}).get("read"))
         assert self._replies, f"unexpected call #{len(self.requests)}: nothing scripted for it"
         reply = self._replies.popleft()
 
@@ -277,18 +281,23 @@ class FakeOpenAI:
         )
 
 
+FAKE_CLIENT_TIMEOUT_SECONDS = 30.0
+
+
 def install_fake_openai(monkeypatch: pytest.MonkeyPatch) -> FakeOpenAI:
     """Route every OpenAI call in the process to a new :class:`FakeOpenAI`.
 
     Patched where the client is fetched -- ``responses.get_client`` and
     ``embeddings.get_client`` -- exactly as test_pipeline.py patches
     ``github.build_client``. ``max_retries=0``, so a scripted failure fails at once
-    instead of being retried into a different scripted reply.
+    instead of being retried into a different scripted reply. The timeout is the
+    settings' default, so a test can tell "the client's own timeout" from none at all.
     """
     fake = FakeOpenAI()
     client = AsyncOpenAI(
         api_key="not-a-real-key",
         max_retries=0,
+        timeout=FAKE_CLIENT_TIMEOUT_SECONDS,
         http_client=httpx2.AsyncClient(transport=httpx2.MockTransport(fake.handler)),
     )
     monkeypatch.setattr(responses, "get_client", lambda: client)

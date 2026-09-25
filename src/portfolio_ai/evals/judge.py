@@ -31,6 +31,12 @@ from portfolio_ai.llm.responses import CallUsage
 
 SCORES = range(1, 6)
 
+# OPENAI_TIMEOUT_SECONDS (30) is sized for a visitor waiting on an answer. The judge
+# reads twenty-odd passages at gpt-5's default effort, and on the longest answers
+# took longer than that on every retry: three of the first baseline's 54 cases went
+# ungraded. Nobody is waiting on a judge, so it gets room.
+JUDGE_TIMEOUT_SECONDS = 180.0
+
 
 # The shape the judge must answer in. Like the classifier's, it has no docstring on
 # purpose: the class's docstring would become the JSON schema's description, which
@@ -109,6 +115,7 @@ async def judge(
         input=[{"role": "user", "content": brief(case, route=route, chunks=chunks, answer=answer)}],
         text_format=Verdict,
         prompt=JUDGE.ref,
+        request_timeout=JUDGE_TIMEOUT_SECONDS,
     )
 
     verdict = result.value

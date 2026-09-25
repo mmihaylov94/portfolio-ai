@@ -18,6 +18,8 @@ Run it from the repository root, which is where ``--dataset golden_v1`` finds
 
 import asyncio
 import dataclasses
+import io
+import sys
 from collections import Counter
 from collections.abc import Callable, Coroutine
 from enum import StrEnum
@@ -70,6 +72,16 @@ def _effort(choice: Effort | None, current: ReasoningEffort | None) -> Reasoning
 @app.callback()
 def _commands() -> None:
     """Score the assistant against a golden dataset."""
+    # On Windows, output redirected to a file or piped is encoded in the ANSI code
+    # page (cp1251, cp1252...), and Python raises UnicodeEncodeError for any
+    # character outside it -- which a model's answer supplies freely (a
+    # non-breaking hyphen, U+2011, stopped the first real `show` halfway). An
+    # interactive console is UTF-8 since Python 3.6 and never hits this.
+    # "replace" prints "?" for those instead. isinstance, because sys.stdout is
+    # typed as TextIO, which has no reconfigure(), and could be a StringIO.
+    for stream in (sys.stdout, sys.stderr):
+        if isinstance(stream, io.TextIOWrapper):
+            stream.reconfigure(errors="replace")
 
 
 def _fail(message: str) -> typer.Exit:

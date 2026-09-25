@@ -118,12 +118,17 @@ def _fallback(answered: Sequence[ResultRow], rules: Counter[str]) -> dict[str, A
 
 
 def _reasoning_tokens(row: ResultRow) -> int | None:
-    """The tokens the answering calls spent thinking, the judge's and embeddings' left out.
+    """The tokens the answering calls spent thinking: the chat's own, and nothing else.
 
     Reasoning tokens are billed and never shown, and they are what a lower reasoning
-    effort saves: the number an effort comparison is really about.
+    effort saves: the number an effort comparison is really about. The classifier is
+    left out as well as the judge and the embeddings, because it has an effort setting
+    of its own; counting it here made the first effort runs read 64 tokens for a chat
+    at ``minimal`` that thought for none.
     """
-    answering = [call for call in row.calls if call.get("step") not in {"judge", "embed"}]
+    answering = [
+        call for call in row.calls if call.get("step") not in {"judge", "embed", "classify"}
+    ]
     if not answering:
         return None
     return sum(int(call.get("reasoning_tokens") or 0) for call in answering)

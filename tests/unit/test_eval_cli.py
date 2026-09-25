@@ -6,6 +6,9 @@ process would take over the test runner's capture for every test after these.
 """
 
 import asyncio
+import io
+import os
+import sys
 from pathlib import Path
 from typing import Any
 
@@ -152,3 +155,21 @@ def test_listing_before_any_run(monkeypatch: pytest.MonkeyPatch) -> None:
 
     assert result.exit_code == 0
     assert "No runs yet." in result.output
+
+
+def test_a_console_that_cannot_encode_a_character_prints_a_placeholder(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Redirected output on Windows is encoded in the ANSI code page, and cp1251 has
+    # no U+2011, the non-breaking hyphen a real answer carried; before the fix,
+    # printing it ended `show` with a traceback.
+    raw = io.BytesIO()
+    console = io.TextIOWrapper(raw, encoding="cp1251")
+    monkeypatch.setattr(sys, "stdout", console)
+    monkeypatch.setattr(sys, "stderr", io.TextIOWrapper(io.BytesIO(), encoding="cp1251"))
+
+    cli._commands()
+    print("gpt\N{NON-BREAKING HYPHEN}5-mini", file=console)
+    console.flush()
+
+    assert raw.getvalue() == b"gpt?5-mini" + os.linesep.encode()

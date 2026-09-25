@@ -5,12 +5,14 @@ and parses each structured reply, exactly as it does for the classifier.
 """
 
 import pytest
-from openai_fake import FakeOpenAI, install_fake_openai
+from openai_fake import FAKE_CLIENT_TIMEOUT_SECONDS, FakeOpenAI, install_fake_openai
 
+from portfolio_ai.assistant.classifier import MessageCategory
 from portfolio_ai.assistant.prompts.loader import JUDGE
 from portfolio_ai.db.documents import RetrievedChunk
 from portfolio_ai.evals import judge as judging
 from portfolio_ai.evals.datasets import EvalCase
+from portfolio_ai.llm import responses
 
 CASE = EvalCase(
     key="python",
@@ -81,6 +83,28 @@ async def test_the_judge_reads_the_rubric_the_passages_the_reference_and_the_ans
     assert '[1] Technical Skills and Tools (tech-stack), "Does Mihail know Python?"' in brief
     assert "Reference answer:\nYes, from his RPA work" in brief
     assert f"Rachel's answer:\n{ANSWER}" in brief
+
+
+async def test_the_judge_waits_longer_than_a_visitor_facing_call(fake: FakeOpenAI) -> None:
+    # The first baseline lost three verdicts to the 30-second client timeout.
+    fake.judge(faithfulness=5, completeness=5, style=5, rationale="Fine.")
+    fake.classify("small_talk")
+
+    await _judge()
+    await responses.parse(
+        step="classifier",
+        model="gpt-5-mini",
+        instructions="Classify.",
+        input=[{"role": "user", "content": "hi"}],
+        text_format=MessageCategory,
+    )
+
+    # The second call keeps the client's own timeout: the override belongs to the
+    # judge's call alone. Asserting the value, not just "not 180", also catches
+    # not_given swapped for None, which would mean no timeout on any call.
+    judge_timeout, other_timeout = fake.read_timeouts
+    assert judge_timeout == judging.JUDGE_TIMEOUT_SECONDS
+    assert other_timeout == FAKE_CLIENT_TIMEOUT_SECONDS
 
 
 async def test_a_reply_that_does_not_fit_the_schema_is_no_verdict_not_an_error(

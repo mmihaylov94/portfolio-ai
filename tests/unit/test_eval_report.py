@@ -172,7 +172,8 @@ def test_one_timing_is_its_own_percentile_and_none_is_none() -> None:
 
 
 def test_reasoning_tokens_count_the_answering_calls_only() -> None:
-    """What a lower effort saves. The judge thinks too, but on the grader's bill."""
+    """What a lower chat effort saves. The judge thinks on the grader's bill, and the
+    classifier has an effort of its own."""
     calls = [
         {"step": "classify", "reasoning_tokens": 64},
         {"step": "search", "reasoning_tokens": 300},
@@ -185,7 +186,8 @@ def test_reasoning_tokens_count_the_answering_calls_only() -> None:
         _row(case_id=2, calls=[{"step": "small_talk", "reasoning_tokens": 36}]),
     ]
 
-    assert report.totals(rows)["tokens"]["reasoning_mean"] == pytest.approx(450.0)
+    # (300 + 500 + 36) / 2: the classifier's 64 counts for nothing.
+    assert report.totals(rows)["tokens"]["reasoning_mean"] == pytest.approx(418.0)
 
 
 def test_costs_are_decimal_strings_and_the_judge_is_counted_apart() -> None:
