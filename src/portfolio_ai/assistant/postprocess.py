@@ -3,7 +3,7 @@
 Two things:
 
 - **The link rule, enforced in code.** Rachel must never send a visitor to a URL
-  containing ``/knowledgebase/`` or ``/projects/``. The prompt says so twice, and it
+  with a ``/knowledgebase`` or ``/projects`` path. The prompt says so twice, and it
   still is not a guarantee -- a prompt is a strong suggestion to a model, not a
   constraint on it. This is the constraint.
 - **Recognising the fallback answer**, "I don't have that information...", which
@@ -19,9 +19,13 @@ before that goes out immediately.
 """
 
 import re
+from urllib.parse import urlsplit
 
-# Lower-case; URLs are compared lower-cased, so /Projects/ is caught too.
-FORBIDDEN_SEGMENTS = ("/knowledgebase/", "/projects/")
+# A path segment named "knowledgebase" or "projects": "/projects/x", but also
+# "/projects" at the end or before "?" or "#", which a plain substring test for
+# "/projects/" let through. The site's own "#projects" section is a fragment, not a
+# path segment, so it stays allowed. Case is ignored, so /Projects/ is caught too.
+_FORBIDDEN_PATH = re.compile(r"/(knowledgebase|projects)(?=[/?#]|$)", re.IGNORECASE)
 
 # Either a Markdown link or a bare URL, in one pattern, matched in one pass.
 #
@@ -33,21 +37,38 @@ FORBIDDEN_SEGMENTS = ("/knowledgebase/", "/projects/")
 # The length limits are part of the same guarantee: the filter holds an unclosed
 # "[" back for at most as long as the pattern could still match it.
 _LINK = re.compile(
-    # [label](target)
-    r"\[(?P<label>[^\]\n]{0,300})\]\((?P<target>[^)\s]{0,2000})\)"
+    # [label](target), or with a title: [label](target "title")
+    r"\[(?P<label>[^\]\n]{0,300})\]\((?P<target>[^)\s]{0,2000})"
+    r"(?P<title>[ \t]+(?:\"[^\"\n]{0,300}\"|'[^'\n]{0,300}'))?\)"
     # or https://..., http://... or www...., optionally in <angle brackets>
     r"|(?P<url><?(?:https?://|www\.)[^\s<>()\[\]\"'`]+>?)",
     re.IGNORECASE,
 )
 
 # The start of a Markdown link that has not finished arriving: "[label", "[label]",
-# "[label](targ". If the unsent text from some "[" onwards looks like this, it has to
-# wait -- the next piece might complete it into a link that must be removed.
-_OPEN_LINK = re.compile(r"\[[^\]\n]{0,300}(?:\](?:\([^)\s]{0,2000})?)?")
+# "[label](targ", '[label](target "tit'. If the unsent text from some "[" onwards
+# looks like this, it has to wait -- the next piece might complete it into a link
+# that must be removed.
+_OPEN_LINK = re.compile(
+    r"\[[^\]\n]{0,300}"
+    r"(?:\](?:\([^)\s]{0,2000}(?:[ \t]+(?:\"[^\"\n]{0,300}\"?|'[^'\n]{0,300}'?)?)?)?)?"
+)
 
-# Sentence punctuation that follows a URL rather than belonging to it. Removing
+# Sentence punctuation that follows a URL rather than belonging to it. Replacing
 # "https://.../projects/x." should leave the full stop behind.
 _TRAILING_PUNCTUATION = ".,;:!?"
+
+# Markdown emphasis closing around a URL: the "**" in "**https://.../projects/x**".
+# The URL pattern cannot tell it from the URL, because both characters are legal in
+# one, so it comes off the end with the punctuation and goes back after the stand-in.
+_EMPHASIS = "*_"
+
+# What a forbidden bare URL on the site becomes: the nearest page that exists. Both
+# are on rag_agent.md's list of links Rachel may give, so the stand-in is a link she
+# could have written herself, and a unit test fails if either leaves that list.
+PROJECTS_PAGE = "https://mihaylov.io/#projects"
+HOME_PAGE = "https://mihaylov.io/"
+_SITE_HOSTS = frozenset({"mihaylov.io", "www.mihaylov.io"})
 
 _WHITESPACE = re.compile(r"\s")
 
@@ -64,17 +85,52 @@ _FALLBACK_PHRASES = (
 
 
 def is_forbidden_url(url: str) -> bool:
-    lowered = url.lower()
-    return any(segment in lowered for segment in FORBIDDEN_SEGMENTS)
+    return _FORBIDDEN_PATH.search(url) is not None
+
+
+def _stand_in(url: str) -> str | None:
+    """The page on the site to send a visitor to instead of ``url``, if it has one.
+
+    None for another site's URL -- a GitHub project board, say. Pointing a sentence
+    that still names GitHub at the site would be a wrong link, so that URL is simply
+    dropped. ``urlsplit`` finds a host only after "//", which "www.mihaylov.io/x"
+    lacks, hence the scheme added in front; ``hostname`` comes back lower-cased.
+    """
+    try:
+        host = urlsplit(url if "://" in url else f"https://{url}").hostname
+    except ValueError:  # a malformed URL: treat it as nobody's
+        return None
+    if host not in _SITE_HOSTS:
+        return None
+    segments = {segment.lower() for segment in _FORBIDDEN_PATH.findall(url)}
+    return PROJECTS_PAGE if "projects" in segments else HOME_PAGE
 
 
 def strip_forbidden_links(text: str) -> tuple[str, int]:
-    """Remove every forbidden link from ``text``. Returns the text and how many went.
+    """Take every forbidden link out of ``text``. Returns the text and how many went.
 
-    A bare forbidden URL is removed, leaving any punctuation that followed it. A
-    Markdown link to a forbidden URL keeps its label and loses the link, so
-    "see [the case study](https://mihaylov.io/projects/x)" becomes "see the case
-    study" rather than "see ". Allowed links are left exactly as written.
+    A bare forbidden URL on the site is replaced by the nearest real page: the
+    projects section for a ``/projects`` URL, the home page for anything else. Only
+    the URL changes; angle brackets and Markdown emphasis around it, and the
+    punctuation after it, stay where they were. Deleting it instead left "read about
+    it at **." behind, and deleting the words that led up to it is not an option: in
+    a stream, they have already gone out by the time the URL arrives. Another site's
+    forbidden URL has no page of ours to stand in for it, so it is deleted.
+
+    A Markdown link to a forbidden URL keeps its label and loses the link, so "see
+    [the case study](https://mihaylov.io/projects/x)" becomes "see the case study":
+    pointing that label at the projects section would promise a page it is not.
+    Allowed links are left exactly as written.
+
+    Three gaps are known and accepted, because none comes from an ordinary answer:
+
+    - A reference-style definition, ``[1]: https://...``, is not read as a Markdown
+      link, so its URL is treated as a bare one.
+    - A URL without "https://" or "www.", such as ``mihaylov.io/projects/x``, is not
+      recognised as a link at all. The chat front end must not turn bare domains into
+      links (markdown-it's ``linkify``), or this becomes a live one.
+    - ``re.sub`` never re-checks its own replacements, so a kept label or a stand-in
+      that runs straight into the text after it, with no space, can form a new URL.
     """
     removed = 0
 
@@ -87,12 +143,20 @@ def strip_forbidden_links(text: str) -> tuple[str, int]:
 
         url = match.group("url")
         if url is not None:
+            # The URL itself, without what can close around it in any order:
+            # "x**." and "x.**" both come down to "x".
             bare = url.strip("<>")
-            core = bare.rstrip(_TRAILING_PUNCTUATION)
-            if not is_forbidden_url(core):
+            link = bare.rstrip(_TRAILING_PUNCTUATION + _EMPHASIS)
+            if not is_forbidden_url(link):
                 return url
             removed += 1
-            return bare[len(core) :]
+            stand_in = _stand_in(link)
+            if stand_in is None:
+                # Only the punctuation after it stays, as the filter always did.
+                return "".join(c for c in bare[len(link) :] if c in _TRAILING_PUNCTUATION)
+            # The link is where the match starts, after an optional "<", so this
+            # swaps it and keeps everything around it.
+            return url.replace(link, stand_in, 1)
 
         # A label can itself be a URL -- "[https://.../projects/x](...)" -- and it
         # is shown to the visitor, so it gets the same treatment.
@@ -102,9 +166,29 @@ def strip_forbidden_links(text: str) -> tuple[str, int]:
         if is_forbidden_url(match.group("target")):
             removed += 1
             return label
-        return f"[{label}]({match.group('target')})"
+        return f"[{label}]({match.group('target')}{match.group('title') or ''})"
 
     return _LINK.sub(replace, text), removed
+
+
+def urls_in(text: str) -> list[str]:
+    """Every link in ``text``: bare URLs, and the targets of Markdown links.
+
+    The same pattern the filter matches, so what counts as a link here is exactly
+    what the filter looks at. Angle brackets, trailing sentence punctuation and
+    closing emphasis come off, as they do when the filter replaces a link. The evals
+    use this to catch a link the model made up, which the filter has no reason to
+    touch.
+    """
+    found: list[str] = []
+    for match in _LINK.finditer(text):
+        url = match.group("url")
+        if url is not None:
+            found.append(url.strip("<>").rstrip(_TRAILING_PUNCTUATION + _EMPHASIS))
+        else:
+            found += urls_in(match.group("label"))
+            found.append(match.group("target"))
+    return found
 
 
 def _safe_cut(text: str) -> int:
@@ -134,7 +218,7 @@ def _safe_cut(text: str) -> int:
 
 
 class LinkFilter:
-    """Removes forbidden links from text that arrives in pieces.
+    """Takes forbidden links out of text that arrives in pieces.
 
     Feed it each piece; it returns what is safe to send now. Call :meth:`finish`
     when the stream ends, for whatever it was still holding. Everything returned,

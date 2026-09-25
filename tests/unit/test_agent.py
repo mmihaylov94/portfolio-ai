@@ -272,7 +272,7 @@ async def test_a_forbidden_link_never_reaches_the_visitor(fake: FakeOpenAI) -> N
 
     events, result = await _run("Tell me about Threadline")
 
-    assert result.reply == "Read more at  today."
+    assert result.reply == "Read more at https://mihaylov.io/#projects today."
     assert _text(events) == result.reply, "what was streamed is what was stored"
     assert result.links_removed == 1
 

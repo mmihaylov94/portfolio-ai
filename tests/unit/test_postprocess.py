@@ -12,10 +12,13 @@ import re
 import pytest
 
 from portfolio_ai.assistant.postprocess import (
+    HOME_PAGE,
+    PROJECTS_PAGE,
     LinkFilter,
     is_fallback,
     is_forbidden_url,
     strip_forbidden_links,
+    urls_in,
 )
 from portfolio_ai.assistant.prompts.loader import RAG_AGENT
 
@@ -38,6 +41,12 @@ SAMPLES = [
     "In brackets (https://mihaylov.io/projects/threadline) mid-sentence.",
     "x" * 40 + "https://mihaylov.io/projects/q",
     "Mihail\u2019s site \u2014 https://mihaylov.io/#about \u2713 and nothing forbidden at all.",
+    "Bold **https://mihaylov.io/projects/threadline**. Italic _https://mihaylov.io/knowledgebase/"
+    "faq.md_, and **(https://mihaylov.io/projects/x.)**",
+    'Titled: [the case study](https://mihaylov.io/projects/x "The case study") and '
+    "[about](https://mihaylov.io/#about 'About him') end, [open](https://mihaylov.io/ \"x",
+    "Elsewhere: https://github.com/u/projects/1, then https://mihaylov.io/projects and "
+    "https://mihaylov.io/projects?tab=2 done.",
     "",
 ]
 
@@ -52,11 +61,28 @@ def _stream(pieces: list[str]) -> tuple[str, int]:
 # --- the one-shot rule ------------------------------------------------------
 
 
-def test_a_bare_forbidden_url_is_removed_and_its_full_stop_kept() -> None:
+def test_a_bare_forbidden_url_becomes_the_projects_section_and_its_full_stop_stays() -> None:
+    """Deleting it left "See ." behind; a real page in its place keeps the sentence."""
     text, removed = strip_forbidden_links("See https://mihaylov.io/projects/threadline.")
 
-    assert text == "See ."
+    assert text == "See https://mihaylov.io/#projects."
     assert removed == 1
+
+
+@pytest.mark.parametrize(
+    ("written", "shown"),
+    [
+        ("at **https://mihaylov.io/projects/x**.", "at **https://mihaylov.io/#projects**."),
+        ("at *https://mihaylov.io/projects/x*!", "at *https://mihaylov.io/#projects*!"),
+        ("at __https://mihaylov.io/projects/x__", "at __https://mihaylov.io/#projects__"),
+        ("at **https://mihaylov.io/projects/x.**", "at **https://mihaylov.io/#projects.**"),
+        ("at <https://mihaylov.io/projects/x>.", "at <https://mihaylov.io/#projects>."),
+    ],
+    ids=["bold", "italic", "underscores", "full-stop-inside", "angle-brackets"],
+)
+def test_what_surrounds_a_forbidden_url_stays_around_its_stand_in(written: str, shown: str) -> None:
+    """The stray "**" a deleted bold link used to leave behind."""
+    assert strip_forbidden_links(written) == (shown, 1)
 
 
 def test_a_markdown_link_to_a_forbidden_url_keeps_its_label() -> None:
@@ -74,24 +100,79 @@ def test_allowed_links_are_left_exactly_as_written() -> None:
     assert strip_forbidden_links(allowed) == (allowed, 0)
 
 
-def test_the_knowledgebase_path_is_forbidden_too() -> None:
+def test_the_knowledgebase_path_is_forbidden_too_and_becomes_the_home_page() -> None:
     text, removed = strip_forbidden_links("From https://mihaylov.io/knowledgebase/faq.md today")
 
-    assert "knowledgebase" not in text
+    assert text == "From https://mihaylov.io/ today"
     assert removed == 1
 
 
-def test_a_label_that_is_itself_a_forbidden_url_goes_as_well() -> None:
-    text, _ = strip_forbidden_links(
+def test_a_label_that_is_itself_a_forbidden_url_is_replaced_as_well() -> None:
+    text, removed = strip_forbidden_links(
         "[https://mihaylov.io/projects/x](https://mihaylov.io/projects/x)"
     )
 
-    assert not text
+    assert text == "https://mihaylov.io/#projects"
+    assert removed == 2, "the label's URL and the link's target"
+
+
+def test_another_sites_forbidden_url_is_dropped_not_replaced() -> None:
+    """A sentence about GitHub must not end up pointing at the site."""
+    text, removed = strip_forbidden_links(
+        "His GitHub project board is at https://github.com/users/mmihaylov94/projects/1."
+    )
+
+    assert text == "His GitHub project board is at ."
+    assert removed == 1
+
+
+def test_a_titled_markdown_link_keeps_its_label_like_any_other() -> None:
+    """Without the title in the pattern, the URL was read as a bare one, and its label
+    ended up pointing at the projects section."""
+    forbidden = 'Read [the case study](https://mihaylov.io/projects/threadline "Threadline") now.'
+    allowed = "See [About](https://mihaylov.io/#about 'About him')."
+
+    assert strip_forbidden_links(forbidden) == ("Read the case study now.", 1)
+    assert strip_forbidden_links(allowed) == (allowed, 0)
+
+
+def test_a_reference_style_definition_is_treated_as_a_bare_url() -> None:
+    """A known, accepted gap (see the docstring): answers do not write these."""
+    text, removed = strip_forbidden_links("[1]: https://mihaylov.io/projects/threadline")
+
+    assert (text, removed) == ("[1]: https://mihaylov.io/#projects", 1)
+
+
+def test_the_stand_ins_are_links_the_prompt_itself_offers() -> None:
+    """A stand-in has to be a link Rachel may give. If rag_agent.md's list of allowed
+    links ever drops one, this fails before a visitor is sent somewhere unvetted."""
+    offered = urls_in(RAG_AGENT.text)
+
+    assert PROJECTS_PAGE in offered
+    assert HOME_PAGE in offered
 
 
 def test_matching_ignores_case() -> None:
     assert is_forbidden_url("HTTPS://MIHAYLOV.IO/PROJECTS/THREADLINE")
     assert not is_forbidden_url("https://mihaylov.io/#projects")
+
+
+@pytest.mark.parametrize(
+    ("url", "forbidden"),
+    [
+        ("https://mihaylov.io/projects", True),
+        ("https://mihaylov.io/projects?tab=2", True),
+        ("https://mihaylov.io/knowledgebase#faq", True),
+        ("https://mihaylov.io/projects-overview", False),
+        ("https://mihaylov.io/?section=projects", False),
+        ("https://mihaylov.io/#projects", False),
+    ],
+)
+def test_a_forbidden_segment_is_caught_without_its_trailing_slash(
+    url: str, *, forbidden: bool
+) -> None:
+    """ "/projects" at the end of a URL used to slip through a test for "/projects/"."""
+    assert is_forbidden_url(url) is forbidden
 
 
 # --- streaming --------------------------------------------------------------
@@ -166,3 +247,30 @@ def test_the_not_enough_information_wording_is_recognised() -> None:
 
 def test_an_ordinary_answer_is_not_a_fallback() -> None:
     assert not is_fallback("Yes, Laravel is the PHP framework Mihail uses most.")
+
+
+# --- listing links, for the evals -----------------------------------------------
+
+
+def test_every_link_is_listed_as_the_filter_would_see_it() -> None:
+    text = (
+        "See <https://threadline.mihaylov.io>, the [case study](https://mihaylov.io/case-studies/"
+        "glotsmith), www.linkedin.com/in/mihail-m-mihaylov and **https://mihaylov.io/#about**."
+    )
+
+    assert urls_in(text) == [
+        "https://threadline.mihaylov.io",
+        "https://mihaylov.io/case-studies/glotsmith",
+        "www.linkedin.com/in/mihail-m-mihaylov",
+        "https://mihaylov.io/#about",
+    ]
+
+
+def test_a_link_used_as_a_label_is_listed_as_well_as_its_target() -> None:
+    text = "[https://mihaylov.io/#about](https://mihaylov.io/#about)"
+
+    assert urls_in(text) == ["https://mihaylov.io/#about", "https://mihaylov.io/#about"]
+
+
+def test_text_without_links_lists_none() -> None:
+    assert urls_in("Mihail works with [1] Vue and (2) Nuxt.") == []
