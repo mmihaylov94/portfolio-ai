@@ -141,6 +141,11 @@ Look for these first; each one has cost real time here.
   quoted as retired. Try a few faithful rewordings against each one before a dataset's first
   complete run freezes it. A `must_not_include` meant to catch a retired label names the label
   ("RPA Developer"), never a word the knowledge base still uses fairly elsewhere ("RPA").
+- A before-and-after that changes two things at once (a prompt and an effort) proves only what
+  an isolating check measured. Check each case a write-up calls "fixed" against the isolated
+  run, not the full one.
+- `word in text` is a substring test, not a word test: "mail" is in "email". Tokenise before
+  matching words, and match against the part of the text that means it.
 - The prepare step checks that each expected document is indexed, not that it is current. A
   dataset written against edited articles has to run after those edits are pushed and ingested,
   or the run that freezes it grades against the old text.

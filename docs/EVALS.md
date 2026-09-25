@@ -224,6 +224,12 @@ Three details matter.
   reply is unreadable, the case keeps its answer and its other measurements, and says why it
   has no grade.
 - **The fixed out-of-scope reply is not graded.** There is nothing in it to judge.
+- **The judge has its own timeout**, `JUDGE_TIMEOUT_SECONDS` (180), passed to
+  `responses.parse` for its call alone. `OPENAI_TIMEOUT_SECONDS` (30) is sized for a visitor
+  waiting on an answer. `gpt-5` reading twenty passages ran past it on every retry, and the
+  first baseline lost three verdicts that way. The limit is per attempt, as the SDK's is, so
+  with `OPENAI_MAX_RETRIES=3` one judge call can wait about twelve minutes before it gives up.
+  Nobody is waiting on it.
 
 **Null means no claims, not no passages.** A greeting, a refusal or "I don't have that
 information" has no faithfulness score, because it says nothing about Mihail. An answer that
@@ -249,10 +255,12 @@ Every result keeps:
   keeps in `llm_calls`.
 
 The judge's cost is kept apart. The totals report the median and 95th percentile of first-word
-and whole-answer time for knowledge-base answers, and the mean reasoning tokens of the answering
+and whole-answer time for knowledge-base answers, and the mean reasoning tokens of the chat's own
 calls. Those are the numbers the reasoning-effort decision turns on. Reasoning tokens are billed
-and never shown, and they are what a lower effort saves. The judge's calls and the embeddings
-are left out of that mean: the judge thinks on the grader's bill, and embeddings do not reason.
+and never shown, and they are what a lower effort saves. The judge, the embeddings and the
+classifier are left out of that mean: the judge thinks on the grader's bill, embeddings do not
+reason, and the classifier has an effort setting of its own. Runs stored before the 2026-09-25 fix
+counted the classifier too, so the figure they stored is higher than the chat's.
 
 ## The commands
 
@@ -290,9 +298,9 @@ were. The same goes for the runs compared against it: `--chat-effort low` alone 
 the classifier's `low` from `.env`, which changes two settings at once, so pass
 `--classifier-effort default` with it to change only the one being measured.
 
-**Cost.** Grading costs about 1.1¢ an answer at `gpt-5`, and a knowledge-base answer at
-`gpt-5-mini` about 0.4¢. A full golden_v1 run is about $0.70, most of it the judge. `--no-judge`
-costs about $0.20 and keeps every deterministic measurement.
+**Cost.** Grading costs about 1.4¢ an answer at `gpt-5`. A knowledge-base answer at `gpt-5-mini`
+costs about 0.4¢ at the default effort and 0.2¢ at `minimal`. A full golden_v1 run is about $0.75,
+most of it the judge. `--no-judge` costs $0.10-0.17 and keeps every deterministic measurement.
 
 ## Which piece does what
 
@@ -376,7 +384,8 @@ on Windows the protection is weaker.
   bold or a `mailto:`. For persona it means "I'm Mihail's assistant", straight and curly.
 - **`tests/unit/test_eval_judge.py`** runs the judge through the fake OpenAI, so the real SDK
   builds the request and parses the reply. It checks what the judge is shown, that unusable and
-  out-of-range replies are recorded rather than raised, and that null scores are allowed.
+  out-of-range replies are recorded rather than raised, that null scores are allowed, and that
+  its longer timeout reaches the request without changing any other call's.
 - **`tests/unit/test_eval_runner.py`** replaces the assistant, the judge and the database with
   stand-ins, and checks:
   - an unpriced model, a used label, a frozen dataset that changed and an unindexed document
@@ -392,7 +401,10 @@ on Windows the protection is weaker.
   judge's, and Decimal costs. It also checks the comparison's worse and better lists, and both
   table layouts.
 - **`tests/unit/test_eval_cli.py`** checks that production is refused, that a dry run executes
-  nothing and says where the dataset stands, and that an effort option overrides `.env`.
+  nothing and says where the dataset stands, and that an effort option overrides `.env`. It
+  also checks that a console unable to encode a character prints `?` rather than stopping.
+  Windows consoles use a code page such as cp1251, and a non-breaking hyphen in a real answer
+  crashed the first `show`.
 - **`tests/integration/test_eval_db.py`** runs against Postgres:
   - storing a dataset, and replacing it before a complete run;
   - the freeze after one, and no freeze after a run that failed;
@@ -402,5 +414,160 @@ on Windows the protection is weaker.
 
 ## Results
 
-None yet. The baseline and the two reasoning-effort runs wait for golden_v1's review, since every
-score rests on its reference answers. Their comparison goes here.
+### Reasoning effort, 2026-09-25
+
+Three complete runs of golden_v1 against the same corpus (11 documents, 117 chunks, fingerprint
+`a7481f75166f`). The only setting that changed was the chat model's reasoning effort. The
+classifier stayed at its default in all three, and so did `gpt-5-mini`, `top_k` 20 and up to three
+searches. `baseline` is n8n's configuration, which makes it parity by construction.
+
+| | baseline (default) | effort-low | effort-minimal |
+|---|---|---|---|
+| first word, median / p95 | 15.6s / 22.4s | 5.8s / 9.3s | **3.9s / 5.9s** |
+| whole answer, median / p95 | 16.9s / 23.9s | 6.9s / 10.4s | **4.9s / 8.2s** |
+| the chat's reasoning tokens per answer | 741 | 147 | 0 |
+| cost per answer | $0.0031 | $0.0020 | **$0.0017** |
+| faithfulness, 1-5 | 4.86 | 4.78 | 4.62 |
+| completeness, 1-5 | 4.58 | 4.26 | 4.60 |
+| style, 1-5 | 4.91 | 4.74 | 4.84 |
+| misrouted by the classifier | 4 | 7 | 6 |
+| retrieval hit rate | 0.892 | 0.811 | 0.838 |
+| run cost, answers + judge | $0.75 | $0.72 | $0.74 |
+
+The reasoning-token row counts the chat's calls alone, recomputed from the stored calls. The
+totals these runs stored say 692 / 173 / 64, because the report then counted the classifier too.
+At `minimal` the chat does not reason at all.
+
+**Read the classifier's row first, because it moves the others.** The classifier ran with the
+same settings in all three runs, yet misrouted 4, 7 and 6 cases, and not always the same ones.
+That is its own variance, not an effect of the chat's effort. A misrouted question never
+searches, so each misroute also counts as a retrieval miss. That is all of the gap in hit rate:
+in every run the only misses are the misrouted cases. It is also most of the gap in recall and
+MRR, and it is why the retrieval rows are left out of the conclusion.
+
+**On the 36 cases every run sent to the knowledge base, the chat's effort costs almost
+nothing.** Over the cases all three runs graded:
+
+| | faithfulness | completeness | style |
+|---|---|---|---|
+| baseline | 4.96 | 4.68 | 4.94 |
+| effort-low | 4.89 | 4.43 | 4.88 |
+| effort-minimal | 4.79 | **4.82** | **5.00** |
+
+`minimal` loses a little faithfulness: six 5s become 4s, and none fall lower. It is about as
+complete as the baseline. The table can't show one of its failures, pretend-mihail, because the
+baseline has no grade for that case. Averaging each run over its own graded cases instead gives
+completeness of 4.68, 4.39 and 4.71. `low` is the weakest of the three. Its one clear failure
+is `phd-false-premise`, which it answered with "I don't have that information" instead of
+correcting the premise. `minimal`'s one clear failure is `pretend-mihail`: it refused the first
+person, as it should, but offered the third-person summary instead of giving it. Each is one
+case in one run, which is within what a second run of the same settings would move.
+
+**Recommendation: `CHAT_REASONING_EFFORT=minimal`.** The first word arrives in about 4 seconds
+instead of 16, and 6 instead of 22 at the 95th percentile. The answer costs 45% less, with no
+measurable loss in completeness or style and a small one in faithfulness. `low` is slower than
+`minimal` and scored no better. The decision is the owner's; the numbers are one run each, on 54
+cases.
+
+**What the runs found besides effort.**
+- **The classifier misroutes project questions**, and this is the biggest quality problem the
+  evals found:
+  - Five questions were sent to `out_of_scope` in one run or more, and got the fixed refusal:
+    - "What is the n8n Pro Automation Framework?"
+    - "How does this chat assistant work?"
+    - "Is Glotsmith an AI chatbot?"
+    - "Why did Glotsmith switch from Stripe to Paddle?"
+    - "How does moderation work in Threadline?"
+  - "yes please" and "sure", following Rachel's own offer, went to `small_talk` in most runs.
+    That happened even with the previous exchange given.
+
+  Its prompt was n8n's, ported verbatim. The fix is below, under "The classifier's prompt".
+- **The CV link:** the baseline and `low` pointed to the contact section rather than giving
+  `Mihail_Mihaylov_CV.pdf`, which the knowledge base states.
+- **The judge's timeout:** the baseline lost three verdicts (marketing-reporter,
+  pretend-mihail, everything) to the 30-second `OPENAI_TIMEOUT_SECONDS`. That limit is sized for
+  a visitor, not for `gpt-5` reading twenty passages. The judge now has 180 seconds of its own
+  (`JUDGE_TIMEOUT_SECONDS`), and the later runs graded every case. The baseline's averages cover
+  those three cases fewer, which is one more reason the matched-case table is the one to read.
+  OpenAI may have billed those timed-out attempts. Nothing comes back to record, so the
+  baseline's judge total of $0.58 probably understates what it cost.
+
+### The classifier's prompt, 2026-09-25
+
+Production switched both efforts to `minimal` after the runs above, and the classifier at
+`minimal` had never been measured. So the "before" here is the classifier alone, at production's
+settings. A throwaway script sent every golden_v1 question to it five times, with no search, no
+answer and no judge, which gives 270 routing decisions per prompt for about 6¢.
+
+| classifier at `gpt-5-mini` / `minimal` | wrong, of 270 | cost |
+|---|---|---|
+| prompt version 1 (n8n's) | 28 | $0.055 |
+| prompt version 2 | **0** | $0.068 |
+
+**Version 1 at `minimal` was worse than at the default effort.** "What is Glotsmith?" went to
+`out_of_scope` five times out of five, and so did four other questions about his projects. At the
+default effort the same prompt got "What is Glotsmith?" right in all three runs. With less
+reasoning, the model stopped inferring that an unfamiliar product name on this site is probably
+his. `glotsmith-paddle` went there once in five and "who are you?" once. The three other project
+questions, about Threadline's stack, the Marketing Reporter and the projects page, were right
+every time: five of eight project questions failed. "sure" went to small talk once in five, and
+"yes please" never did.
+
+**The cause was the same for all of them: the classifier sees one message, not the knowledge
+base.** A question that names a project and not Mihail looks like a question about some unknown
+product, and a bare "yes please" looks like small talk unless the prompt says to read it against
+the previous turn. Version 2 adds three things to n8n's text, and removes nothing:
+- the names of his projects, with the rule that a question about one is about his work even when
+  it does not name him;
+- a rule that a short reply to the assistant is classified by what it accepts;
+- three examples.
+
+The examples are deliberately not golden_v1's questions ("What database does Threadline use?",
+"Who built this chat?"), so the fix isn't tuned to the test. The out-of-scope questions (the
+capital city, SQL help, the prompt injection) went to `out_of_scope` all 30 times: naming the
+projects did not pull unrelated questions in.
+
+The list of names goes stale the day a project is added, so `portfolio-ai-validate` warns about
+any `page_type: project` article whose title words are not all in the prompt. It runs in the
+portfolio repository's CI.
+
+**The full run at production's settings** (`classifier-v2`: chat and classifier at `minimal`,
+prompt version 2), compared with `effort-minimal`:
+
+| | effort-minimal | classifier-v2 |
+|---|---|---|
+| misrouted | 6 | **0** |
+| classification | 0.889 | **1.000** |
+| retrieval hit rate | 0.838 | **1.000** |
+| MRR | 0.806 | 0.946 |
+| faithfulness / completeness / style | 4.62 / 4.60 / 4.84 | 4.93 / 4.49 / 4.71 |
+| first word, median / p95 | 3.9s / 5.9s | 3.4s / 4.7s |
+| run cost | $0.74 | $0.82 |
+
+The two runs differ in classifier effort as well as in the prompt, and the classifier-only check
+separates the two only partly:
+- **The project questions:** it does separate them. Version 1 at `minimal` got the four in this
+  table wrong every time, so the prompt is what fixed them.
+- **The follow-ups:** it doesn't. Version 1 at `minimal` already routed "yes please" 5/5 and
+  "sure" 4/5. Their failures in `effort-minimal` came from the classifier at the default effort.
+  So the short-reply rule is unmeasured at the effort production runs. It rests on the misroutes
+  at default effort and on its reasoning.
+
+That rule also quotes "yes please" and "sure", which are golden_v1's own follow-ups. The next
+version of the prompt should quote replies the dataset doesn't use, and it should say "the
+previous exchange", which is what the classifier is actually given, rather than "the
+conversation so far". Both are wording changes, so they wait for a version 3 and a run of their
+own.
+
+Six cases scored lower, and none of them has anything to do with routing: each went to the
+knowledge base in both runs. They are the chat at `minimal` being variable:
+- `pretend-mihail` failed at `minimal` in both runs. It declines the first person correctly, then
+  offers the third-person summary instead of giving it, and this time introduced itself.
+- `projects-page-link` answered with a bulleted list.
+- `phd-false-premise`, and the two questions it cannot answer (`married`, `football-team`),
+  scored 3 for style instead of 5.
+- `postgres-projects` scored 3 for completeness instead of 5.
+
+Those are the chat prompt's to fix, and the next thing worth measuring.
+
+Total spend on this change: $0.94.

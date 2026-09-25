@@ -163,6 +163,55 @@ def test_strict_turns_warnings_into_failures(corpus: Path) -> None:
     assert runner.invoke(app, [str(corpus), "--strict"]).exit_code == 1
 
 
+def _project(title: str) -> str:
+    article = GOOD.format(doc_id="project", title=title)
+    return article.replace("page_type: about", "page_type: project")
+
+
+@pytest.mark.parametrize(
+    "title",
+    [
+        "Brand New Product",
+        # Each is a substring of the prompt ("Threadline", "email") but not a word
+        # of it, so a substring test would have let them through.
+        "Thread",
+        "Email Reporter",
+    ],
+)
+def test_a_project_the_classifier_prompt_does_not_name_warns_but_passes(
+    corpus: Path, title: str
+) -> None:
+    """golden_v1 found "What is Glotsmith?" refused as off-topic while the prompt
+    did not name Glotsmith. A new project would go the same way unnoticed."""
+    write(corpus, "new.md", _project(title))
+
+    result = runner.invoke(app, [str(corpus)])
+
+    assert result.exit_code == 0
+    assert "not named in the classifier prompt" in result.output
+
+
+@pytest.mark.parametrize(
+    "title",
+    [
+        "Glotsmith",
+        "Threadline",
+        "n8n Pro Automation Framework",
+        "AI Marketing Reporter",
+        # Worded differently in the prompt ("the AI assistant on mihaylov.io"), which
+        # is why a title counts as named when all of its words appear, in any order.
+        "mihaylov.io AI Assistant",
+    ],
+)
+def test_every_real_project_is_named(corpus: Path, title: str) -> None:
+    write(corpus, "project.md", _project(title))
+
+    result = runner.invoke(app, [str(corpus)])
+
+    assert result.exit_code == 0
+    assert "0 warning(s)" in result.output
+
+
 def test_an_empty_directory_fails_rather_than_passing_vacuously(tmp_path: Path) -> None:
     """A checker that reports success when it found nothing to check is worse than
     no checker: a wrong path in CI would look green forever."""

@@ -270,7 +270,10 @@ it from the published image on every commit that touches `knowledgebase/`.
 It treats as errors anything that would be rejected, a duplicate `doc_id`, a `url` containing
 `/knowledgebase/` or `/projects/`, a `last_verified` date in the future, and an article with no
 content. It warns, without failing, about a missing `url` or `last_verified`, an article with no
-`##` headings, and a section big enough to be split. `--strict` makes the warnings fail too.
+`##` headings, a section big enough to be split, and a `page_type: project` article whose title
+the classifier prompt doesn't name. The classifier sees one message, not the knowledge base, so
+an unnamed project's questions can be refused as off-topic. `--strict` makes the warnings fail
+too.
 
 ```bash
 uv run portfolio-ai-validate ../my-portfolio/knowledgebase

@@ -64,7 +64,10 @@ pool before any model is called: the calls take seconds, and the pool is shared.
 the previous exchange — the last question and its answer, if there are any. n8n gave its
 classifier the message alone, and so sent "yes please", the natural reply to Rachel's own offer of
 more detail, to small talk, the one route that cannot search. The call goes through
-`llm.responses.parse()` with n8n's classifier prompt and `text_format=MessageCategory`.
+`llm.responses.parse()` with the classifier prompt and `text_format=MessageCategory`. The prompt
+is n8n's plus two additions in version 2, made after the evals: it names Mihail's projects, since
+the classifier sees one message and would otherwise refuse "What is Glotsmith?" as off-topic, and
+it says a short reply such as "yes please" is classified by what it accepts.
 `MessageCategory` is a Pydantic model with a single field that can only hold one of the three
 labels. The SDK turns it into a JSON schema, the API makes the model answer in exactly that shape,
 and the SDK parses the reply back into a `MessageCategory`, so the label cannot arrive misspelled.
@@ -309,8 +312,9 @@ to the same value:
 | `low` | 7.8s | 10.6s | $0.0028 |
 | `minimal` | 5.9s | 9.2s | $0.0024 |
 
-All three made the same search and named the same projects. The default stays at n8n parity until
-the evals (EVALS.md) show what the lower settings cost in quality. `CHAT_REASONING_EFFORT` and
+All three made the same search and named the same projects. The evals have since measured what
+the lower settings cost in quality: at `minimal`, almost nothing (EVALS.md, Results). Production's
+`.env` now sets `minimal`; the code default stays at n8n parity. `CHAT_REASONING_EFFORT` and
 `CLASSIFIER_REASONING_EFFORT` in `.env` change it for a session.
 
 Two things about retrieval are worth knowing before reading any scores. First, the scale depends on

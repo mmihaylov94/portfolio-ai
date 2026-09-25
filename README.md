@@ -47,7 +47,8 @@ Under construction, and useful already.
   retrieval, routing, the style and safety rules, an LLM judge's grades, latency and cost, with
   every run stored alongside the configuration that produced it.
 
-Next is the baseline run the assistant is judged against before the site switches over. The
+The baseline the assistant is judged against is recorded, with runs at lower reasoning effort
+beside it, in [docs/EVALS.md](docs/EVALS.md). Next is the front end and the switch-over. The
 build order is in [ARCHITECTURE.md](ARCHITECTURE.md) §12.
 
 ## Getting started

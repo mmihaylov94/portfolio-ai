@@ -4,8 +4,8 @@ Python replacement for the two n8n workflows that currently power the AI chat bo
 [mihaylov.io](https://mihaylov.io), plus an evaluation harness and an analytics/feedback loop.
 
 **Status:** build steps 1-4 done (foundations, ingestion, assistant core, API); step 5's eval
-harness built, its baseline runs next.
-**Last updated:** 2026-09-24
+harness built and its baseline and reasoning-effort runs recorded (docs/EVALS.md).
+**Last updated:** 2026-09-25
 
 ---
 
@@ -1144,6 +1144,7 @@ Non-negotiable from the first commit, because git history is published too:
 | Streaming | SSE from day one | §8 |
 | Model API | OpenAI Responses API, `store=False`, reasoning passed back between tool calls | §8 |
 | Classifier context | The previous exchange, not the message alone as in n8n | §8 |
+| Classifier prompt | n8n's, plus the names of his projects and a rule for short replies (version 2); the validator warns on a project it does not name | §9 |
 | First retrieval | Forced, not left to the model, so every answer records a `top_score` | §8 |
 | Rate limits | 20/session/15m, 60/IP/15m, one answer in flight per session, plus a daily spend ceiling | §8 |
 | Visitor disconnects mid-answer | The answer finishes and is stored and counted; it runs in its own task, not the request | §8 |

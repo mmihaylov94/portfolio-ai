@@ -19,12 +19,14 @@ secrets at all.
 """
 
 import datetime as dt
+import re
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Annotated
 
 import typer
 
+from portfolio_ai.assistant.prompts.loader import CLASSIFIER
 from portfolio_ai.exceptions import DocumentRejectedError
 from portfolio_ai.ingestion.chunking import MAX_TOKENS_PER_CHUNK, chunk_document
 from portfolio_ai.ingestion.frontmatter import DocumentMeta, parse_document
@@ -40,6 +42,13 @@ app = typer.Typer(
 # The assistant is told this in its prompt and filtered on it in code; an article
 # whose frontmatter carries such a URL would feed it one anyway.
 FORBIDDEN_URL_FRAGMENTS = ("/knowledgebase/", "/projects/")
+
+# A word for _check_classifier_knows: letters and digits, with inner dots allowed so
+# a domain stays one word.
+_WORD = re.compile(r"[a-z0-9]+(?:\.[a-z0-9]+)*")
+
+# The line of the classifier prompt that lists Mihail's projects.
+_PROJECTS_LINE = "His projects are"
 
 
 @dataclass
@@ -80,6 +89,7 @@ def _check_one(path: Path, root: Path, seen_doc_ids: dict[str, str]) -> list[Fin
     findings.extend(_check_url(relative, meta))
     findings.extend(_check_dates(relative, meta))
     findings.extend(_check_structure(relative, body))
+    findings.extend(_check_classifier_knows(relative, meta))
 
     return findings
 
@@ -118,6 +128,46 @@ def _check_dates(relative: str, meta: DocumentMeta) -> list[Finding]:
         ]
 
     return []
+
+
+def _words(text: str) -> set[str]:
+    """Lower-case words, a dotted name like "mihaylov.io" kept whole."""
+    return set(_WORD.findall(text.lower()))
+
+
+def _check_classifier_knows(relative: str, meta: DocumentMeta) -> list[Finding]:
+    """A project the classifier has never heard of gets refused as off-topic.
+
+    The classifier sees one message, not the knowledge base, so "What is
+    Glotsmith?" reads as a question about some unknown product unless its prompt
+    names the project; golden_v1 caught exactly that. The prompt carries the list
+    by hand, and this is what stops a new project article from quietly missing it.
+
+    Named means every word of the title is a word of the prompt's project list, in
+    any order and case: "mihaylov.io AI Assistant" is named by "the AI assistant on
+    mihaylov.io". Whole words, not substrings -- ``"mail" in text`` is true of
+    "email", so "Thread" would pass on the strength of "Threadline". And the list's
+    line only, not the whole prompt, whose examples supply "email" and "Sofia". A
+    warning, not an error: the article indexes fine, and the fix is a prompt change
+    in this package, which the article's author may not own.
+    """
+    if meta.page_type != "project":
+        return []
+
+    listed = next(
+        (line for line in CLASSIFIER.text.splitlines() if line.startswith(_PROJECTS_LINE)), ""
+    )
+    if _words(meta.title) <= _words(listed):
+        return []
+
+    return [
+        Finding(
+            relative,
+            f"project {meta.title!r} is not named in the classifier prompt (classifier.md) "
+            "-- questions about it that do not mention Mihail may be refused as off-topic",
+            fatal=False,
+        )
+    ]
 
 
 def _check_structure(relative: str, body: str) -> list[Finding]:

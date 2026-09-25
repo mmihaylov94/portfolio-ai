@@ -6,7 +6,7 @@ from pathlib import Path
 import pytest
 
 from portfolio_ai.assistant.prompts import loader
-from portfolio_ai.assistant.prompts.loader import ALL, RAG_AGENT, Prompt
+from portfolio_ai.assistant.prompts.loader import ALL, CLASSIFIER, RAG_AGENT, Prompt
 
 # Each prompt's version and a hash of its text. This is the test that fails when a
 # prompt is edited, and it is meant to.
@@ -17,7 +17,7 @@ from portfolio_ai.assistant.prompts.loader import ALL, RAG_AGENT, Prompt
 # in review instead of arriving silently. A changed prompt should also come with an
 # eval run showing it helped; see CLAUDE.md.
 PINNED = {
-    "classifier": (1, "70dd77e814e0"),
+    "classifier": (2, "2397208265ab"),
     "small_talk": (1, "4e7ec2947c35"),
     "rag_agent": (1, "7cbb3c6d8e57"),
     "search_tool": (1, "e8ed50f414ec"),
@@ -110,3 +110,23 @@ def test_version_one_prompts_are_word_for_word_what_n8n_runs() -> None:
     for prompt in ALL:
         if prompt.version == 1 and prompt.name in originals:
             assert prompt.text == originals[prompt.name].strip(), prompt.name
+
+
+@pytest.mark.skipif(not N8N_EXPORT.exists(), reason="the n8n export is only on the dev machine")
+def test_the_classifier_keeps_every_line_of_n8ns_prompt_in_order() -> None:
+    """Version 2 adds the project names, a rule and examples, and removes nothing.
+
+    The word-for-word test above stops looking at a prompt once its version moves,
+    so this is what holds the classifier to "only added to".
+    """
+    nodes = {
+        node["name"]: node["parameters"]
+        for node in json.loads(N8N_EXPORT.read_text(encoding="utf-8"))["nodes"]
+    }
+    original = nodes["AI | Classify Message"]["options"]["systemPromptTemplate"].strip()
+    ours = iter(CLASSIFIER.text.splitlines())
+
+    for line in original.splitlines():
+        # `in` on an iterator consumes it up to the match, so each line has to be
+        # found after the one before it: the order is checked, not just presence.
+        assert line in ours, line

@@ -6,11 +6,16 @@ Every message is sorted into one of three routes, and the route decides the cost
 - ``small_talk`` -- one short reply, no search.
 - ``mihail_related`` -- the full knowledge-base answer: search, then answer.
 
-The prompt is n8n's, word for word. What changed is what it is shown: n8n gave the
-classifier the new message alone, so "yes please" -- the natural reply to Rachel
-ending an answer with "want more detail?" -- was classified as small talk, and went
-to the one route that cannot search. Measured before this was written: with the
-previous exchange included, those follow-ups route correctly and nothing else moved.
+The prompt started as n8n's, word for word, and it is shown more than n8n showed it:
+n8n gave the classifier the new message alone, so "yes please" -- the natural reply
+to Rachel ending an answer with "want more detail?" -- was classified as small talk,
+and went to the one route that cannot search. The previous exchange is passed here
+for that reason. On its own it was not enough: golden_v1 still saw "yes please" go
+to small talk at the default effort, and at minimal effort five of eight questions
+about a project that did not name Mihail ("What is Glotsmith?") refused as
+off-topic, since the classifier sees one message and not the knowledge base.
+Version 2 of the prompt names his projects and says how to read a short reply;
+prompts/classifier.md lists the changes, and docs/EVALS.md the runs.
 
 Structured output rather than asking for a bare word back. The API holds the model
 to the schema below, so the answer is always exactly one of the three labels, and

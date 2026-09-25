@@ -169,8 +169,12 @@ migrations/      datasets/      tests/unit  tests/integration      docker/
   `small_talk` (short reply, no retrieval), `mihail_related` (full RAG). The classifier is given
   **the previous exchange** along with the new message. n8n gave it the message alone, which
   sent "yes please" -- the natural reply to Rachel's own offer of more detail -- to small talk,
-  the one route that cannot search. Measured before it was changed, and it is an input change,
-  not a prompt change.
+  the one route that cannot search. That input change alone was not enough: golden_v1 still
+  saw "yes please" go to small talk at the default effort. At `minimal`, five of eight questions
+  about his projects that do not name him ("What is Glotsmith?") were refused as off-topic
+  every time. Classifier
+  prompt version 2 names his projects and says how to read a short reply.
+  `portfolio-ai-validate` warns when a project article's title is missing from that list.
 - **The first search is required**, not suggested: the knowledge-base route sends
   `tool_choice="required"` on its first call. The prompt already demands a search before any
   factual answer; this makes it so, and it is why every `mihail_related` answer has a
@@ -197,8 +201,11 @@ migrations/      datasets/      tests/unit  tests/integration      docker/
   that convention when writing new ones.
 - **Reasoning effort is the biggest lever on how the chat feels.** Same question, 2026-09-22:
   the n8n-parity default took 26.7s with the first word at 22.4s; `low` 10.6s/7.8s; `minimal`
-  9.2s/5.9s, and cheaper each time. The default stays at parity until the evals in step 5 say
-  what it costs in quality -- `CHAT_REASONING_EFFORT` in `.env` changes it for a session.
+  9.2s/5.9s, and cheaper each time. Measured on golden_v1 (2026-09-25, docs/EVALS.md):
+  `minimal` brings the median first word from 15.6s to 3.9s and cuts the answer's cost by 45%,
+  with no measurable loss in completeness or style and a small one in faithfulness. Production's
+  `.env` now sets `minimal` for both the chat and the classifier; the code default stays at
+  parity. `CHAT_REASONING_EFFORT` and `CLASSIFIER_REASONING_EFFORT` in `.env` change it.
 - **Analytics signals are recorded at answer time and cannot be backfilled:** `top_score`
   (best cosine similarity), `fallback_used` (the "I do not have that information" answer) and
   `classification` go on every `chat_messages` row. Build these in with the API, not later.
@@ -330,7 +337,7 @@ it compares git blob SHAs and stops.
   feedback 404) and check OpenAI with the terminal chat's `--no-save`.
 - **Embedding dimension changes are migrations.** Changing `EMBEDDING_DIMENSIONS` or the
   embedding model invalidates every stored vector and requires a full re-embed.
-- **Evals cost money.** A full golden_v1 run is about $0.70, most of it the `gpt-5` judge
+- **Evals cost money.** A full golden_v1 run is about $0.75, most of it the `gpt-5` judge
   (`--no-judge` about $0.20). Say what a run or a sweep will cost before starting it.
 - **Evals run locally, against the dev database.** `run` refuses `ENVIRONMENT=production`. The
   dev `.env` sets both reasoning efforts to `low`, so a run meant to match production passes
@@ -364,11 +371,16 @@ Steps 1-4 of the build order (ARCHITECTURE.md §12) are built and step 5's harne
 
 - **Evals** — `python -m portfolio_ai.evals`: golden_v1 (54 cases from the eleven articles),
   deterministic retrieval and rule checks, a `gpt-5` judge, and runs stored with their full
-  configuration for comparison. Proven live on a throwaway dataset.
+  configuration for comparison. golden_v1 is reviewed and frozen: the `gpt-5-mini` baseline at
+  n8n's settings (parity by construction) and runs at chat effort `low` and `minimal` are in
+  docs/EVALS.md.
 
-Still to do in **step 5**: golden_v1 reviewed by the owner, then the `gpt-5-mini` baseline at
-n8n's settings (parity by construction) and runs at chat effort `low` and `minimal`, with the
-results in docs/EVALS.md. Then the front end and cutover (6), analytics reporting (7).
+  Production's `.env` sets both efforts to `minimal`, on those results; the code default stays at
+  n8n parity. Classifier prompt version 2 fixed the misroutes the runs found (`classifier-v2`).
+
+Still to do in **step 5**: nothing required. The chat prompt's weak cases at `minimal` (the end
+of Results in docs/EVALS.md) are the next thing worth measuring. Then the front end and cutover
+(6), analytics reporting (7).
 
 Analytics reporting is last on purpose — it needs real traffic to be worth writing. The
 *capture* (feedback, `top_score`, `fallback_used`, where a conversation came from) shipped with
