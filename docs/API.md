@@ -160,14 +160,18 @@ in it.
 
 - `session_id`: 8 to 100 characters from `A-Z a-z 0-9 _ -`. The browser mints it with
   `crypto.randomUUID()`.
-- `message`: 1 to 2,000 characters after trimming, with no control characters apart from tab and
-  newline. A NUL in particular is refused: Postgres text cannot hold one, so the turn would run, be
-  paid for, and then fail to store. Neither limit would ever count it.
+- `message`: 1 to 2,000 characters after trimming, with no control characters apart from tab,
+  newline and carriage return. A NUL in particular is refused: Postgres text cannot hold one, so the
+  turn would run, be paid for, and then fail to store. Neither limit would ever count it. Characters
+  are code points, as Python's `len` counts them, and trimming is pydantic-core's, which strips
+  Unicode `White_Space`: `U+0085` goes and `U+FEFF` stays, the reverse of JavaScript's `trim()`. The
+  proxy checks the same way, character for character.
 - `rating`: `1` or `-1`, and not `true`. In Python `True == 1`, so a plain `Literal[-1, 1]` accepts
   `true`, which is refused here explicitly.
 - `comment`: optional, at most 1,000 characters. An empty one is stored as no comment.
 - Unknown fields are a 422 (`extra="forbid"`). The only caller is our own proxy, so a misspelt field
-  should fail loudly in development.
+  should fail loudly in development. The proxy refuses them itself, with a 400, rather than
+  dropping them, for the same reason.
 
 Where the visitor came from travels in headers the proxy sets, which are trusted because only the
 key holder can send them:
@@ -205,7 +209,7 @@ rate, and a chat UI should hide the thumbs.
 
 | Event | Data | When |
 |---|---|---|
-| `route` | `{"classification": ...}` | once, first |
+| `route` | `{"classification": ...}` | once, first; not sent for the daily-limit refusal |
 | `search` | `{}` | once per search. Empty on purpose: the query is written by the model and never passes the link filter |
 | `token` | `{"text": ...}` | many times, whole words |
 | `done` | `{"message_id", "classification", "citations", "usage"}` | once, last, on success |
@@ -213,7 +217,9 @@ rate, and a chat UI should hide the thumbs.
 
 Every stream ends with exactly one of `done` or `error`. A refusal streams as one `token` and a
 `done` with a null `message_id`. During silences longer than 15 seconds, FastAPI also sends
-`: ping` comment lines, which clients ignore and proxies take as a sign of life.
+`: ping` comment lines, which clients ignore and proxies take as a sign of life. The response carries
+`Cache-Control: no-cache` and `X-Accel-Buffering: no`, and no `id:` or `retry:` fields, so a stream
+that breaks cannot be resumed: the client asks again.
 
 Errors before a stream starts are ordinary responses with a JSON `{"detail": ...}` body and the
 `X-Request-ID` header, whatever went wrong:
@@ -230,32 +236,54 @@ Errors before a stream starts are ordinary responses with a JSON `{"detail": ...
 
 ### What the proxy has to do (build step 6)
 
-The Express side is not built yet. When it is, these are the things it must get right:
+The proxy is the portfolio site's Express API, `api/src/chat.js` in `mmihaylov94/my-portfolio`, with
+tests in `api/tests/`. The browser sees two routes:
+
+| Browser | Here | Body forwarded |
+|---|---|---|
+| `POST /api/chat` | `POST /v1/chat/stream`, always: the UI streams, and `/v1/chat` is not exposed | exactly `{session_id, message}` |
+| `POST /api/chat/feedback` | `POST /v1/messages/{message_id}/feedback` | exactly `{session_id, rating, comment?}`; `message_id` travels in the browser's body and only the checked integer reaches the URL |
+
+It validates both bodies the way this API does before anything is sent, so a request this API would
+refuse never costs a round trip, and a 422 from here is logged there as drift between the two. These
+are the things it must get right, and how it does:
 
 - **Attach `Authorization: Bearer ${PORTFOLIO_AI_API_KEY}` server-side**, and never let the browser
   see it. The value must equal this service's `PORTFOLIO_AI_API_KEY`.
-- **Send the visitor's real address in `X-Visitor-IP`.** Express currently has no `trust proxy`
-  setting, so `req.ip` is Traefik's address. The contact form's rate limit is therefore one bucket
-  shared by every visitor today, and a naively forwarded IP would hash identically for everyone. Set
-  `app.set("trust proxy", ...)` for the hops actually in front of it (Traefik, and Cloudflare if
-  its proxy is on) before relying on `req.ip`. Forward `User-Agent` and `Referer` as
-  `X-Visitor-User-Agent` and `X-Visitor-Referrer`.
+- **Send the visitor's real address in `X-Visitor-IP`.** Without a `trust proxy` setting, `req.ip`
+  is Traefik's address, and a naively forwarded IP would hash identically for everyone. The proxy
+  reads `TRUST_PROXY`: Cloudflare's proxy is on in front of mihaylov.io, so production is `2`
+  (Cloudflare, then Traefik), which is right only once Traefik trusts Cloudflare's addresses
+  (DEPLOYMENT.md §12). The value is parsed strictly, and every mistake falls back to trusting
+  nothing, in which mode no `X-Visitor-IP` is sent at all. `User-Agent` and `Referer` go as
+  `X-Visitor-User-Agent` and `X-Visitor-Referrer`, the referrer already cut to its origin and path.
 - **Pipe the stream through unbuffered and uncompressed.** Read the upstream body as it arrives and
   write each chunk on, with `Content-Type: text/event-stream` kept. Do not add compression on this
   route; a compressor waits for enough bytes to be worth compressing, and SSE arrives as one chunk
-  at the end.
+  at the end. The proxy relays raw bytes with a reader loop, adds `Cache-Control: no-transform` so
+  Cloudflare leaves the stream alone, and a test fails if the first event only arrives once the
+  upstream has finished. It writes only whole events: bytes after the last blank line wait for
+  the rest of their event, so a connection that breaks mid-event never hands the browser half of
+  one. That rests on this API ending every event and ping with `\n\n`, line feeds only, which
+  FastAPI's `fastapi.sse` does and `tests/unit/test_api.py` relies on; a server that switched to
+  CRLF would have its whole answer held back. If the upstream breaks, goes quiet for 65 seconds,
+  or runs past 200, the proxy ends the stream with an `error` event of the same shape as this
+  API's own.
 - **When the browser disconnects, stop reading the upstream.** Abort the fetch. The turn carries on
-  here regardless and is recorded, so nothing is lost by letting go.
+  here regardless and is recorded, so nothing is lost by letting go. In Express that is
+  `res.once("close")`: `req.on("close")` fires as soon as the request body has been read.
 - **Handle 409, 429 and 503** as "wait and retry" rather than as failures, and show the `detail`
   text. A 409 usually means the previous answer is still being written after the visitor reloaded
   the page.
-- **Pass `X-Request-ID` into its own logs**, so a problem can be traced across both services.
+- **Pass `X-Request-ID` into its own logs**, so a problem can be traced across both services. The
+  proxy logs one line per request with that id, the statuses, an outcome and the duration, and
+  nothing a visitor typed.
 - **Put only an integer in the feedback URL.** Check that the browser's `message_id` is a positive
   integer before building `/v1/messages/{message_id}/feedback`. This API rejects anything else with a
   422 and logs only the route, but the proxy's own logs would still record whatever it put in the URL.
 - **Keep a body size limit in front of this API**, which has none of its own. FastAPI reads a whole
-  body before any check runs, the key included. `express.json()` limits bodies to 100 kB by default,
-  which is ample for a 2,000-character message.
+  body before any check runs, the key included. The proxy limits its chat routes to 32 kB, room for
+  2,000 characters even written entirely as escaped emoji.
 
 ## Which piece does what
 

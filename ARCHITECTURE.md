@@ -3,8 +3,8 @@
 Python replacement for the two n8n workflows that currently power the AI chat box on
 [mihaylov.io](https://mihaylov.io), plus an evaluation harness and an analytics/feedback loop.
 
-**Status:** build steps 1-4 done (foundations, ingestion, assistant core, API); step 5's eval
-harness built and its baseline and reasoning-effort runs recorded (docs/EVALS.md).
+**Status:** build steps 1-5 done (foundations, ingestion, assistant core, API, evals). Step 6 under
+way: the Express proxy is built; the chat UI, the content and the cutover are next.
 **Last updated:** 2026-09-25
 
 ---
@@ -116,7 +116,7 @@ cost to weigh, not a wall.
   `https://n8n.mihaylov.io/webhook/<NUXT_PUBLIC_N8N_CHAT_WEBHOOK_PATH>`.
 - **Session id** lives in `localStorage["n8n-chat/sessionId"]`, with `loadPreviousSession: true`;
   the injected "Start over" button clears it. Not being carried over — see §8.
-- **The Express API (`api/src/server.js`) is not involved in chat.** It exposes exactly
+- **Before step 6, the Express API (`api/src/server.js`) was not involved in chat.** It exposed exactly
   `/api/health` and `/api/contact`. Contact is rate limited (5 per 15 min), reCAPTCHA v3 verified
   (score < 0.5 rejected), then forwarded to an n8n webhook.
 - **Deployment** is Docker + Traefik on the external `traefik_proxy` network, images from GHCR
@@ -208,11 +208,12 @@ correcting either way — and it is a neat illustration of the drift deliverable
     v                                                   |
   +---------------------+     +---------------------+   |
   | Express API         |---->| api container       |---+-----------> OpenAI API
-  | rate limit,reCAPTCHA|     | FastAPI /v1/chat    |   |  chat
+  | rate limit per IP   |     | /v1/chat/stream     |   |  chat
   | holds the bearer key|<----| (no routing labels) |   |
   +---------------------+     +---------------------+   |
    mihaylov.io/api             private to the           v
-   (already exists)            Docker network
+   (behind Cloudflare,         Docker network
+    then Traefik)
                      +----------------------------------------------+
                      | Postgres 16 + pgvector (schema portfolio_rag) |
                      | documents - chunks - chat_* - eval_* - feedback|
@@ -563,7 +564,8 @@ including what the Express proxy must do.
 upgrade over the n8n webhook, which could only return the finished answer. The events, in order:
 `route` (the classification), `search` (one per search, deliberately empty: the query is model
 text that never passes the link filter), `token` (a word at a time), then exactly one of `done`
-(`message_id`, citations, usage) or `error`. What an answer cost is never sent to a caller.
+(`message_id`, classification, citations, usage) or `error`. What an answer cost is never sent to
+a caller.
 
 **A turn outlives its request.** Each answer runs in an asyncio task of its own and the endpoint
 only reads its events from a queue, so a visitor who closes the tab mid-answer stops the reading,
@@ -660,20 +662,32 @@ Whatever the front end ends up looking like, these hold:
 
 #### The proxy: existing Express API
 
-Settled. `api/src/server.js` gains two routes mirroring the contact handler it already has:
+Built in step 6, as `api/src/chat.js` in the portfolio repo, with tests beside it. Two routes:
 
 ```
-POST /api/chat           -> FastAPI POST /v1/chat
-POST /api/chat/feedback  -> FastAPI POST /v1/messages/{id}/feedback
+POST /api/chat           -> FastAPI POST /v1/chat/stream
+POST /api/chat/feedback  -> FastAPI POST /v1/messages/{message_id}/feedback
 ```
+
+`/api/chat` always streams: the new UI has no use for the JSON endpoint, so it is not exposed.
+Feedback carries `message_id` in the browser's body; the proxy checks it is a positive whole number
+and moves it into the URL, forwarding exactly `{session_id, rating, comment?}`. Both bodies are
+checked the way FastAPI checks them before anything is sent.
 
 It attaches `Authorization: Bearer ${PORTFOLIO_AI_API_KEY}` server-side, sends the visitor's
 address, user agent and page as `X-Visitor-IP`, `X-Visitor-User-Agent` and `X-Visitor-Referrer`,
-and forwards to `${PORTFOLIO_AI_URL}`. The address is only correct once Express trusts the proxy
-in front of it: it has no `trust proxy` setting today, so `req.ip` is Traefik's address -- which
-also makes the contact form's rate limit one bucket for every visitor. Nothing about the Nuxt
-build, the nginx image or the Traefik routing changes — the browser is already calling `mihaylov.io/api` for contact, so chat joins the same
-origin. Expect roughly 40 lines plus a rate limiter.
+and forwards to `${PORTFOLIO_AI_URL}`; with that unset, the chat routes answer 503, which is how
+they deploy before the UI. The address is only correct once Express trusts the proxies in front
+of it. **Cloudflare's proxy is on in front of mihaylov.io** (verified 2026-09-25: `Server:
+cloudflare` and `CF-RAY` on every response), so the chain is browser, Cloudflare, Traefik, Express.
+`TRUST_PROXY=2` names those two hops, and is right only once Traefik trusts Cloudflare's address
+ranges; without that, Traefik replaces `X-Forwarded-For` with the Cloudflare edge's address and no
+Express setting can recover the visitor's. The value is parsed strictly -- Express reads the string
+`"2"` as the address 0.0.0.2, and `true` would let anyone choose their own -- and every mistake falls
+back to trusting nothing, in which mode no address is forwarded at all. Setting it also fixes the
+contact form's rate limit, which until now was one bucket for every visitor. Nothing about the Nuxt
+build, the nginx image or the Traefik routing changes: the browser already calls `mihaylov.io/api`
+for contact, so chat joins the same origin.
 
 Three things this buys:
 
@@ -686,8 +700,10 @@ Three things this buys:
   infrastructure.
 
 Streaming is the one wrinkle: proxying SSE through Express needs the response piped rather than
-buffered, and compression disabled on that route. Straightforward, but easy to get subtly wrong
-— worth an explicit test that tokens arrive incrementally rather than in one chunk at the end.
+buffered, and compression disabled on that route. The proxy relays raw bytes with a reader loop and
+`Cache-Control: no-transform`, stops reading upstream when the visitor leaves, and ends a stream
+that breaks or stalls with an `error` event of FastAPI's own shape. A test holds the upstream open
+and fails unless the first event reaches the browser before the upstream finishes.
 
 ### Front-end work this requires (portfolio repo)
 
@@ -706,11 +722,18 @@ piece of component state, which matters because `useProjects.ts` has project ent
 
 What the new component has to support, beyond what the widget did:
 
-- **Thumbs up/down per answer**, posting to the feedback route — the point of deliverable 4
+- **Thumbs up/down per answer**, posting to the feedback route — the point of deliverable 4 — with
+  an optional short comment after a thumbs-down
 - **Citations**, since the API now returns which documents an answer came from
 - **Token streaming** via SSE, with the `message_id` arriving as a final event so feedback still
-  attaches in streaming mode
+  attaches in streaming mode. The stream is a POST, so `EventSource` cannot read it: `fetch` and
+  a stream reader
 - **A visible retention notice**, per the privacy decision in §10
+- **Safe rendering of answers.** No `v-html` and no markdown library: a small tokenizer whose link
+  grammar is `postprocess.py`'s, so nothing becomes a link that the link filter did not see, and a
+  scheme-less domain is never linked
+- **The conversation kept in the browser**, since there is no history endpoint, resumed within 24
+  hours of its last message
 
 Worth keeping: the CSS custom properties in `AiChatPopup.vue` already encode the site palette
 for light and dark mode. Even with a full redesign, those tokens are a free starting point.
@@ -884,11 +907,15 @@ This stores real visitors' typed input, and on a portfolio site people volunteer
 - IP addresses stored only as an HMAC-SHA256 keyed with `IP_HASH_SALT`, never raw -- the
   database layer is never even handed one. A keyed hash rather than a plain one, because all four
   billion IPv4 addresses can be hashed in an afternoon. Referrers are kept without their query
-  string. No cookies beyond the existing `localStorage` session id.
+  string. No cookies. The browser keeps the session id in `localStorage`, and the conversation's
+  own text beside it, so that a reload resumes it: that copy stays on the visitor's device, and is
+  discarded when the chat next loads more than 24 hours after its last message, or at once with
+  "New conversation".
 - Nothing a visitor types goes into a log line; logs record counts, routes, scores and timings,
   and have no retention policy of their own.
-- A line in the site's privacy policy, and a short note in the chat UI that conversations are
-  retained to improve the assistant.
+- A short notice in the chat UI that conversations are kept for 90 days to improve the
+  assistant, and a line in the site's privacy policy. The site has no privacy page yet, so until
+  it does, the notice is the disclosure.
 - The digest is for the site owner only; it is not published.
 
 ---
@@ -1090,9 +1117,11 @@ listed in `.env.example` before `Settings` knows them.
    n8n bot is not scored. Runs at lower reasoning effort measure the latency lever against it.
 6. **Front end + cutover** — add `/api/chat` and `/api/chat/feedback` to the Express API, build
    the redesigned Vue chat component (streaming, citations, thumbs up/down, retention notice),
-   remove `@n8n/chat` and its DOM coupling, then deactivate the n8n workflows and drop
-   `mihaylov_rag_documents` and `mihaylov_chat_histories`. This is the largest chunk of
-   portfolio-repo work in the project and is best treated as its own piece of planning.
+   remove `@n8n/chat` and its DOM coupling, then cut over. After a week of both systems running,
+   deactivate the n8n workflows and drop `mihaylov_chat_histories`, and `mihaylov_rag_documents`
+   once the new ingestion has a month of clean runs behind it (DEPLOYMENT.md §12). This is the largest chunk of portfolio-repo work in the
+   project, planned on its own: the proxy ships first, switched off, and the UI and the rewritten
+   article ship together at cutover.
 7. **Analytics reporting** — signals, clustering, digest, `promote-case`. Deliberately last:
    analytics on zero traffic tells you nothing, and the queries will be better designed after
    seeing a few hundred real questions.
@@ -1139,8 +1168,12 @@ Non-negotiable from the first commit, because git history is published too:
 | Database | Fresh `portfolio_rag` schema, Alembic migrations | §5 |
 | Index scope | `knowledgebase/**/*.md` only — gaps become new articles | §7 |
 | Proxy location | Existing Express API; FastAPI stays private | §8 |
+| Proxy routes | `/api/chat` streams only (`/v1/chat/stream`); feedback carries `message_id` in its body and the proxy moves it into the URL | §8 |
+| Visitor address | Cloudflare then Traefik in front, so `TRUST_PROXY=2` once Traefik trusts Cloudflare's ranges; every mistake trusts nothing | §8 |
 | Chat UI | Clean-sheet redesign, reusing the existing palette tokens | §8 |
 | Session continuity | Not preserved; `crypto.randomUUID()` in `localStorage` | §8 |
+| Chat memory in the browser | The conversation is kept in `localStorage` and resumed within 24 hours; "New conversation" resets it | §8 |
+| Answer rendering | No `v-html`, no markdown library: a tokenizer sharing `postprocess.py`'s link grammar | §8 |
 | Streaming | SSE from day one | §8 |
 | Model API | OpenAI Responses API, `store=False`, reasoning passed back between tool calls | §8 |
 | Classifier context | The previous exchange, not the message alone as in n8n | §8 |

@@ -39,18 +39,19 @@ This project spans two codebases:
   changed as part of this work**, so its current state is a starting point, not a constraint.
   It has its own `CLAUDE.md` worth reading before touching it.
 
-Current state there, as of 2026-09-20: the chat is the stock `@n8n/chat` widget posting straight
-from the browser to n8n (unauthenticated); the Express API handles only `/api/health` and
-`/api/contact`; the site is fully prerendered with no Nitro runtime in production; session id
-lives in `localStorage["n8n-chat/sessionId"]`. **There is no feedback endpoint**, despite the
-README claiming thumbs up/down exists. The `projects/portfolio-ai-assistant.md` knowledge base
+Current state there, as of 2026-09-25: the chat is still the stock `@n8n/chat` widget posting
+straight from the browser to n8n (unauthenticated); the site is fully prerendered with no Nitro
+runtime in production; session id lives in `localStorage["n8n-chat/sessionId"]`. The Express API
+now has `/api/chat` and `/api/chat/feedback` (step 6), which proxy to this service and stay
+switched off until `PORTFOLIO_AI_URL` is set; nothing on the site calls them yet. **The old widget
+has no feedback**, despite the README claiming thumbs up/down exists. The `projects/portfolio-ai-assistant.md` knowledge base
 article made the same claim, and an Express proxy and reCAPTCHA besides, until a fact-check of
 every article on 2026-09-23 removed them; at cutover it is rewritten to describe the new system.
 
 Settled cross-repo decisions:
 
-- **The proxy is the existing Express API.** `api/src/server.js` gains `/api/chat` and
-  `/api/chat/feedback`, mirroring its contact handler: attach the bearer key server-side,
+- **The proxy is the existing Express API.** It gained `/api/chat` and `/api/chat/feedback` in
+  step 6 (`api/src/chat.js`, beside its contact handler): attach the bearer key server-side,
   forward to FastAPI. Nuxt rendering, the nginx image and Traefik routing are all untouched.
   **FastAPI gets no routing labels**, only `traefik.enable=false` — it is private to the Docker
   network. A Nitro route, a public FastAPI and minted session tokens were considered and rejected
@@ -356,18 +357,18 @@ it compares git blob SHAs and stops.
 
 ## Current state
 
-Steps 1-4 of the build order (ARCHITECTURE.md §12) are built and step 5's harness is, and
+Steps 1-5 of the build order (ARCHITECTURE.md §12) are done and step 6 is under way, and
 **every open requirement question is closed** (the decisions log is ARCHITECTURE.md §13).
 
 - **Foundations** — packaging, settings, logging, the async pool, migrations, tests, CI and the
   image on GHCR. Written up as ten lessons in `docs/lessons/`.
-- **Ingestion** — deployed and running hourly: 11 documents, 111 chunks.
+- **Ingestion** — deployed and running hourly: 11 documents, 117 chunks as of 2026-09-25.
 - **Assistant core** — Rachel answers end to end from the terminal: classify, search, answer,
   remember, record.
 - **API** — FastAPI over the assistant, private to the Docker network: bearer auth, per-session
   and global limits, the daily spend cap, answers as JSON or streamed as server-sent events, the
-  feedback endpoint, and the nightly retention purge. Nothing calls it until the Express routes
-  land in step 6.
+  feedback endpoint, and the nightly retention purge. The portfolio's Express routes that call it
+  are built (step 6) and deploy switched off until cutover.
 
 - **Evals** — `python -m portfolio_ai.evals`: golden_v1 (54 cases from the eleven articles),
   deterministic retrieval and rule checks, a `gpt-5` judge, and runs stored with their full
@@ -378,9 +379,15 @@ Steps 1-4 of the build order (ARCHITECTURE.md §12) are built and step 5's harne
   Production's `.env` sets both efforts to `minimal`, on those results; the code default stays at
   n8n parity. Classifier prompt version 2 fixed the misroutes the runs found (`classifier-v2`).
 
-Still to do in **step 5**: nothing required. The chat prompt's weak cases at `minimal` (the end
-of Results in docs/EVALS.md) are the next thing worth measuring. Then the front end and cutover
-(6), analytics reporting (7).
+**Step 6**, the front end and cutover, is in phases:
+1. the Express proxy in the portfolio repo: built, with tests, deployable switched off;
+2. the new chat UI;
+3. the rewritten assistant article and the other copy that becomes false at cutover;
+4. cutover itself, by the runbook in docs/DEPLOYMENT.md §12;
+5. then golden_v2.
+
+After that, analytics reporting (7). The chat prompt's weak cases at `minimal` (the end of Results
+in docs/EVALS.md) are worth measuring whenever convenient.
 
 Analytics reporting is last on purpose — it needs real traffic to be worth writing. The
 *capture* (feedback, `top_score`, `fallback_used`, where a conversation came from) shipped with

@@ -155,6 +155,18 @@ Look for these first; each one has cost real time here.
 - A migration edited after it was applied doesn't run again. The dev database keeps the old
   shape, and the edited downgrade fails on what was never added. Check `alembic current` against
   what changed.
+- A syntax check is not the consuming library's check: `net.isIP` accepts addresses Express's
+  `trust proxy` parser throws on. Validate a setting by compiling it with the library that uses it.
+- An SSE relay that stops mid-line and then writes a blank line dispatches the partial event,
+  truncated data and all. Relay whole events.
+- A shutdown flag checked in middleware misses requests already past it, such as one whose body
+  was still arriving. Check it again where the work starts.
+- `paths-ignore` means not every commit gets an image, so "the image tagged with main's head" may
+  not exist. A rollback pins the digest the container is actually running.
+- `node --test` has no timeout by default, and `--test-timeout` bounds whole files as well as
+  single tests. A CI job running it needs `timeout-minutes`.
+- Escape sequences typed into a tool call can arrive decoded: `\u3000` as an invisible character,
+  `\\` as one backslash. Scan written files for invisible and control characters.
 
 When a finding is a new kind of mistake, suggest a one-line entry for this list.
 

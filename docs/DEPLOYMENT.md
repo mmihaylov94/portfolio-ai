@@ -1240,35 +1240,114 @@ docker compose -f <portfolio-dir>/docker-compose.yml up -d api
 
 ## 12. Cutover from n8n
 
-Not part of the first deployment. Recorded here so the order is decided in advance rather than at
-the moment of switching.
-
 Until cutover, **both systems run side by side and neither notices the other.** n8n keeps serving
 the live chat from `mihaylov_rag_documents`; this project writes only to `portfolio_rag`. That is
 the whole point of the separate schema, and it means the vector store here can be built, ingested
-daily and left to prove itself for weeks before anything is switched.
+hourly and left to prove itself for weeks before anything is switched.
 
-When the assistant, the API and the new chat UI are all ready:
+The switch has three parts, in the portfolio repo (`mmihaylov94/my-portfolio`):
 
-1. **Ingest and verify** — `--force` once, then confirm the document and chunk counts match the
-   eleven files in the knowledge base.
-2. **Point the Express API at FastAPI.** `api/src/server.js` gains `/api/chat` and
-   `/api/chat/feedback`, attaching the bearer key server-side, exactly as its contact handler
-   already does. Watch for the streaming route: the response must be **piped, not buffered**, and
-   compression disabled on it, or SSE arrives as a single chunk at the end. The whole contract --
-   the `X-Visitor-*` headers, `trust proxy`, which statuses to retry -- is in
-   [API.md](API.md#what-the-proxy-has-to-do-build-step-6).
-3. **Deploy the new front end** — `@n8n/chat` removed entirely.
-4. **Watch for a week.** Both systems still work; only the traffic has moved.
-5. **Then, and only then**, disable the n8n workflows and drop `mihaylov_chat_histories`.
-   `mihaylov_rag_documents` can go once the new ingestion has a month of clean runs behind it.
+- **the proxy**: `/api/chat` and `/api/chat/feedback` in its Express API, which ship first and
+  switched off. The contract they meet is [API.md](API.md#what-the-proxy-has-to-do-build-step-6);
+- **the new chat UI**, with `@n8n/chat` removed;
+- **the rewritten `knowledgebase/projects/portfolio-ai-assistant.md`**, which ships with the UI.
+  It describes the n8n system until then, and must not change earlier: n8n re-indexes `main`
+  every week, and the old bot would start describing itself as this one.
 
-The knowledge base article `knowledgebase/projects/portfolio-ai-assistant.md` changes too. It
-describes the n8n system, which stops being true at cutover, so rewrite it to describe the new
-one **in the same change**: otherwise the assistant describes itself inaccurately to the people
-asking about it. (Its claims of thumbs up/down feedback, reCAPTCHA and an Express proxy, none of
-which the n8n bot has, were removed in the fact-check of 2026-09-23.) golden_v1's `assistant-how`
-and `n8n-work` cases describe the n8n system as well, so they change in a new dataset version.
+In order, on the server unless it says otherwise:
+
+1. **Preconditions.** portfolio-ai is on its latest image; ingestion is running hourly (the
+   worker's `ingestion_complete` lines, 11 documents); `DAILY_SPEND_CAP_USD` is set (1.00); the
+   OpenAI project has a monthly budget (§11, Cost).
+2. **Let Traefik trust Cloudflare.** Cloudflare's proxy is on in front of mihaylov.io, so every
+   request reaches Traefik from a Cloudflare address, and by default Traefik replaces
+   `X-Forwarded-For` with that address. Nothing behind it can then tell visitors apart. In
+   Traefik's static configuration, give the entrypoint the site uses (`websecure`)
+   `forwardedHeaders.trustedIPs`, listing Cloudflare's ranges as published at
+   <https://www.cloudflare.com/ips/>, then recreate Traefik so it reads its static configuration
+   again, whether that lives in its compose `command:` or a mounted file:
+   `docker compose up -d --force-recreate` on its service. Worth doing at the same time: allow
+   inbound HTTPS to the server only from those ranges, so the origin cannot be reached around
+   Cloudflare.
+3. **Deploy the Express API, switched off.** In the portfolio's server `.env`, set
+   `TRUST_PROXY=2` (Cloudflare, then Traefik) and leave `PORTFOLIO_AI_URL` unset. In the
+   portfolio's directory, `docker compose pull api && docker compose up -d api`: `restart` would
+   keep the old container, the old image and the old `.env`. Its first log line should read
+   `"event":"api_started"`, `"chat":"disabled"`, `"trust_proxy":"2 hops"`, with no
+   `trust_proxy_*` or `portfolio_ai_*` problem lines before it. Then prove the visitor address is
+   right, from outside, with the rate-limit headers. The chat routes answer 503 while off, but the
+   limiter runs first and counts every request:
+
+   ```bash
+   curl -si -X POST https://mihaylov.io/api/chat/feedback -H 'Content-Type: application/json' -d '{}' | grep -i '^ratelimit:'
+   ```
+
+   Run it three times: `remaining` should fall by one each time. From another network (the same
+   laptop on a phone's hotspot) it should start again from the top. Back on the first network,
+   add `-H 'X-Forwarded-For: 192.0.2.1'`: `remaining` should keep falling in the same bucket. If
+   every network shares one count, Traefik is not trusting Cloudflare yet (step 2).
+4. **Switch the proxy on.** Add `PORTFOLIO_AI_URL=http://portfolio-ai:8000` and
+   `PORTFOLIO_AI_API_KEY` to the portfolio's server `.env`. The key must be identical to this
+   service's own. `docker compose up -d api` there; the start line now says `"chat":"enabled"`.
+   Two checks, neither of which stores anything or spends anything:
+
+   - **Feedback on an answer that does not exist is a 404.** That proves Traefik, Express, the key
+     and the database in one call:
+
+     ```bash
+     curl -s -X POST https://mihaylov.io/api/chat/feedback -H 'Content-Type: application/json' -d '{"session_id":"cutover-check-0001","message_id":1,"rating":1}'
+     # {"error":"There is no such answer in this conversation."}
+     ```
+
+     A 502 with "unavailable" means the two keys differ.
+   - **A refusal streams all the way through Cloudflare.** Set `DAILY_SPEND_CAP_USD=0` in this
+     service's `.env` and `docker compose up -d api` here. Before sending anything, check the
+     container really reads it: `docker compose exec api printenv DAILY_SPEND_CAP_USD` must print
+     `0`, because with any other value the question below is answered, stored and paid for, which
+     is a test chat through production. Then:
+
+     ```bash
+     curl -sN -X POST https://mihaylov.io/api/chat -H 'Content-Type: application/json' -d '{"session_id":"cutover-check-0001","message":"Hello"}'
+     # : connected
+     # event: token   (the daily-limit sentence)
+     # event: done    (message_id null)
+     ```
+
+     A refusal is decided in admission, which only reads (`deps.py`): no session, no message, no
+     OpenAI call. Put the cap back and `docker compose up -d api` again. Streaming itself, word
+     by word, is proven by the proxy's tests and locally end to end; the first real answer
+     confirms it through Cloudflare.
+5. **Deploy the new front end.** First record exactly which image the site is running, because
+   that is the rollback. `main`'s head is not a safe stand-in: a commit that only touches `api/`
+   builds no site image, and the server runs whatever was last pulled. In the portfolio's
+   directory:
+
+   ```bash
+   docker image inspect "$(docker inspect --format '{{.Image}}' "$(docker compose ps -q site)")" --format '{{index .RepoDigests 0}}'
+   # ghcr.io/mmihaylov94/my-portfolio@sha256:...
+   ```
+
+   Then merge the chat UI and the rewritten article to `main`, wait for the new image, and
+   `docker compose pull site && docker compose up -d site`. The article reaches this service's
+   index within the hour.
+6. **Watch for a week.** Both systems still work; only the traffic has moved. Look at the
+   portfolio API's `chat_stream` lines (outcomes other than `completed` and `client_gone`), this
+   service's errors and `daily_spend_cap_reached`, and any `icon_request_reached_api`, which means
+   an icon is missing from the site's bundle. **Rollback** is the digest recorded in step 5,
+   whose widget still talks to n8n: set the `site` service's `image:` to it and
+   `docker compose up -d site`. If the rollback lasts past a Monday, revert the article on `main`
+   too, or n8n's weekly re-index teaches the old bot to describe itself as this one.
+7. **Then, and only then**, disable the n8n workflows and drop `mihaylov_chat_histories`, in n8n's
+   database. `mihaylov_rag_documents` can go once the new ingestion has a month of clean runs
+   behind it. Delete the portfolio's `NUXT_PUBLIC_N8N_CHAT_WEBHOOK_PATH` secret at the same time.
+8. **golden_v2.** golden_v1's `assistant-how` and `n8n-work` cases describe the n8n system, and
+   its Python cases say no portfolio project uses Python. They change in a new dataset version,
+   written against the rewritten articles once they are indexed, with its own baseline run.
+
+The knowledge base article changes **in the same change as the front end**: otherwise the
+assistant describes itself inaccurately to the people asking about it. (Its claims of thumbs
+up/down feedback, reCAPTCHA and an Express proxy, none of which the n8n bot has, were removed in
+the fact-check of 2026-09-23.)
 
 ---
 
@@ -1307,6 +1386,9 @@ and `n8n-work` cases describe the n8n system as well, so they change in a new da
 - **`TZ=Europe/London` on the worker.** Without it every crontab time is an hour out for half the
   year, and nothing reports it.
 - **`PORTFOLIO_AI_API_KEY` lives in two `.env` files.** Rotate both, restart both.
+- **`TRUST_PROXY=2` on the portfolio's API only once Traefik trusts Cloudflare.** Before that,
+  every visitor arrives from a Cloudflare address and the per-visitor limits are per edge. §12
+  step 3 checks it with the rate-limit headers.
 - **`--dry-run` before any production ingestion.**
 - **`DAILY_SPEND_CAP_USD` before the chat is reachable**, not after.
 - **No routing labels on `portfolio-ai`, and `traefik.enable=false`** — it is internal, and
