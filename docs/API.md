@@ -272,9 +272,11 @@ are the things it must get right, and how it does:
 - **When the browser disconnects, stop reading the upstream.** Abort the fetch. The turn carries on
   here regardless and is recorded, so nothing is lost by letting go. In Express that is
   `res.once("close")`: `req.on("close")` fires as soon as the request body has been read.
-- **Handle 409, 429 and 503** as "wait and retry" rather than as failures, and show the `detail`
-  text. A 409 usually means the previous answer is still being written after the visitor reloaded
-  the page.
+- **Pass 409, 429 and 503 through, with their `detail` and `Retry-After`,** so the chat UI can treat
+  them as "wait" rather than as failures. A 409 usually means the previous answer is still being
+  written after the visitor reloaded the page, and the UI asks again after 3, 5 and 8 seconds. A
+  503 that says to come back within ten seconds is asked again once. Anything else, a 429
+  included, shows the `detail` sentence with a way to try again (ARCHITECTURE.md §8).
 - **Pass `X-Request-ID` into its own logs**, so a problem can be traced across both services. The
   proxy logs one line per request with that id, the statuses, an outcome and the duration, and
   nothing a visitor typed.

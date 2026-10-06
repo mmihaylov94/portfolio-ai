@@ -4,8 +4,9 @@ Python replacement for the two n8n workflows that currently power the AI chat bo
 [mihaylov.io](https://mihaylov.io), plus an evaluation harness and an analytics/feedback loop.
 
 **Status:** build steps 1-5 done (foundations, ingestion, assistant core, API, evals). Step 6 under
-way: the Express proxy is built; the chat UI, the content and the cutover are next.
-**Last updated:** 2026-09-25
+way: the Express proxy is deployed switched off, and the chat UI is built on the portfolio's
+`new-chat` branch; the content and the cutover are next.
+**Last updated:** 2026-09-26
 
 ---
 
@@ -705,38 +706,41 @@ buffered, and compression disabled on that route. The proxy relays raw bytes wit
 that breaks or stalls with an `error` event of FastAPI's own shape. A test holds the upstream open
 and fails unless the first event reaches the browser before the upstream finishes.
 
-### Front-end work this requires (portfolio repo)
+### The chat UI (portfolio repo)
 
-`@n8n/chat` is dropped entirely and replaced with a purpose-built Vue component. **The UX is a
-clean-sheet redesign** — there is no requirement to reproduce the widget's welcome screen,
-"Start over" button or conversation behaviour, and **existing conversations are not migrated**,
-so the session id scheme is ours to design. A plain `crypto.randomUUID()` in `localStorage` is
-enough; the API only needs an opaque stable string.
+Built in step 6, on the portfolio's `new-chat` branch until cutover, with its own README and
+CLAUDE.md sections. `@n8n/chat` is gone, and with it the DOM-querying in `useAiChat.ts` and the
+MutationObserver that injected a "Start over" button. **The UX is a clean-sheet redesign**, and
+**existing conversations are not migrated**: the session id is a plain `crypto.randomUUID()`.
+`useAiChat().openChat()` is ordinary shared state now, so the project card with
+`opensChat: true` opens the chat the same way the launcher does.
 
-This also deletes two pieces of accumulated awkwardness: the DOM-querying coupling in
-`useAiChat.ts` (which drives the widget by clicking `#n8n-chat .chat-window-toggle`) and the
-MutationObserver that injects the "Start over" button and rewrites the heading element. Both are
-tied to library internals no type checker guards. `useAiChat().openChat()` becomes a normal
-piece of component state, which matters because `useProjects.ts` has project entries with
-`opensChat: true` that depend on it.
-
-What the new component has to support, beyond what the widget did:
-
+- **The launcher is prerendered; the panel is not.** `ChatWidget.vue` is a button in the default
+  layout. The panel, a native `<dialog>` (a full-screen modal on phones, a corner panel beside the
+  page on anything wider), loads on the first click and stays mounted, so an answer keeps arriving
+  while it is closed.
+- **Streaming** is a POST, so `EventSource` cannot read it: `fetch`, a stream reader and a parser
+  written to the HTML standard's rules. A 75-second watchdog outlasts the proxy's 65-second idle
+  limit, so the proxy's own error event arrives first whenever the proxy is alive. A 409 is asked
+  again after 3, 5 and 8 seconds (a reload mid-answer), and a 503 that says to come back within
+  ten seconds is asked again once.
 - **Thumbs up/down per answer**, posting to the feedback route — the point of deliverable 4 — with
-  an optional short comment after a thumbs-down
-- **Citations**, since the API now returns which documents an answer came from
-- **Token streaming** via SSE, with the `message_id` arriving as a final event so feedback still
-  attaches in streaming mode. The stream is a POST, so `EventSource` cannot read it: `fetch` and
-  a stream reader
-- **A visible retention notice**, per the privacy decision in §10
+  an optional comment after a thumbs down. Hidden on the daily-limit reply, which has no
+  `message_id`.
+- **Citations** under each answer, one per document.
+- **A visible retention notice**, per the privacy decision in §10.
 - **Safe rendering of answers.** No `v-html` and no markdown library: a small tokenizer whose link
-  grammar is `postprocess.py`'s, so nothing becomes a link that the link filter did not see, and a
-  scheme-less domain is never linked
-- **The conversation kept in the browser**, since there is no history endpoint, resumed within 24
-  hours of its last message
+  grammar is a port of `postprocess.py`'s `_LINK`, so nothing becomes a link that the link filter
+  did not see, and a scheme-less domain is never linked. Python's `\s` differs from JavaScript's,
+  so the port spells Python's out; a test checks it against a fixture of Python's own matches.
+  Only http, https and mailto become links, and none with a backslash: a browser follows "\" as
+  "/", so the path it went to would not be the one the filter judged.
+- **The conversation kept in the browser**, since there is no history endpoint: resumed within 24
+  hours of its last question, the last 50 messages, and an answer that was still arriving when the
+  page went away comes back marked as interrupted.
 
-Worth keeping: the CSS custom properties in `AiChatPopup.vue` already encode the site palette
-for light and dark mode. Even with a full redesign, those tokens are a free starting point.
+The logic is plain TypeScript in `app/utils/chat/`, unit tested with Vitest in Node; the
+components only render its state, and are checked by hand.
 
 ---
 

@@ -151,7 +151,8 @@ Look for these first; each one has cost real time here.
   or the run that freezes it grades against the old text.
 - `re.sub` never re-checks its own replacements, so a replacement can join the text next to it
   into a new match. A filter whose output must be clean has to run again on that output, or
-  accept the gap and say so.
+  accept the gap and say so. Streamed, it also has to hold back whatever a later removal could
+  join, because a piece already sent cannot be taken back.
 - A migration edited after it was applied doesn't run again. The dev database keeps the old
   shape, and the edited downgrade fails on what was never added. Check `alembic current` against
   what changed.
@@ -165,6 +166,25 @@ Look for these first; each one has cost real time here.
   not exist. A rollback pins the digest the container is actually running.
 - `node --test` has no timeout by default, and `--test-timeout` bounds whole files as well as
   single tests. A CI job running it needs `timeout-minutes`.
+- A browser's URL parser rewrites what a text filter approved: it reads `\` as `/` in an http or
+  https address, so `https://mihaylov.io\projects\x` leads to `/projects/x`. Check or restrict the
+  address the browser will follow, not only the text the filter saw.
+- Windows PowerShell 5.1's `>` writes UTF-16LE with a byte-order mark, and it is the only
+  PowerShell on the owner's machine. A script whose product is a file writes the file itself, with
+  an explicit encoding, rather than printing it for a redirect.
+- A `v-if` that removes the focused control (a suggestion list, a retry button, a submitted form),
+  or a `disabled` set on it, drops keyboard focus to `<body>`. Move focus somewhere that stays
+  before the element goes.
+- Git Bash's `/tmp` is not a path Windows Python can open: MSYS translates it only in
+  command-line arguments, not inside a script or a heredoc. Files that Python reads go in a
+  Windows path both can see.
+- A safe-to-send rule worked out on a stream's raw text misses structure that a removal
+  creates: in `[a b]` + a deleted URL + `(url)`, a link spans a space the raw scan saw as free.
+  Test the streamed output by cleaning it again, on generated input built to assemble such
+  structure, not only on hand-written samples.
+- Code that runs on every streamed piece must cost in proportion to that piece. Rescanning a
+  buffer that crafted text can stop from ever being cut is quadratic, and a regex with a
+  `{0,300}` bound backtracks up to that bound at every failed start.
 - Escape sequences typed into a tool call can arrive decoded: `\u3000` as an invisible character,
   `\\` as one backslash. Scan written files for invisible and control characters.
 

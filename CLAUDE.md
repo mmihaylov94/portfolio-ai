@@ -39,12 +39,13 @@ This project spans two codebases:
   changed as part of this work**, so its current state is a starting point, not a constraint.
   It has its own `CLAUDE.md` worth reading before touching it.
 
-Current state there, as of 2026-09-25: the chat is still the stock `@n8n/chat` widget posting
+Current state there, as of 2026-09-26: the live chat is still the stock `@n8n/chat` widget posting
 straight from the browser to n8n (unauthenticated); the site is fully prerendered with no Nitro
 runtime in production; session id lives in `localStorage["n8n-chat/sessionId"]`. The Express API
 now has `/api/chat` and `/api/chat/feedback` (step 6), which proxy to this service and stay
-switched off until `PORTFOLIO_AI_URL` is set; nothing on the site calls them yet. **The old widget
-has no feedback**, despite the README claiming thumbs up/down exists. The `projects/portfolio-ai-assistant.md` knowledge base
+switched off until `PORTFOLIO_AI_URL` is set. The new chat UI that calls them is built on the
+portfolio's `new-chat` branch and reaches `main` at cutover. **The old widget has no feedback**,
+despite the README claiming thumbs up/down exists. The `projects/portfolio-ai-assistant.md` knowledge base
 article made the same claim, and an Express proxy and reCAPTCHA besides, until a fact-check of
 every article on 2026-09-23 removed them; at cutover it is rewritten to describe the new system.
 
@@ -380,8 +381,10 @@ Steps 1-5 of the build order (ARCHITECTURE.md §12) are done and step 6 is under
   n8n parity. Classifier prompt version 2 fixed the misroutes the runs found (`classifier-v2`).
 
 **Step 6**, the front end and cutover, is in phases:
-1. the Express proxy in the portfolio repo: built, with tests, deployable switched off;
-2. the new chat UI;
+1. the Express proxy in the portfolio repo: built, with tests, deployed switched off;
+2. the new chat UI: built on the portfolio's `new-chat` branch, with unit tests for its logic.
+   Its answer renderer ports `postprocess.py`'s link pattern, checked against a fixture of
+   Python's matches;
 3. the rewritten assistant article and the other copy that becomes false at cutover;
 4. cutover itself, by the runbook in docs/DEPLOYMENT.md §12;
 5. then golden_v2.
