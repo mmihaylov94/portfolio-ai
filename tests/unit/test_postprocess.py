@@ -8,6 +8,7 @@ all at once", and the way to test a claim about *every* split is to try every sp
 
 import random
 import re
+import time
 
 import pytest
 
@@ -47,6 +48,21 @@ SAMPLES = [
     "[about](https://mihaylov.io/#about 'About him') end, [open](https://mihaylov.io/ \"x",
     "Elsewhere: https://github.com/u/projects/1, then https://mihaylov.io/projects and "
     "https://mihaylov.io/projects?tab=2 done.",
+    # A kept label joining the text after it, and the URL before it, into a new
+    # forbidden URL; the second with a space in the label, so a stream holds the
+    # link back mid-label while the URL before it is already complete.
+    "[https://mihaylov.io](https://mihaylov.io/projects/x)/projects/x and on",
+    "See https://mihaylov.io[/projects page](https://github.com/users/mmihaylov94/projects/1) now.",
+    "Glued [https://mihaylov.io](https://github.com/u/projects/1)[/projects page]"
+    "(https://github.com/u/projects/2) end",
+    "Stand-in: https://mihaylov.io/projects/x[/knowledgebase](https://mihaylov.io/projects/y) end",
+    # A link that only a removal creates, from a "[" that is not a link as written:
+    # an empty-label link, a deleted URL, or a removed link's own "[" goes, and
+    # "[a b](...)" is left. Cut at the space in "a b", a stream let it through.
+    "[a b][](https://example.com/projects/1)(https://mihaylov.io/x'/../projects/x) end",
+    "[a b]https://github.com/u/projects/1(https://mihaylov.io/x'/../projects/x) end",
+    "[[](https://example.com/projects/1)a b](https://mihaylov.io/x'/../projects/x) end",
+    "[[a](https://example.com/projects/1) b](https://mihaylov.io/x'/../projects/x) end",
     "",
 ]
 
@@ -136,6 +152,34 @@ def test_a_titled_markdown_link_keeps_its_label_like_any_other() -> None:
     assert strip_forbidden_links(allowed) == (allowed, 0)
 
 
+def test_a_label_that_runs_into_the_text_after_it_is_checked_again() -> None:
+    """The link goes and its label stays, joined to "/projects/x" into a new forbidden
+    URL. One pass of re.sub never looks at its own result, and left that URL in."""
+    text, removed = strip_forbidden_links(
+        "[https://mihaylov.io](https://mihaylov.io/projects/x)/projects/x"
+    )
+
+    assert text == "https://mihaylov.io/#projects"
+    assert removed == 2, "the link, then the URL its label made"
+
+
+def test_a_label_that_joins_the_url_before_it_is_checked_again() -> None:
+    text, removed = strip_forbidden_links(
+        "See https://mihaylov.io[/projects](https://github.com/users/mmihaylov94/projects/1) now."
+    )
+
+    assert text == "See https://mihaylov.io/#projects now."
+    assert removed == 2
+
+
+@pytest.mark.parametrize("sample", SAMPLES)
+def test_cleaning_the_result_again_finds_nothing(sample: str) -> None:
+    """The guarantee itself: what the filter lets through has no forbidden link left."""
+    cleaned, _ = strip_forbidden_links(sample)
+
+    assert strip_forbidden_links(cleaned) == (cleaned, 0)
+
+
 def test_a_reference_style_definition_is_treated_as_a_bare_url() -> None:
     """A known, accepted gap (see the docstring): answers do not write these."""
     text, removed = strip_forbidden_links("[1]: https://mihaylov.io/projects/threadline")
@@ -208,6 +252,77 @@ def test_random_splits_give_the_one_shot_result(sample: str) -> None:
         assert _stream(pieces) == expected, pieces
 
 
+# Pieces from which a removal can build a link the text did not have: something that
+# opens one, something a pass removes, then something that closes one.
+_OPENERS = [
+    "[a b]",
+    "[a b",
+    "[",
+    "[[](https://example.com/projects/1)a b]",
+    "[[a](https://example.com/projects/1) b]",
+    "https://mihaylov.io[",
+]
+_REMOVED = [
+    "",
+    "[](https://example.com/projects/1)",
+    "[[](https://example.com/projects/1)",
+    "[a](https://example.com/projects/1)",
+    "https://github.com/u/projects/1",
+    "<https://github.com/u/projects/1>",
+]
+_CLOSERS = [
+    "(https://mihaylov.io/x'/../projects/x)",
+    "(https://mihaylov.io/#about)",
+    "](https://mihaylov.io/x'/../projects/x)",
+    "/projects page](https://github.com/u/projects/2)",
+]
+_AROUND = ["a", "see", " ", " ", "\n", "https://mihaylov.io", "/projects/x", "**"]
+
+
+def test_streaming_link_shaped_text_gives_the_one_shot_result() -> None:
+    """Hand-picked samples missed a whole family of these; generated ones find it.
+
+    Five hundred texts built to let a removal assemble a new link, streamed one
+    character at a time. Against the cut this replaced, which judged links from the
+    text as written, 27 of them came out different -- each with a forbidden link in
+    it -- and against the version before that, 91.
+    """
+    rng = random.Random(1)  # ruff: ignore[suspicious-non-cryptographic-random-usage]
+
+    for _ in range(500):
+        parts = [rng.choice(_AROUND) for _ in range(rng.randint(0, 2))]
+        parts.append(rng.choice(_OPENERS))
+        parts += [rng.choice(_REMOVED) for _ in range(rng.randint(1, 2))]
+        parts.append(rng.choice(_CLOSERS))
+        parts += [rng.choice(_AROUND) for _ in range(rng.randint(0, 2))]
+        text = "".join(parts)
+
+        streamed = _stream(list(text))
+
+        assert streamed == strip_forbidden_links(text), text
+        assert strip_forbidden_links(streamed[0]) == (streamed[0], 0), text
+
+
+@pytest.mark.parametrize(
+    "text",
+    ["[" * 3000, "[a b](https://example.com/c)" * 500],
+    ids=["3,000 lone brackets", "500 glued links"],
+)
+def test_a_piece_costs_the_same_however_much_is_held_back(text: str) -> None:
+    """Neither text has a space the filter can cut at, so all of it is held back.
+
+    A filter that looked at the whole held text again for every piece took 18 and
+    13 seconds over these, holding the event loop that every visitor's answer
+    shares. One that keeps its place takes a few hundredths of a second; a second
+    is the margin for a slow machine.
+    """
+    started = time.perf_counter()
+
+    _stream([text[i : i + 4] for i in range(0, len(text), 4)])
+
+    assert time.perf_counter() - started < 1.0
+
+
 def test_text_before_the_word_in_progress_is_sent_immediately() -> None:
     """The filter must hold back as little as possible, or streaming is pointless."""
     link_filter = LinkFilter()
@@ -223,6 +338,43 @@ def test_an_open_markdown_link_is_held_until_it_closes() -> None:
     assert link_filter.feed("See [the case study](https://mihaylov.io/pro") == "See "
     assert link_filter.feed("jects/x) today") == "the case study "
     assert link_filter.finish() == "today"
+
+
+def test_what_is_written_against_an_open_link_waits_with_it() -> None:
+    """Sent at once, "https://mihaylov.io" could not be taken back when the link's
+    label, "/projects page", joined it."""
+    link_filter = LinkFilter()
+
+    assert link_filter.feed("See https://mihaylov.io[/projects pa") == "See "
+    assert (
+        link_filter.feed("ge](https://github.com/users/mmihaylov94/projects/1) now.")
+        == "https://mihaylov.io/#projects page "
+    )
+    assert link_filter.finish() == "now."
+
+
+def test_a_bracket_that_is_no_link_holds_its_line_until_the_line_ends() -> None:
+    """A "[" that is not a link as written can still become one when something after
+    it is removed, so the rest of its line waits. No link reaches past a line end."""
+    link_filter = LinkFilter()
+
+    assert link_filter.feed("See [1] and more ") == "See "
+    assert link_filter.feed("text.\nNext line ") == "[1] and more text.\nNext line "
+    assert not link_filter.finish(), "nothing left to send"
+
+
+def test_a_finished_link_glued_to_an_open_one_waits_with_it() -> None:
+    """Both links go, and their labels join into a forbidden URL. Sent as soon as it
+    was finished, the first label could not have been taken back."""
+    link_filter = LinkFilter()
+    first = "x [https://mihaylov.io](https://github.com/u/projects/1)[/projects pa"
+
+    assert link_filter.feed(first) == "x "
+    assert (
+        link_filter.feed("ge](https://github.com/u/projects/2) end")
+        == "https://mihaylov.io/#projects page "
+    )
+    assert link_filter.removed == 3
 
 
 # --- the fallback answer ----------------------------------------------------

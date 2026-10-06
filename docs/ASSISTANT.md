@@ -121,8 +121,24 @@ back as it is written. 16.9 seconds, most of them spent reasoning before the fir
 **Filter.** Each piece of text passes through a `LinkFilter` before `respond()` yields it as a
 `Token`. The filter takes out any URL containing `/knowledgebase/` or `/projects/`, and it can do
 that mid-stream because it holds back only what might still turn out to be part of such a URL: the
-word in progress, or a Markdown link whose `[` has opened and not yet closed. Everything before
-that goes out at once.
+word in progress, or a Markdown link whose `[` has opened and not yet closed, together with
+anything written straight against it. Everything before that goes out at once.
+
+It checks its own result again until a check finds nothing, because a removal can join the text
+around it into a new link. A Markdown link to a forbidden page loses the link and keeps its label,
+and a label of "https://mihaylov.io" with "/projects/x" written straight after it becomes a
+forbidden URL that one pass, which never looks at its own replacements, would have let through.
+The same can happen with a URL written straight before such a link, which is why that waits with
+the link instead of going out as soon as it is complete.
+
+A removal can also make a link out of a "[" that was not one: in "[a b]", then a URL that gets
+deleted, then "(...)", the deletion leaves "[a b](...)". So a "[" that is not a finished link
+holds back the rest of its line until the line ends, since no link reaches past a line end; a
+link still arriving holds it only until it is finished. Answers rarely contain a stray "[", so
+in practice this costs nothing. The filter keeps its place between pieces and looks at each
+character once: it runs on the event loop for every piece of every answer, and an earlier version
+that looked at everything it held again, for every piece, could be kept busy for minutes by
+text written to do it.
 
 What goes in the link's place is the reason the filter replaces rather than deletes. By the time
 a URL arrives, the words that led up to it ("you can read about it at") have already been sent, so
@@ -289,7 +305,10 @@ rather than likely, and it is why every `mihail_related` answer has a `top_score
 **Forbidden links never reach a visitor.** The prompt forbids them twice, and the `LinkFilter` in
 `respond()` removes any that get through, as the text streams. Its tests check that the streamed
 output equals the output of cleaning the whole text at once, for a set of awkward samples split at
-every position, fed one character at a time, and cut up at random a few hundred times each.
+every position, fed one character at a time, and cut up at random a few hundred times each, and
+that cleaning that output again finds nothing. Five hundred generated texts, built so that a
+removal can assemble a new link, are streamed the same way, because hand-picked samples missed
+that whole family.
 
 **Nothing is kept on OpenAI's side.** Every call in `llm/responses.py` sends `store=False`.
 

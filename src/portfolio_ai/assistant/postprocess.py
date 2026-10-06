@@ -14,8 +14,10 @@ The link rule is the interesting part, because answers are streamed. A URL arriv
 in pieces -- ``https://mihay``, ``lio.io/proj``, ``ects/threadline`` -- and nothing
 can be sent until it is known whether the piece belongs to a forbidden link.
 :class:`LinkFilter` holds back only as much as that question needs: the word in
-progress, or a Markdown link that has been opened and not yet closed. Everything
-before that goes out immediately.
+progress, or a Markdown link that has been opened and not yet closed, together with
+anything written straight against it -- and, rarely, the rest of a line holding a
+"[" that a removal could still turn into a link. Everything before that goes out
+immediately.
 """
 
 import re
@@ -36,6 +38,12 @@ _FORBIDDEN_PATH = re.compile(r"/(knowledgebase|projects)(?=[/?#]|$)", re.IGNOREC
 #
 # The length limits are part of the same guarantee: the filter holds an unclosed
 # "[" back for at most as long as the pattern could still match it.
+#
+# The portfolio's chat UI renders answers with a port of this pattern
+# (app/utils/chat/answerText.ts in mmihaylov94/my-portfolio), so that nothing becomes
+# a link there that this filter never looked at. Its tests check the port against a
+# fixture of this pattern's own matches: change the two together, and regenerate the
+# fixture with that repository's tests/unit/fixtures/link-parity.py.
 _LINK = re.compile(
     # [label](target), or with a title: [label](target "title")
     r"\[(?P<label>[^\]\n]{0,300})\]\((?P<target>[^)\s]{0,2000})"
@@ -69,8 +77,6 @@ _EMPHASIS = "*_"
 PROJECTS_PAGE = "https://mihaylov.io/#projects"
 HOME_PAGE = "https://mihaylov.io/"
 _SITE_HOSTS = frozenset({"mihaylov.io", "www.mihaylov.io"})
-
-_WHITESPACE = re.compile(r"\s")
 
 # The fallback wording rag_agent.md dictates -- rule 2's sentence, and rule 7's
 # "do not have enough information" -- in the forms the model produces them.
@@ -122,16 +128,41 @@ def strip_forbidden_links(text: str) -> tuple[str, int]:
     pointing that label at the projects section would promise a page it is not.
     Allowed links are left exactly as written.
 
+    The result is checked again, and again, until a check finds nothing, because a
+    removal can join the text around it into a new link. One pass of ``re.sub`` never
+    looks at its own replacements: "[https://mihaylov.io](https://.../projects/x)" keeps
+    its label, and a "/projects/x" written straight after it, with no space, joins the
+    label into "https://mihaylov.io/projects/x". So does a URL written straight before
+    a link whose kept label starts "/projects". The second pass catches what the
+    first one made.
+
+    The loop always ends. Every pass that changes the text takes out at least one
+    character the answer was written with -- a stand-in on its own is never a
+    forbidden URL, so every forbidden link holds some -- and no pass adds any. In
+    practice one pass finds everything, and a second finds nothing.
+
     Three gaps are known and accepted, because none comes from an ordinary answer:
 
     - A reference-style definition, ``[1]: https://...``, is not read as a Markdown
       link, so its URL is treated as a bare one.
     - A URL without "https://" or "www.", such as ``mihaylov.io/projects/x``, is not
-      recognised as a link at all. The chat front end must not turn bare domains into
-      links (markdown-it's ``linkify``), or this becomes a live one.
-    - ``re.sub`` never re-checks its own replacements, so a kept label or a stand-in
-      that runs straight into the text after it, with no space, can form a new URL.
+      recognised as a link at all. The chat UI renders answers with this module's own
+      link pattern, so it never links one either; a renderer that turned bare domains
+      into links (markdown-it's ``linkify``) would make this a live one.
+    - A path written percent-encoded, such as ``https://mihaylov.io/%70rojects/x``,
+      is not seen as "/projects", though the web server decodes it into one. It
+      leads where "/projects/x" would: to a page that does not exist.
     """
+    total = 0
+    while True:
+        text, removed = _strip_once(text)
+        if removed == 0:
+            return text, total
+        total += removed
+
+
+def _strip_once(text: str) -> tuple[str, int]:
+    """One pass of :func:`strip_forbidden_links`, which may leave new links behind."""
     removed = 0
 
     # Called once per match by re.sub, and returns what the match is replaced with.
@@ -191,30 +222,20 @@ def urls_in(text: str) -> list[str]:
     return found
 
 
-def _safe_cut(text: str) -> int:
-    """How much of ``text`` can be cleaned now without knowing what comes next.
+# Where the scan below has something to decide: a "[", which may start a link, or
+# whitespace, which may be a place to cut.
+_STOP = re.compile(r"[\[\s]")
 
-    Two rules. A bare URL never contains whitespace, so text up to the last
-    whitespace cannot be part of a URL still arriving. And a Markdown link can
-    contain spaces in its label, so text is never cut inside one -- finished or not.
+
+def _settled(link: re.Match[str]) -> bool:
+    """Whether a finished Markdown link can have the text after it sent on its own.
+
+    A link that stays (its target is allowed) stays exactly where it is, on every
+    pass of :func:`strip_forbidden_links`. A link that goes leaves its label behind,
+    and a label holding a "[" can open a new link with what follows it:
+    "[[](...)a b](...)" leaves "[a b](...)".
     """
-    cut = 0
-    for match in _WHITESPACE.finditer(text):
-        cut = match.end()
-
-    position = 0
-    while (start := text.find("[", position, cut)) != -1:
-        link = _LINK.match(text, start)
-        if link is not None and link.group("url") is None:
-            if link.end() > cut:
-                return start  # a finished link that the cut would split
-            position = link.end()
-        elif _OPEN_LINK.fullmatch(text, start):
-            return start  # a link still arriving
-        else:
-            position = start + 1
-
-    return cut
+    return "[" not in link.group("label") or not is_forbidden_url(link.group("target"))
 
 
 class LinkFilter:
@@ -224,26 +245,97 @@ class LinkFilter:
     when the stream ends, for whatever it was still holding. Everything returned,
     concatenated, is exactly what :func:`strip_forbidden_links` would return for the
     whole text at once -- the unit tests check that for every way of splitting it.
+
+    **Where it cuts.** Only just after whitespace, because a bare URL never contains
+    any, and the word in progress may still turn out to be one. A link that spans a
+    space can only be a Markdown link with spaces in its label, and no link reaches
+    past the end of a line. So a space is safe to cut at when every "[" before it on
+    its line starts a finished link that is settled (see :func:`_settled`).
+
+    Any other "[" holds back what follows it. A link still arriving waits until it
+    is finished. Every other kind holds the rest of its line, and that includes a "["
+    that is not a link as written, because a removal can make it one: in
+    "[a b]https://github.com/u/projects/1(...)", the deleted URL leaves "[a b](...)".
+    What is written straight against a link, such as "https://mihaylov.io" in front
+    of "[/projects](...)", has no space between and waits with it.
+
+    Nothing can join text across a cut like that, on any pass: a link that stays
+    keeps its place, and the label of a link that goes has no "[" to start a new one.
+    So cleaning what goes out piece by piece gives exactly what cleaning the whole
+    text would.
+
+    **What it costs.** It looks at each character once, and keeps its place between
+    pieces, because it runs on the event loop for every piece of every answer. Only
+    a link still arriving is looked at again with each new piece, and that costs no
+    more than the longest link the pattern allows. An earlier version looked at the
+    whole held text again for every piece, and crafted text took it minutes.
     """
 
     def __init__(self) -> None:
-        self._pending = ""
+        self._pending = ""  # received and not yet sent
+        self._scanned = 0  # how far into it the scan has looked
+        self._cut = 0  # how much of it can be sent so far
+        self._line_held = False  # the line being scanned has to end before any more goes
         self.removed = 0
 
     def feed(self, text: str) -> str:
         self._pending += text
-        cut = _safe_cut(self._pending)
-        ready, self._pending = self._pending[:cut], self._pending[cut:]
-        return self._clean(ready)
+        self._scan()
+        cut = self._cut
+        self._scanned -= cut
+        self._cut = 0
+        return self._send(cut)
 
     def finish(self) -> str:
-        ready, self._pending = self._pending, ""
-        return self._clean(ready)
+        self._scanned = 0
+        self._cut = 0
+        self._line_held = False
+        return self._send(len(self._pending))
 
-    def _clean(self, text: str) -> str:
-        if not text:
+    def _scan(self) -> None:
+        """Move the cut as far through the held text as is safe, from where it got to."""
+        text = self._pending
+        i = self._scanned
+        while i < len(text):
+            if self._line_held:
+                end = text.find("\n", i)
+                if end == -1:
+                    i = len(text)
+                    break
+                # No link reaches past the end of a line: everything up to it is settled.
+                self._line_held = False
+                i = end + 1
+                self._cut = i
+                continue
+
+            stop = _STOP.search(text, i)
+            if stop is None:
+                i = len(text)
+                break
+            i = stop.start()
+            if text[i] != "[":
+                # Whitespace that no link can span.
+                i += 1
+                self._cut = i
+                continue
+
+            link = _LINK.match(text, i)
+            if link is not None:
+                if _settled(link):
+                    i = link.end()  # past its label, whose spaces are no place to cut
+                else:
+                    self._line_held = True
+            elif _OPEN_LINK.fullmatch(text, i):
+                break  # still arriving: looked at again when the next piece comes
+            else:
+                self._line_held = True
+        self._scanned = i
+
+    def _send(self, cut: int) -> str:
+        ready, self._pending = self._pending[:cut], self._pending[cut:]
+        if not ready:
             return ""
-        cleaned, removed = strip_forbidden_links(text)
+        cleaned, removed = strip_forbidden_links(ready)
         self.removed += removed
         return cleaned
 
