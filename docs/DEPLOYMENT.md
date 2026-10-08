@@ -437,6 +437,13 @@ IP_HASH_SALT=<generated>
 # 0 turns the chat off. See "The daily spending limit" in §11.
 DAILY_SPEND_CAP_USD=1.00
 
+# How long the models think before they answer. Unset, both run at the model's own
+# default, which the evals measured at a median of 15.6 seconds to the first word;
+# at minimal it was 3.9, for 45% less per answer (docs/EVALS.md). The code default
+# stays unset, to match n8n, so production has to say so here.
+CHAT_REASONING_EFFORT=minimal
+CLASSIFIER_REASONING_EFFORT=minimal
+
 # Source of the knowledge base. The defaults are already correct for this
 # deployment, so these are here to be findable rather than because they need
 # setting. GITHUB_TOKEN is optional while the repository is public -- a run makes
@@ -530,6 +537,7 @@ print('API secrets   ', 'key set' if s.portfolio_ai_api_key else 'KEY MISSING', 
 print('limits        ', s.session_rate_limit, 'per', s.session_rate_window_minutes, 'min;', s.max_concurrent_turns, 'in flight')
 print('spending cap  ', '$' + str(s.daily_spend_cap_usd), 'a day')
 print('retention     ', s.chat_retention_days, 'days')
+print('efforts       ', 'chat', s.chat_reasoning_effort, '/ classifier', s.classifier_reasoning_effort)
 "
 
 # 3. Migrate. Creates the portfolio_rag schema and eleven tables. Additive only --
@@ -1250,9 +1258,12 @@ The switch has three parts, in the portfolio repo (`mmihaylov94/my-portfolio`):
 - **the proxy**: `/api/chat` and `/api/chat/feedback` in its Express API, which ship first and
   switched off. The contract they meet is [API.md](API.md#what-the-proxy-has-to-do-build-step-6);
 - **the new chat UI**, with `@n8n/chat` removed;
-- **the rewritten `knowledgebase/projects/portfolio-ai-assistant.md`**, which ships with the UI.
-  It describes the n8n system until then, and must not change earlier: n8n re-indexes `main`
-  every week, and the old bot would start describing itself as this one.
+- **the rewritten content**, which ships with the UI: `knowledgebase/projects/portfolio-ai-assistant.md`
+  in full, and the lines in `faq.md`, `about-mihail.md`, `tech-stack.md`, `services.md` and
+  `projects/glotsmith.md` that called the assistant n8n-based or said no project uses Python,
+  along with the site's project card, its image, and the CV. They describe the n8n system until
+  then, and must not change earlier: n8n re-indexes `main` every week, and the old bot would start
+  describing itself as this one.
 
 In order, on the server unless it says otherwise:
 
@@ -1327,24 +1338,42 @@ In order, on the server unless it says otherwise:
    # ghcr.io/mmihaylov94/my-portfolio@sha256:...
    ```
 
-   Then merge the chat UI and the rewritten article to `main`, wait for the new image, and
-   `docker compose pull site && docker compose up -d site`. The article reaches this service's
-   index within the hour.
+   Then push the portfolio's `main`, which carries the chat UI and the rewritten content, wait
+   for the new image, and `docker compose pull site && docker compose up -d site`. The articles
+   reach this service's index within the hour.
+
+   The push itself changes nothing a visitor sees, but it starts two clocks. From then on
+   `:latest` is the new chat, so any pull of the site image deploys it, and it says the assistant
+   is unavailable until step 4's `PORTFOLIO_AI_URL` is set. And n8n re-indexes `main` on Monday
+   at 06:00: if the old widget is still live then, the old bot learns the new articles and
+   describes itself as this system. Either finish this step before a Monday, or switch off
+   n8n's "Portfolio | Knowledgebase -> RAG Vector Store" workflow first, which also means a
+   rollback never has to revert the knowledge base.
+
+   The push with the chat UI and the knowledge base was made on 2026-10-08, so both clocks are
+   running, and the first re-index it is in front of is Monday 2026-10-12. The project card's
+   image and the CV were committed afterwards: push those too before pulling the site image.
+
+   The same day, update this repository's `README.md`: its Status section still says the front
+   end and the switch-over are next, and the assistant's article now links visitors to it.
 6. **Watch for a week.** Both systems still work; only the traffic has moved. Look at the
    portfolio API's `chat_stream` lines (outcomes other than `completed` and `client_gone`), this
    service's errors and `daily_spend_cap_reached`, and any `icon_request_reached_api`, which means
    an icon is missing from the site's bundle. **Rollback** is the digest recorded in step 5,
    whose widget still talks to n8n: set the `site` service's `image:` to it and
-   `docker compose up -d site`. If the rollback lasts past a Monday, revert the article on `main`
-   too, or n8n's weekly re-index teaches the old bot to describe itself as this one.
+   `docker compose up -d site`. If the rollback lasts past a Monday, revert the knowledge base
+   on `main` too, all six articles the cutover changed, or n8n's weekly re-index teaches the old
+   bot to describe itself as this one.
 7. **Then, and only then**, disable the n8n workflows and drop `mihaylov_chat_histories`, in n8n's
    database. `mihaylov_rag_documents` can go once the new ingestion has a month of clean runs
    behind it. Delete the portfolio's `NUXT_PUBLIC_N8N_CHAT_WEBHOOK_PATH` secret at the same time.
-8. **golden_v2.** golden_v1's `assistant-how` and `n8n-work` cases describe the n8n system, and
-   its Python cases say no portfolio project uses Python. They change in a new dataset version,
-   written against the rewritten articles once they are indexed, with its own baseline run.
+8. **golden_v2.** golden_v1's `assistant-how` and `n8n-work` cases describe the n8n system, its
+   `python` and `followup-and-python` cases say no portfolio project uses Python, `open-source`
+   leaves this repository out, and `ai-experience` lacks the evaluation harness. They change in
+   a new dataset version, written against the rewritten articles once they are indexed, with
+   its own baseline run.
 
-The knowledge base article changes **in the same change as the front end**: otherwise the
+The knowledge base changes **in the same change as the front end**: otherwise the
 assistant describes itself inaccurately to the people asking about it. (Its claims of thumbs
 up/down feedback, reCAPTCHA and an Express proxy, none of which the n8n bot has, were removed in
 the fact-check of 2026-09-23.)

@@ -185,6 +185,17 @@ Look for these first; each one has cost real time here.
 - Code that runs on every streamed piece must cost in proportion to that piece. Rescanning a
   buffer that crafted text can stop from ever being cut is quadratic, and a regex with a
   `{0,300}` bound backtracks up to that bound at every failed start.
+- A privacy sentence written from a column's name says the wrong thing: `referrer` holds the page
+  the chat was used on, not where the visitor came from. Describe stored data from the code that
+  fills it.
+- A qualifier in one `##` section of an article does not travel with another. Each is retrieved
+  alone, so a caveat belongs in every section whose claim needs it.
+- An index existing is not an index being used. On a hundred rows the planner usually scans;
+  write "has an index" unless `explain` shows otherwise.
+- Linking a repository publishes everything in it. Read its CLAUDE.md, agent prompts and README
+  as a recruiter would before the link ships.
+- Copy that restates an approved line more strongly ("could not", "searched through", "first")
+  makes a new claim. Check the difference against the approved wording.
 - Escape sequences typed into a tool call can arrive decoded: `\u3000` as an invisible character,
   `\\` as one backslash. Scan written files for invisible and control characters.
 

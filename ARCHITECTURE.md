@@ -4,9 +4,9 @@ Python replacement for the two n8n workflows that currently power the AI chat bo
 [mihaylov.io](https://mihaylov.io), plus an evaluation harness and an analytics/feedback loop.
 
 **Status:** build steps 1-5 done (foundations, ingestion, assistant core, API, evals). Step 6 under
-way: the Express proxy is deployed switched off, and the chat UI is built on the portfolio's
-`new-chat` branch; the content and the cutover are next.
-**Last updated:** 2026-09-26
+way: the Express proxy is deployed switched off, and the chat UI and the rewritten content are
+on the portfolio's `main`, pushed on 2026-10-08, which began the cutover.
+**Last updated:** 2026-10-08
 
 ---
 
@@ -708,9 +708,10 @@ and fails unless the first event reaches the browser before the upstream finishe
 
 ### The chat UI (portfolio repo)
 
-Built in step 6, on the portfolio's `new-chat` branch until cutover, with its own README and
-CLAUDE.md sections. `@n8n/chat` is gone, and with it the DOM-querying in `useAiChat.ts` and the
-MutationObserver that injected a "Start over" button. **The UX is a clean-sheet redesign**, and
+Built in step 6, with its own README and CLAUDE.md sections. It is on the portfolio's `main`,
+and pushing that on 2026-10-08 began the cutover, because a push builds the site image.
+`@n8n/chat` is gone, and with it the DOM-querying in `useAiChat.ts` and the MutationObserver
+that injected a "Start over" button. **The UX is a clean-sheet redesign**, and
 **existing conversations are not migrated**: the session id is a plain `crypto.randomUUID()`.
 `useAiChat().openChat()` is ordinary shared state now, so the project card with
 `opensChat: true` opens the chat the same way the launcher does.
