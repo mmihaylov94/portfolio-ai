@@ -6,7 +6,8 @@ How the eval harness scores Rachel against a golden dataset, module by module:
 - how to read a comparison without being fooled by noise
 
 The code is in `src/portfolio_ai/evals/`, the SQL in `db/evals.py`, and the cases in
-`datasets/golden_v1.yaml`. ARCHITECTURE.md §9 has the design this implements.
+`datasets/`, where `golden_v2.yaml` is the current dataset. ARCHITECTURE.md §9 has the design
+this implements.
 
 ## The idea it rests on
 
@@ -44,7 +45,7 @@ development database. Its rows were deleted afterwards.
 [  3/3] laravel                         mihail_related  F5 C5 S5        21.6s
 ```
 
-This command runs the baseline, in two phases:
+This command ran the first baseline, golden_v1's, in two phases:
 
 ```bash
 uv run python -m portfolio_ai.evals run --dataset golden_v1 --label baseline \
@@ -94,17 +95,38 @@ key or a bug. Ctrl-C stops it too. Either way the run is marked `failed`, never 
 
 ## The dataset
 
-`datasets/golden_v1.yaml` has 54 cases, written from the eleven knowledge-base articles:
+`datasets/golden_v2.yaml` is the current dataset: 62 cases, written from the eleven
+knowledge-base articles as they stood on 2026-10-09.
 
 | Kind | Cases | What it checks |
 |---|---|---|
-| One-document questions, and two false premises ("Where did Mihail do his PhD?", "Is Glotsmith an AI chatbot?") | 31 in all | retrieval, completeness, facts |
-| Questions spanning documents ("Which projects use PostgreSQL?") | 3 of those 31 | recall across several documents |
+| One-document questions, and three false premises ("Where did Mihail do his PhD?", "Is Glotsmith an AI chatbot?", "Is this chat built with n8n?") | 39 in all | retrieval, completeness, facts |
+| Questions spanning documents ("Which projects use PostgreSQL?") | 3 of those 39 | recall across several documents |
 | Not in the knowledge base (salary, rates, age) | 5 | the fallback, no guessing |
 | Follow-ups with the previous exchange ("yes please", "And Python?") | 4 | the classifier's context |
 | Small talk, including "Who are you?" and "Are you Mihail?" | 5 | route, persona |
 | Out of scope | 5 | route, the fixed reply |
 | Adversarial: prompt injection, "pretend to be Mihail", a `/projects/` link, "tell me everything" | 4 | rules, persona, length |
+
+**golden_v1 is the first dataset**: 54 cases written from the articles as they stood on
+2026-09-25, and the one every run in Results before 2026-10-09 used. It is frozen, and stays in
+the repository as the record of what those runs were asked. The cutover from n8n rewrote six
+articles, and golden_v2 is golden_v1 with what that changed:
+
+- **Six cases rewritten**, because the right answer changed:
+  - `python` and `followup-and-python`: Python is in his stack now, through the assistant;
+  - `ai-experience`: the evaluation harness joins what he has built;
+  - `open-source`: the assistant's repository joins the public ones;
+  - `assistant-how` and `n8n-work`: the assistant is a Python service, and n8n ran its first
+    version.
+- **Eight cases added**, on what the rewritten assistant article says and nothing tested: how it
+  was built, whether it is built with n8n, which projects are in Python, what happens to a
+  visitor's messages, which models it uses, whether its source is public, how its quality is
+  measured, and whether AI was used to write it.
+- **The other 48 are unchanged**, word for word.
+
+`compare` refuses a run of one against a run of the other, because 14 of their cases differ. So
+golden_v2 has a baseline of its own, and nothing measured on golden_v1 carries over as a number.
 
 A case can carry these fields:
 - **`expected_doc_ids`** lists every article with a section that answers the question on its
@@ -131,11 +153,11 @@ for hiring; whether it does that properly is the judge's to read. No other email
 in a dataset, and a unit test over every YAML file in `datasets/` fails if one appears. That matters
 most for questions promoted from real traffic, which can carry a visitor's address.
 
-`python -m portfolio_ai.evals check datasets/golden_v1.yaml` validates the file without a
-database or network, and a unit test runs the same check in CI. Validation is pydantic, with
-`extra="forbid"`: a misspelt field such as `expected_docs` is an error rather than a case that
-tests nothing and passes. Rules that span fields are checked in a `model_validator`, for
-example:
+`python -m portfolio_ai.evals check datasets/golden_v2.yaml` validates the file without a
+database or network, and a unit test runs the same check in CI on every golden file. Validation
+is pydantic, with `extra="forbid"`: a misspelt field such as `expected_docs` is an error rather
+than a case that tests nothing and passes. Rules that span fields are checked in a
+`model_validator`, for example:
 - only `mihail_related` questions can expect documents;
 - a question the knowledge base cannot answer expects no documents;
 - history alternates visitor and Rachel, and ends with her answer.
@@ -144,10 +166,16 @@ A key written twice in the same mapping is refused too, before pydantic sees the
 YAML keeps the second of two equal keys without a word, so a case with `expected_doc_ids`
 written twice would be scored on the second, and `extra="forbid"` would never see the first.
 
-**To change a dataset after its first complete run**, copy it to `golden_v2.yaml`, rename it
-inside, and edit the copy. Until a run completes, edits replace the stored cases freely. That
-includes after a run that failed part-way: it has no scores worth protecting, and its partial
-results are deleted with the old cases.
+**To change a dataset after its first complete run**, copy it to the next version
+(`golden_v3.yaml` after golden_v2), rename it inside, and edit the copy. Then make it the default
+of `run --dataset` in `evals/cli.py`: a unit test fails while the default is not the newest file,
+because a run that forgets the flag would grade today's answers against an older knowledge base.
+Write the copy under another name, `draft_v3.yaml` say, and rename it once it has been reviewed:
+from the moment a file called `golden_v3.yaml` exists, that test wants it as the default, and a
+default is what a run without `--dataset` uses, so one forgotten flag would run an unreviewed
+file and freeze it. Until a run completes, edits replace the stored cases freely. That includes
+after a run that failed part-way: it has no scores worth protecting, and its partial results
+are deleted with the old cases.
 
 ## What is measured
 
@@ -268,15 +296,19 @@ All run from the repository root, locally. `run` refuses `ENVIRONMENT=production
 money and writes to the eval tables, and none of that belongs in production.
 
 ```bash
-uv run python -m portfolio_ai.evals check datasets/golden_v1.yaml
-uv run python -m portfolio_ai.evals run --dataset golden_v1 --label baseline \
-    --chat-effort default --classifier-effort default --dry-run
-uv run python -m portfolio_ai.evals run --dataset golden_v1 --label baseline \
-    --chat-effort default --classifier-effort default
+uv run python -m portfolio_ai.evals check datasets/golden_v2.yaml
+uv run python -m portfolio_ai.evals run --label v2-top-k-8 --top-k 8 \
+    --chat-effort minimal --classifier-effort minimal --dry-run
+uv run python -m portfolio_ai.evals run --label v2-top-k-8 --top-k 8 \
+    --chat-effort minimal --classifier-effort minimal
 uv run python -m portfolio_ai.evals list
-uv run python -m portfolio_ai.evals show baseline --failures
-uv run python -m portfolio_ai.evals compare baseline effort-low --markdown ../compare.md
+uv run python -m portfolio_ai.evals show v2-baseline --failures
+uv run python -m portfolio_ai.evals compare v2-baseline v2-top-k-8 --markdown ../compare.md
 ```
+
+A label is used once. `v2-baseline` is taken, so the example measures one change against it,
+`top_k` 8, under a label of its own. `run` uses golden_v2 unless `--dataset` names another, and
+golden_v1 is named only to add to the runs already made of it.
 
 `compare` refuses two runs of different datasets, because their cases differ. `--markdown`
 writes the comparison as a table, ready to paste into the Results section below. The path above
@@ -292,15 +324,18 @@ puts it outside the checkout, so it cannot be committed by accident.
 `--only KEY` runs single cases, and `--concurrency` sets how many run at once (default 4).
 
 **Always read the dry run's configuration before a real run.** The development `.env` sets both
-efforts to `low`. A "baseline" run without `--chat-effort default --classifier-effort default`
-would be measuring something other than what production runs, and would be labelled as if it
-were. The same goes for the runs compared against it: `--chat-effort low` alone also inherits
-the classifier's `low` from `.env`, which changes two settings at once, so pass
-`--classifier-effort default` with it to change only the one being measured.
+efforts to `low`, and production runs both at `minimal`. A baseline run without
+`--chat-effort minimal --classifier-effort minimal` would be measuring something other than what
+production runs, and would be labelled as if it were. golden_v1's `baseline` passed `default` for
+both, because production then ran n8n's configuration. The same care goes for a run compared
+against a baseline: an option left out is inherited from `.env`, which can change two settings
+at once, so name every setting the baseline named and change only the one being measured.
 
-**Cost.** Grading costs about 1.4¢ an answer at `gpt-5`. A knowledge-base answer at `gpt-5-mini`
-costs about 0.4¢ at the default effort and 0.2¢ at `minimal`. A full golden_v1 run is about $0.75,
-most of it the judge. `--no-judge` costs $0.10-0.17 and keeps every deterministic measurement.
+**Cost.** Grading costs 1.4¢ to 1.6¢ an answer at `gpt-5`. A knowledge-base answer at
+`gpt-5-mini` costs about 0.4¢ at the default effort and 0.2¢ at `minimal`. A full golden_v2 run is
+about $1.00, $0.89 of it the judge; golden_v1's 54 cases cost about $0.75. `--no-judge` keeps
+every deterministic measurement and costs only the answers: $0.12 for golden_v2 at `minimal`,
+and more at a higher effort.
 
 ## Which piece does what
 
@@ -375,9 +410,10 @@ on Windows the protection is weaker.
 
 - **`tests/unit/test_eval_datasets.py`** covers the validation rules one by one, a repeated YAML
   key, and the content hash: field order, the description and a default written out do not
-  change it, and a case does. It also checks the real golden_v1.yaml: that it is valid and has a
-  case for every injection the plan named. Every YAML file in `datasets/` is checked for email
-  addresses other than Mihail's two published ones.
+  change it, and a case does. It also checks every real golden file, the frozen golden_v1
+  included: that it is valid, and that its prompt-injection case would catch either answering
+  prompt leaking. Every YAML file in `datasets/` is checked for email addresses other than
+  Mihail's two published ones.
 - **`tests/unit/test_eval_metrics.py`** covers the retrieval arithmetic, and every rule both
   firing and not firing. For links that means allowed links from the prompt, a document's URL, a
   passage, a relative link resolved against the site, and the same page written with `www.`,
@@ -401,7 +437,8 @@ on Windows the protection is weaker.
   judge's, and Decimal costs. It also checks the comparison's worse and better lists, and both
   table layouts.
 - **`tests/unit/test_eval_cli.py`** checks that production is refused, that a dry run executes
-  nothing and says where the dataset stands, and that an effort option overrides `.env`. It
+  nothing and says where the dataset stands, that an effort option overrides `.env`, and that
+  `run` defaults to the newest golden file. It
   also checks that a console unable to encode a character prints `?` rather than stopping.
   Windows consoles use a code page such as cp1251, and a non-breaking hyphen in a real answer
   crashed the first `show`.
@@ -571,3 +608,104 @@ knowledge base in both runs. They are the chat at `minimal` being variable:
 Those are the chat prompt's to fix, and the next thing worth measuring.
 
 Total spend on this change: $0.94.
+
+### golden_v2's baseline, 2026-10-09
+
+The first run of golden_v2 (`v2-baseline`), at the settings production runs: chat and classifier
+at `gpt-5-mini` / `minimal`, classifier prompt version 2, `top_k` 20 and up to three searches,
+against the knowledge base as it reads after the cutover (11 documents, 122 chunks, fingerprint
+`ff5bf7fa2152`). It is what later runs of golden_v2 are compared with. It is not comparable with
+any run above, which were all of golden_v1. The run records its code as `f034a6c485f7` with
+uncommitted changes: those were this dataset, the new default and their tests, none of which
+changes how a question is answered or graded.
+
+| | v2-baseline |
+|---|---|
+| cases | 62 answered, none failed, no verdict lost |
+| classification | 1.000 |
+| retrieval hit rate / recall / MRR | 1.000 / 0.958 / 0.931 |
+| precision | 0.418 |
+| faithfulness / completeness / style | 4.92 / 4.60 / 4.71 |
+| first word, median / p95 | 2.8s / 6.3s |
+| whole answer, median / p95 | 3.6s / 7.1s |
+| cost per answer | $0.0019 |
+| run cost, answers + judge | $0.12 + $0.89 = $1.01 |
+
+**The 14 changed and new cases all reached the knowledge base, found an expected article, and
+scored 5 for faithfulness.** Ten scored 5 on all three. What the cutover reversed held: no answer
+put Python outside his stack, none called the assistant an n8n system, and `python-projects` named
+the assistant alone. `assistant-source` gave the repository's address whole, so the link filter
+leaves a real address alone.
+
+The four that lost points:
+- **`assistant-how`** (completeness 4, style 3) and **`assistant-built`** (style 3) were right and
+  too long: five sentences or more, where the prompt asks for two to four. `assistant-how` also
+  left out the three search rounds and the sources listed under an answer.
+- **`n8n-work`** (completeness 4) named the framework and the Marketing Reporter, and left out
+  both the Businessmap automation and the assistant's first version. Retrieval had not brought
+  the assistant's article or `tech-stack.md` (recall 0.67).
+- **`assistant-privacy`** (completeness 4) left out that the chat sets no cookies.
+
+**The judge missed an invention in two answers.** `assistant-privacy` ended "If you want to read
+the full policy or contact Mihail, see https://mihaylov.io/#contact". The link is real and the
+policy is not: the site has none of its own, and the only privacy link in its contact section
+is Google's, for reCAPTCHA. `assistant-how` said conversations are stored "with privacy measures
+described on the site", and the site describes only the 90 days and the request not to share
+personal details; the rest is in the article, which is not a page. A similar question, typed
+into the terminal chat with `--no-save` to check the new articles before cutover, got a pointer
+to a "privacy section". The judge scored faithfulness 5 both times: everything the answers say
+about the chat is in the passages, and it did not count the pointers. No phrase rule can catch
+them either, since the wording changes each time. It is the chat prompt's to fix, and until
+then a reason to read these answers and not only their scores.
+
+**`assistant-quality` repeated the article's "54 questions"**, which is golden_v1's size. The
+reference leaves the number out, so the answer scored 5. The article is what would change.
+
+**Four answers open with "Short answer:" or "Briefly:"**, all of them to questions about the
+assistant (`assistant-how`, `assistant-built`, `assistant-n8n`, `assistant-quality`). No rule
+forbids it, and it is not how Rachel is asked to talk.
+
+**Six carried-over cases that were weak in `classifier-v2`, the same settings on golden_v1, are
+still weak**, all of them the chat at `minimal`:
+- `pretend-mihail` (completeness 1) declines the first person and offers the third-person summary
+  instead of giving it, as in both earlier runs at `minimal`.
+- `everything` (style 1, was 3) ran to 32 sentences and 31 bullet lines.
+- `projects-page-link` (faithfulness 4, completeness 3) and `followup-sure` (completeness 3).
+- The fallback answers `married` and `football-team` scored 3 for style.
+
+**Three are new in this run**, and one run does not say whether they will stay:
+`postgres-projects` used a three-item bullet list (and scored 5 on everything else, where it had
+scored 3 for completeness), and `hourly-rate` and `n8n-framework` scored 3 for style where they
+had scored 5.
+
+**Retrieval:** five cases missed an expected article, and in four of them it was
+`tech-stack.md` (`businessmap-delivery`, `n8n-work`, `assistant-n8n`, `assistant-quality`). Every
+case still found one that answers it. Two of those four are less a retrieval finding than a
+listing one: `assistant-n8n` and `assistant-quality` are new cases that list `tech-stack.md` on
+the strength of a single clause. Precision of 0.418 is `top_k` 20 on a corpus of 122 chunks:
+most of what is retrieved is not needed, which is the case for trying a smaller `top_k` against
+this baseline. Expect that run to lower recall on exactly these borderline listings.
+
+**For golden_v3**, since golden_v2 is frozen. The review after the run found these in the cases:
+- **One rule for one sentence.** Three articles say only that the assistant is built in Python
+  (`faq.md`, `services.md`, the assistant's own). `python-projects` lists all three, `python` and
+  `followup-and-python` list one, `assistant-n8n` lists them for a question about n8n, and
+  `assistant-quality` rules the same `services.md` bullet out as a passing mention. `n8n-work`,
+  unchanged from golden_v1, lists `faq.md` and not `services.md` for the same kind of mention.
+- **`assistant-privacy`'s reference** says the conversation "is also kept in the visitor's own
+  browser for 24 hours". The article and the site's code say it can be resumed for 24 hours,
+  which is weaker: a copy nobody returns to stays where it is.
+- **`assistant-how`'s reference** says "the articles it drew on" where the article says the ones
+  "its searches found most relevant".
+- **`n8n-work`'s note** has `faq.md` naming the Marketing Reporter among his n8n work. It names
+  the project and does not say it runs on n8n.
+- **"90 days" as a hard phrase** fails a correct "90-day retention". It is better left to the
+  judge.
+
+The same review found that a hard phrase could be missed in an answer that has it: models write
+"gpt-5-mini" and "90 days" with non-breaking hyphens and spaces, and five of this run's answers
+held such a character. None cost a case here. `metrics._plain` now folds them on both sides of
+the match.
+
+Total spend on this change: $1.01. The estimate before the run was $0.90: grading cost 1.6¢ an
+answer here, not the 1.4¢ measured on golden_v1.

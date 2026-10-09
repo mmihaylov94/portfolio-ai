@@ -233,8 +233,8 @@ This repository is public on GitHub, and **git history is published too**. From 
 - **No personal email addresses in code or docs, except Mihail's two published ones**: the
   hiring address printed on his CV and the one for projects and general inquiries; the site
   lists both.
-  They are public by his choice (confirmed 2026-09-24), and golden_v1's contact cases check
-  answers for them exactly. Nobody else's address goes in, least of all a visitor's in a
+  They are public by his choice (confirmed 2026-09-24), and the golden datasets' contact cases
+  check answers for them exactly. Nobody else's address goes in, least of all a visitor's in a
   question promoted from real traffic; a unit test checks every dataset for that. The digest
   recipient still comes from `DIGEST_TO_EMAIL`, because it is configuration.
 - **No IPs or hostnames in committed files** — not the LAN dev server, not the EC2 host, not
@@ -276,13 +276,13 @@ uv run python -m portfolio_ai.api                     # the API as production ru
 
 uv run python -m portfolio_ai.analytics purge --dry-run   # retention sweep, counting only
 
-uv run python -m portfolio_ai.evals check datasets/golden_v1.yaml     # no DB, no network
-uv run python -m portfolio_ai.evals run --dataset golden_v1 --label baseline \
-    --chat-effort default --classifier-effort default --dry-run      # the plan; spends nothing
-uv run python -m portfolio_ai.evals run --dataset golden_v1 --label effort-low \
-    --chat-effort low --classifier-effort default   # one setting changed from the baseline
-uv run python -m portfolio_ai.evals show baseline --failures
-uv run python -m portfolio_ai.evals compare baseline effort-low
+uv run python -m portfolio_ai.evals check datasets/golden_v2.yaml     # no DB, no network
+uv run python -m portfolio_ai.evals run --label v2-top-k-8 --top-k 8 \
+    --chat-effort minimal --classifier-effort minimal --dry-run      # the plan; spends nothing
+uv run python -m portfolio_ai.evals run --label v2-top-k-8 --top-k 8 \
+    --chat-effort minimal --classifier-effort minimal   # one setting changed from v2-baseline
+uv run python -m portfolio_ai.evals show v2-baseline --failures
+uv run python -m portfolio_ai.evals compare v2-baseline v2-top-k-8
 
 uv run analytics report --since 7d                    # digest to stdout
 uv run analytics digest                               # build + email it (Gmail SMTP)
@@ -339,15 +339,20 @@ it compares git blob SHAs and stops.
   feedback 404) and check OpenAI with the terminal chat's `--no-save`.
 - **Embedding dimension changes are migrations.** Changing `EMBEDDING_DIMENSIONS` or the
   embedding model invalidates every stored vector and requires a full re-embed.
-- **Evals cost money.** A full golden_v1 run is about $0.75, most of it the `gpt-5` judge
-  (`--no-judge` about $0.20). Say what a run or a sweep will cost before starting it.
+- **Evals cost money.** A full golden_v2 run is about $1.00, most of it the `gpt-5` judge
+  (`--no-judge` about $0.12 at `minimal`). Say what a run or a sweep will cost before starting it.
 - **Evals run locally, against the dev database.** `run` refuses `ENVIRONMENT=production`. The
   dev `.env` sets both reasoning efforts to `low`, so a run meant to match production passes
-  `--chat-effort default --classifier-effort default`; read the dry run's configuration first.
+  `--chat-effort minimal --classifier-effort minimal`; read the dry run's configuration first.
+- **golden_v2 is the current dataset, and the default.** golden_v1 describes the knowledge base
+  before the cutover and is kept for its runs; the two cannot be compared with each other.
 - **A dataset freezes once a run of it completes.** Scores are only comparable on identical
-  cases, so a changed golden_v1.yaml is refused after its first complete run -- copy it to
-  golden_v2 instead. Never run a dataset still under review, even one case of it: a complete
-  `--only` run freezes it too. Smoke-test the harness on a throwaway dataset file.
+  cases, so a changed golden_v2.yaml is refused after its first complete run -- copy it to
+  golden_v3 instead, and make that the default in `evals/cli.py`. Keep a draft under another
+  name (`draft_v3.yaml`) until it is reviewed: a file called `golden_v3.yaml` is what a unit
+  test then demands as the default, and the default is what a run without `--dataset` uses.
+  Never run a dataset still under review, even one case of it: a complete `--only` run freezes
+  it too. Smoke-test the harness on a throwaway dataset file.
 - **Ask before changing the tuned prompts.** They came from a working production system; changes
   should be justified by an eval run, not by taste.
 - **Chat logs are real visitors' words.** People volunteer identifying details in a chat box
@@ -364,7 +369,8 @@ ARCHITECTURE.md §13).
 
 - **Foundations** — packaging, settings, logging, the async pool, migrations, tests, CI and the
   image on GHCR. Written up as ten lessons in `docs/lessons/`.
-- **Ingestion** — deployed and running hourly: 11 documents, 117 chunks as of 2026-09-25.
+- **Ingestion** — deployed and running hourly: 11 documents, and 122 chunks since the cutover's
+  rewritten articles (117 before).
 - **Assistant core** — Rachel answers end to end from the terminal: classify, search, answer,
   remember, record.
 - **API** — FastAPI over the assistant, private to the Docker network: bearer auth, per-session
@@ -372,14 +378,19 @@ ARCHITECTURE.md §13).
   feedback endpoint, and the nightly retention purge. The portfolio's Express routes that call it
   went live at cutover.
 
-- **Evals** — `python -m portfolio_ai.evals`: golden_v1 (54 cases from the eleven articles),
-  deterministic retrieval and rule checks, a `gpt-5` judge, and runs stored with their full
-  configuration for comparison. golden_v1 is reviewed and frozen: the `gpt-5-mini` baseline at
-  n8n's settings (parity by construction) and runs at chat effort `low` and `minimal` are in
-  docs/EVALS.md.
+- **Evals** — `python -m portfolio_ai.evals`: a golden dataset, deterministic retrieval and rule
+  checks, a `gpt-5` judge, and runs stored with their full configuration for comparison.
+  golden_v1 (54 cases from the eleven articles before the cutover) is frozen: the `gpt-5-mini`
+  baseline at n8n's settings (parity by construction) and runs at chat effort `low` and `minimal`
+  are in docs/EVALS.md.
 
   Production's `.env` sets both efforts to `minimal`, on those results; the code default stays at
   n8n parity. Classifier prompt version 2 fixed the misroutes the runs found (`classifier-v2`).
+
+  golden_v2 (62 cases, from the articles after the cutover) is the current dataset and is frozen
+  too. Its baseline at production's settings, `v2-baseline`, is what any change is now measured
+  against: every route right, every case finding an article that answers it, faithfulness 4.92,
+  completeness 4.60, style 4.71, first word at a median of 2.8s.
 
 **Step 6**, the front end and cutover, is in phases:
 1. the Express proxy in the portfolio repo: built, with tests, and switched on at cutover;
@@ -389,10 +400,12 @@ ARCHITECTURE.md §13).
    card's image and the CV included: live;
 4. cutover itself: done on 2026-10-09, by the runbook in docs/DEPLOYMENT.md §12. A week of
    watching follows, and then n8n's workflows are retired (steps 6 and 7 there);
-5. then golden_v2.
+5. golden_v2 and its baseline: done on 2026-10-09.
 
-After that, analytics reporting (7). The chat prompt's weak cases at `minimal` (the end of Results
-in docs/EVALS.md) are worth measuring whenever convenient.
+After the week of watching, analytics reporting (7). The chat prompt's weak cases at `minimal`
+(the end of Results in docs/EVALS.md) are worth fixing whenever convenient: answers that run
+long, `pretend-mihail` offering its summary instead of giving it, and an invented pointer to a
+privacy policy that the judge does not catch.
 
 Analytics reporting is last on purpose — it needs real traffic to be worth writing. The
 *capture* (feedback, `top_score`, `fallback_used`, where a conversation came from) shipped with

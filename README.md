@@ -44,7 +44,7 @@ Live: the chat on [mihaylov.io](https://mihaylov.io) has answered from this serv
 - **API** — the assistant over HTTP, private to the server's Docker network: authenticated,
   rate-limited, capped on daily spend, streaming answers as server-sent events, with thumbs
   up/down feedback and a nightly 90-day retention sweep.
-- **Evals** — a harness that scores the assistant against a golden dataset of 54 questions:
+- **Evals** — a harness that scores the assistant against a golden dataset of 62 questions:
   retrieval, routing, the style and safety rules, an LLM judge's grades, latency and cost, with
   every run stored alongside the configuration that produced it.
 - **The site's chat** — the chat box itself, in the site's own repository
@@ -52,11 +52,12 @@ Live: the chat on [mihaylov.io](https://mihaylov.io) has answered from this serv
   written, the documents each one drew on listed under it, and thumbs up/down on every answer.
   The site's API passes each question to this service, which has no public address.
 
-The baseline the assistant is judged against is recorded, with runs at lower reasoning effort
-beside it, in [docs/EVALS.md](docs/EVALS.md). Still to build is the analytics reporting: what
-visitors ask and where answers fall short is captured already, and clustering it into content
-gaps and a weekly digest waits for real traffic. The build order is in
-[ARCHITECTURE.md](ARCHITECTURE.md) §12.
+The baselines the assistant is judged against are recorded in [docs/EVALS.md](docs/EVALS.md):
+the first, at the settings of the n8n version it replaced, with runs at lower reasoning effort
+beside it, and the current one, on the knowledge base as it reads since the switch. Still to
+build is the analytics reporting: what visitors ask and where answers fall short is captured
+already, and clustering it into content gaps and a weekly digest waits for real traffic. The
+build order is in [ARCHITECTURE.md](ARCHITECTURE.md) §12.
 
 ## Getting started
 
@@ -84,9 +85,9 @@ uv run python -m portfolio_ai.assistant -m "..."    # ask one question and exit
 uv run uvicorn portfolio_ai.api.main:app --reload   # the API, reloading on changes; /docs for the schema
 uv run python -m portfolio_ai.analytics purge --dry-run   # what the retention sweep would delete
 
-uv run python -m portfolio_ai.evals check datasets/golden_v1.yaml    # validate the golden set
+uv run python -m portfolio_ai.evals check datasets/golden_v2.yaml    # validate the golden set
 uv run python -m portfolio_ai.evals run --label my-run --dry-run     # plan an eval run; no spend
-uv run python -m portfolio_ai.evals compare baseline my-run          # two runs, case by case
+uv run python -m portfolio_ai.evals compare v2-baseline my-run       # two runs, case by case
 ```
 
 A Postgres instance with the `pgvector` extension is required. `DATABASE_URL` must point at it

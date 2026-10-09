@@ -196,6 +196,19 @@ Look for these first; each one has cost real time here.
   as a recruiter would before the link ships.
 - Copy that restates an approved line more strongly ("could not", "searched through", "first")
   makes a new claim. Check the difference against the approved wording.
+- A changed default breaks every documented sequence that leaned on the old one: after the eval
+  default moved, `run --label x` then `compare baseline x` spanned two datasets, with a paid run
+  between. Search the docs for the command, not for the old value.
+- A hard phrase with a hyphen or a space is missed in the non-breaking forms a model writes
+  (U+2011 in "gpt-5-mini", U+00A0 in "90 days"). NFKC does not fold U+2011 to `-`. Check that
+  the matcher folds both sides.
+- `expected_doc_ids` written case by case drifts: one sentence earns an article a listing for
+  one question and not for the next. Tabulate the cases that rest on the same sentence, before
+  the dataset's first run freezes it.
+- A test that pins a default to "the newest file on disk" moves the default onto a draft the
+  moment one exists. Check the docs say where a draft lives.
+- An example command that carries a real run's label stops working once that run exists.
+  Examples use a label that is free.
 - Escape sequences typed into a tool call can arrive decoded: `\u3000` as an invisible character,
   `\\` as one backslash. Scan written files for invisible and control characters.
 

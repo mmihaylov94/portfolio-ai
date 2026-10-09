@@ -1471,8 +1471,9 @@ docker compose -f ~/docker/my-portfolio/docker-compose.yml up -d api
 ## 12. Cutover from n8n
 
 **Done on 2026-10-09, through step 5.** The site's chat runs on this service. Step 6, the week of
-watching, is under way; step 7 retires n8n after it, and step 8 is golden_v2. What follows is
-the runbook as it was followed, kept as the record and for the rollback in step 6.
+watching, is under way, and step 7 retires n8n after it. Step 8, golden_v2, was done the same
+day. What follows is the runbook as it was followed, kept as the record and for the rollback in
+step 6.
 
 Until cutover, **both systems run side by side and neither notices the other.** n8n keeps serving
 the live chat from `mihaylov_rag_documents`; this project writes only to `portfolio_rag`. That is
@@ -1602,7 +1603,8 @@ In order, on the server unless it says otherwise:
    `python` and `followup-and-python` cases say no portfolio project uses Python, `open-source`
    leaves this repository out, and `ai-experience` lacks the evaluation harness. They change in
    a new dataset version, written against the rewritten articles once they are indexed, with
-   its own baseline run.
+   its own baseline run. Done on 2026-10-09: `datasets/golden_v2.yaml`, with eight new cases on
+   the rewritten assistant article, and its baseline in [EVALS.md](EVALS.md).
 
 The knowledge base changes **in the same change as the front end**: otherwise the
 assistant describes itself inaccurately to the people asking about it. (Its claims of thumbs

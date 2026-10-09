@@ -135,9 +135,31 @@ _AS_MIHAIL = re.compile(
 )
 
 
+# What a model writes where a dataset has the plain character. ``str.maketrans`` builds
+# the table ``str.translate`` wants, one pass over the text whatever the number of pairs.
+_TYPOGRAPHIC = str.maketrans(
+    {
+        "\N{RIGHT SINGLE QUOTATION MARK}": "'",
+        "\N{HYPHEN}": "-",
+        "\N{NON-BREAKING HYPHEN}": "-",
+        "\N{NO-BREAK SPACE}": " ",
+        "\N{NARROW NO-BREAK SPACE}": " ",
+    }
+)
+
+
 def _plain(text: str) -> str:
-    """Curly apostrophes straightened, as ``postprocess.is_fallback`` does."""
-    return text.replace("\N{RIGHT SINGLE QUOTATION MARK}", "'")
+    """Typographic characters folded to the plain ones a dataset is written with.
+
+    Curly apostrophes are straightened as ``postprocess.is_fallback`` does. Hyphens and
+    spaces matter since golden_v2, whose hard phrases include "gpt-5-mini" and "90 days":
+    models write both with non-breaking characters, and a substring test would then
+    report the phrase missing from an answer that has it.
+
+    ``unicodedata.normalize("NFKC", text)`` looks like the tool for this and is not: it
+    turns a non-breaking hyphen into U+2010 HYPHEN, which is still not the ASCII one.
+    """
+    return text.translate(_TYPOGRAPHIC)
 
 
 def _invented_links(answer: str, chunks: Sequence[RetrievedChunk]) -> list[str]:

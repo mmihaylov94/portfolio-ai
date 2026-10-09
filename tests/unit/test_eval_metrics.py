@@ -198,6 +198,22 @@ def test_required_and_forbidden_phrases_are_matched_without_case() -> None:
     assert found["forbidden_phrase"] == ["Glasgow"]
 
 
+def test_a_phrase_is_found_through_non_breaking_hyphens_and_spaces() -> None:
+    """Models write "gpt-5-mini" and "90 days" with non-breaking characters: five of
+    golden_v2's first sixty-two answers held one. golden_v2 is the first dataset whose hard
+    phrases have a hyphen or a space in them."""
+    case = _case(must_include=("gpt-5-mini", "90 days"), must_not_include=("n8n-based",))
+    answer = (
+        "It uses gpt\N{NON-BREAKING HYPHEN}5\N{NON-BREAKING HYPHEN}mini, keeps conversations "
+        "for 90\N{NO-BREAK SPACE}days, and is not n8n\N{HYPHEN}based."
+    )
+
+    found = _rules(answer, case=case)
+
+    assert "missing" not in found
+    assert found["forbidden_phrase"] == ["n8n-based"]
+
+
 @pytest.mark.parametrize(
     ("answer", "rule"),
     [

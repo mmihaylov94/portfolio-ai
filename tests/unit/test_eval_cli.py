@@ -6,8 +6,10 @@ process would take over the test runner's capture for every test after these.
 """
 
 import asyncio
+import inspect
 import io
 import os
+import re
 import sys
 from pathlib import Path
 from typing import Any
@@ -20,7 +22,7 @@ from portfolio_ai.db import evals as evals_db
 from portfolio_ai.db.evals import Corpus, RunRecord
 from portfolio_ai.evals import cli, datasets, runner
 
-GOLDEN = Path(__file__).resolve().parents[2] / "datasets" / "golden_v1.yaml"
+GOLDEN = Path(__file__).resolve().parents[2] / "datasets" / "golden_v2.yaml"
 
 
 @pytest.fixture(autouse=True)
@@ -54,8 +56,37 @@ def test_check_summarises_a_valid_dataset() -> None:
     result = CliRunner().invoke(cli.app, ["check", str(GOLDEN)])
 
     assert result.exit_code == 0, result.output
-    assert "golden_v1: " in result.output
+    assert "golden_v2: " in result.output
     assert "valid" in result.output
+
+
+def _newest_golden() -> str:
+    """The highest-numbered ``golden_v<N>.yaml``. A draft is kept under another name
+    until it is reviewed, so it is not a version yet and is not counted here."""
+    versions = {
+        int(match.group(1)): path.stem
+        for path in GOLDEN.parent.glob("*.yaml")
+        if (match := re.fullmatch(r"golden_v(\d+)", path.stem))
+    }
+    return versions[max(versions)]
+
+
+def test_a_run_defaults_to_the_newest_golden_dataset() -> None:
+    """A forgotten --dataset must not grade today's answers against an older knowledge
+    base: that run is paid for, and it marks right answers wrong."""
+    assert inspect.signature(cli.run).parameters["dataset"].default == _newest_golden()
+
+
+@pytest.mark.parametrize("document", ["README.md", "CLAUDE.md", "docs/EVALS.md"])
+def test_the_documented_check_command_names_the_default_dataset(document: str) -> None:
+    """When the default moved to golden_v2 the README went on validating golden_v1, then
+    planned a run of golden_v2, then compared it with a golden_v1 run: a paid run and a
+    refusal, from three commands printed together."""
+    text = (GOLDEN.parents[1] / document).read_text(encoding="utf-8")
+
+    named = set(re.findall(r"evals check datasets/(golden_v\d+)\.yaml", text))
+
+    assert named == {_newest_golden()}
 
 
 def test_check_names_what_is_wrong_with_a_broken_one(tmp_path: Path) -> None:

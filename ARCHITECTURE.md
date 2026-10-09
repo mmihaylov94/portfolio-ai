@@ -5,8 +5,8 @@ Python replacement for the two n8n workflows that powered the AI chat box on
 analytics/feedback loop.
 
 **Status:** build steps 1-5 done (foundations, ingestion, assistant core, API, evals). Step 6: the
-cutover happened on 2026-10-09, and the site's chat runs on this service. n8n's workflows are
-retired after a week of watching; then golden_v2, and step 7.
+cutover happened on 2026-10-09, and the site's chat runs on this service. golden_v2 and its
+baseline followed the same day. n8n's workflows are retired after a week of watching; then step 7.
 **Last updated:** 2026-10-09
 
 ---
@@ -461,7 +461,8 @@ ai_assistant/
 │       ├── report.py             # a run's totals; tables and comparisons
 │       └── cli.py                # python -m portfolio_ai.evals: check | run | list | show | compare
 ├── datasets/
-│   └── golden_v1.yaml            # version-controlled eval cases
+│   ├── golden_v1.yaml            # the first eval cases: frozen, kept for the runs made of it
+│   └── golden_v2.yaml            # the current ones, and the default of `evals run`
 └── tests/
     ├── unit/
     └── integration/              # real Postgres, throwaway schema
@@ -755,8 +756,10 @@ and what does it cost?
 
 ### Dataset
 
-`datasets/golden_v1.yaml`, version controlled: 54 cases written from the eleven articles.
-- 31 answerable questions, including multi-document ones and two false premises, each with
+`datasets/golden_v2.yaml`, version controlled: 62 cases written from the eleven articles as they
+read after the cutover. golden_v1, the 54 cases it grew from, is frozen beside it, and
+docs/EVALS.md lists what changed between them.
+- 39 answerable questions, including multi-document ones and three false premises, each with
   `expected_doc_ids` (every article with a section that answers it) and a `reference_answer`
 - 5 questions the knowledge base cannot answer, where the right answer is the fallback
 - 4 follow-ups that carry the previous exchange
@@ -773,8 +776,9 @@ address appears in it.
 
 Stored in `eval_cases` when first run, and **frozen once a run of it completes**: a changed file
 under the same name is refused, because scores are only comparable on identical cases, and
-changes go into `golden_v2`. A run that failed part-way does not freeze it. Real questions get promoted via `analytics promote-case` (§10) into a new version,
-which is how the set grows beyond what was imagined up front.
+changes go into the next version, as golden_v1's did into golden_v2 at cutover. A run that failed
+part-way does not freeze it. Real questions get promoted via `analytics promote-case` (§10) into
+a new version, which is how the set grows beyond what was imagined up front.
 
 ### Metrics
 
@@ -811,11 +815,11 @@ are what a lower effort saves), and cost per answer, with the judge's cost kept 
 ### Usage
 
 ```bash
-uv run python -m portfolio_ai.evals run --dataset golden_v1 --label baseline \
-    --chat-effort default --classifier-effort default
-uv run python -m portfolio_ai.evals run --dataset golden_v1 --label effort-low \
-    --chat-effort low --classifier-effort default     # only the chat effort differs
-uv run python -m portfolio_ai.evals compare baseline effort-low    # totals, and every case that moved
+uv run python -m portfolio_ai.evals run --label v2-top-k-8 --top-k 8 \
+    --chat-effort minimal --classifier-effort minimal --dry-run   # the plan; spends nothing
+uv run python -m portfolio_ai.evals run --label v2-top-k-8 --top-k 8 \
+    --chat-effort minimal --classifier-effort minimal   # only top_k differs from v2-baseline
+uv run python -m portfolio_ai.evals compare v2-baseline v2-top-k-8   # totals, and every case that moved
 ```
 
 Every run stores its full config (models, efforts, `top_k`, search rounds, every prompt version,

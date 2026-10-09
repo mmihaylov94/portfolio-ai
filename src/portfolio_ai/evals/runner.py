@@ -165,8 +165,8 @@ async def prepare(  # ruff: ignore[too-many-arguments] -- keyword-only; see resp
 ) -> Plan:
     """Every check that can refuse a run, before anything is spent or stored."""
     # A misspelt model fails on every call it makes, and OpenAI's "no such model" is an
-    # ordinary per-case failure, so the run would carry on: fifty-four answers paid for
-    # and none graded, the label used up, and the dataset frozen.
+    # ordinary per-case failure, so the run would carry on: every answer paid for and
+    # none graded, the label used up, and the dataset frozen.
     models = [config.chat_model, config.classifier_model, *([judge_model] if judge_model else [])]
     unpriced = sorted({model for model in models if not pricing.is_priced(model)})
     if unpriced:

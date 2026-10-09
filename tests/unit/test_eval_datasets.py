@@ -1,7 +1,7 @@
 """Golden datasets: what a valid file is, and what freezes one.
 
-The last test here runs in CI on the real golden_v1.yaml, so a dataset edit that no
-longer validates fails the build rather than the next eval run.
+The first tests here run in CI on the real files in datasets/, so a dataset edit that
+no longer validates fails the build rather than the next eval run.
 """
 
 import re
@@ -16,7 +16,10 @@ from portfolio_ai.evals import datasets
 from portfolio_ai.evals.datasets import Dataset, EvalCase
 from portfolio_ai.exceptions import EvalError
 
-GOLDEN = Path(__file__).resolve().parents[2] / "datasets" / "golden_v1.yaml"
+DATASETS = Path(__file__).resolve().parents[2] / "datasets"
+# Every golden dataset. An older one is frozen and kept for the runs made of it, and it
+# still has to load: a change to the models below that broke it would go unnoticed.
+GOLDEN = sorted(DATASETS.glob("golden_v*.yaml"))
 
 # Mihail's two published addresses: the hiring one printed on his CV, and the one for
 # projects and general inquiries. The site lists both. Public by his choice, and what
@@ -38,10 +41,16 @@ def _dataset(*cases: dict[str, Any], **overrides: Any) -> dict[str, Any]:
     return {"name": "golden_test", "description": "Test cases.", "cases": list(cases), **overrides}
 
 
-def test_the_golden_dataset_is_valid() -> None:
-    dataset = datasets.load(GOLDEN)
+def test_the_golden_datasets_are_found() -> None:
+    """pytest skips a test parametrised over an empty list; it does not fail it. So if the
+    glob above ever matched nothing, the tests below would go quiet and the build pass."""
+    assert {"golden_v1", "golden_v2"} <= {path.stem for path in GOLDEN}
 
-    assert dataset.name == "golden_v1"
+
+@pytest.mark.parametrize("path", GOLDEN, ids=lambda path: path.stem)
+def test_every_golden_dataset_is_valid(path: Path) -> None:
+    dataset = datasets.load(path)
+
     assert len(dataset.cases) >= 50
     assert {case.category for case in dataset.cases} == {
         "mihail_related",
@@ -50,17 +59,18 @@ def test_the_golden_dataset_is_valid() -> None:
     }
 
 
-def test_the_injection_case_would_catch_either_answering_prompt_leaking() -> None:
+@pytest.mark.parametrize("path", GOLDEN, ids=lambda path: path.stem)
+def test_the_injection_case_would_catch_either_answering_prompt_leaking(path: Path) -> None:
     """Its phrases have to come from the prompt of every route that writes an answer.
     Taken from rag_agent.md alone, a leak through small talk scored clean."""
-    [case] = [case for case in datasets.load(GOLDEN).cases if case.key == "prompt-injection"]
+    [case] = [case for case in datasets.load(path).cases if case.key == "prompt-injection"]
 
     for prompt in (RAG_AGENT, SMALL_TALK):
         text = prompt.text.lower()
         assert any(phrase.lower() in text for phrase in case.must_not_include), prompt.name
 
 
-@pytest.mark.parametrize("path", sorted(GOLDEN.parent.glob("*.yaml")), ids=lambda path: path.name)
+@pytest.mark.parametrize("path", sorted(DATASETS.glob("*.yaml")), ids=lambda path: path.name)
 def test_no_dataset_holds_an_email_address_but_mihails_published_ones(path: Path) -> None:
     """The repository is public. Every dataset, not only golden_v1, because a case promoted
     from real traffic could carry a visitor's address into a public commit."""

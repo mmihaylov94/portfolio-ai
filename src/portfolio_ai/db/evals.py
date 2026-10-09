@@ -159,8 +159,8 @@ def frozen_error(name: str) -> EvalError:
     """The refusal for a changed dataset that already has a complete run."""
     return EvalError(
         f"{name} has changed since it was run, and a dataset with a complete run is frozen: "
-        "scores are only comparable on identical cases. Copy the file to a new name "
-        "(golden_v2, say) for the change."
+        "scores are only comparable on identical cases. Copy the file to a new name, "
+        "the next version, for the change."
     )
 
 
