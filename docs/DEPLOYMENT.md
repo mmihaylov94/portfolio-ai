@@ -1210,18 +1210,199 @@ real visitors' conversations and could not be told apart from them afterwards.
 dying, so if the Postgres container is not already in a host-level backup, that is a separate
 problem and a more important one.
 
-Restore is deliberately manual:
+### Restoring a backup
+
+Deliberately manual, and in two parts. A dump always goes into a scratch database first, to be
+looked at. Putting it in place of the live schema is a second step and a decision of its own.
+
+**A scratch database, not a scratch schema**, because `pg_restore` cannot rename what it
+restores. A dump of `portfolio_rag` can only become a schema called `portfolio_rag`, so it needs
+a database where that name is free.
+
+Run all of it in one shell: the later commands use what this first block sets.
 
 ```bash
-# Into a scratch schema first, always. Never straight over the live one.
-docker exec -i <postgres-container> pg_restore \
-    -U postgres -d portfolio_ai --no-owner --no-privileges \
-    --schema=portfolio_rag < ~/docker/portfolio-ai/backups/portfolio_rag-<stamp>.dump
+PG=postgres                      # the Postgres container, as in the deploy script
+ROLE=portfolio_ai                # owns the database, and has to own what is restored
+SCRATCH=portfolio_ai_restore     # created in step 1, dropped in step 4
+SU="$(docker exec "$PG" printenv POSTGRES_USER || true)"; SU="${SU:-postgres}"   # the superuser, §5b
+DUMP="$(ls -t ~/docker/portfolio-ai/backups/portfolio_rag-*.dump | head -n 1)"   # the newest
+ls -l "$DUMP"
+
+# SQL on standard input, as the given role, in the given database.
+q() { docker exec -i "$PG" psql -X -q -tA -v ON_ERROR_STOP=1 -U "$1" -d "$2"; }
+
+# The same few numbers, from whichever copy of the schema it is pointed at.
+COUNTS="select 'migration        ' || version_num from portfolio_rag.alembic_version
+union all select 'documents        ' || count(*) from portfolio_rag.documents
+union all select 'chunks           ' || count(*) from portfolio_rag.chunks
+union all select 'chat_sessions    ' || count(*) from portfolio_rag.chat_sessions
+union all select 'chat_messages    ' || count(*) from portfolio_rag.chat_messages
+union all select 'message_feedback ' || count(*) from portfolio_rag.message_feedback
+union all select 'owned by         ' || string_agg(distinct tableowner::text, ',')
+          from pg_tables where schemaname = 'portfolio_rag'"
 ```
 
-> The dump contains columns of type `public.vector`. Restoring into a database without the
-> extension fails on the first `CREATE TABLE` with `type "vector" does not exist` — which reads
-> like a corrupt dump and is not. §5f again.
+`ls -l` should print one file. For an older backup, list them with
+`ls -lt ~/docker/portfolio-ai/backups` and set `DUMP` to that file's path instead.
+
+**1. Create the scratch database**, the way §5e and §5f created the real one and for the same
+reasons. This block and step 4 are all the superuser is needed for. It first drops a scratch
+database left over from an earlier look, so that step 3 can never show an older dump's numbers;
+a notice that there is none to drop is the normal case. The dump does not carry the extension:
+without it the restore fails with `type "public.vector" does not exist`, which reads like a
+corrupt dump and is not.
+
+```bash
+q "$SU" postgres <<SQL
+drop database if exists $SCRATCH with (force);
+create database $SCRATCH owner $ROLE template template0
+    encoding 'UTF8' locale_provider builtin builtin_locale 'C.UTF-8';
+revoke connect on database $SCRATCH from public;
+SQL
+echo "create extension vector with schema public" | q "$SU" "$SCRATCH"
+```
+
+**2. Restore into it, as the app's role.**
+
+```bash
+docker exec -i "$PG" pg_restore -U "$ROLE" -d "$SCRATCH" \
+  --no-owner --no-privileges --single-transaction < "$DUMP" && echo "restored"
+```
+
+As `portfolio_ai`, never the superuser: with `--no-owner`, whoever runs the restore owns
+everything it creates, and the app would be refused its own tables. That flag does its work
+here: on the deploy script's `pg_dump -Fc` it is ignored, and the archive records the owners
+regardless. `--single-transaction` makes the restore all or nothing, so a failure leaves no
+half-built schema behind. No password is asked, for the reason in §5b: inside the container,
+over the local socket, the image trusts connections. And no `--schema=`: the dump holds only
+this schema, and the filter would leave out the `create schema` it starts with.
+
+**3. Look.** The first line of each is the migration that copy is at.
+
+```bash
+echo "$COUNTS" | q "$ROLE" "$SCRATCH"       # the backup
+echo "$COUNTS" | q "$ROLE" portfolio_ai     # what is live now
+```
+
+For anything else, `docker exec -it "$PG" psql -U "$ROLE" -d "$SCRATCH"` opens a session in the
+copy.
+
+**4. Drop it** when it has told you what you needed. The next part restores from the dump again,
+not from this copy.
+
+```bash
+echo "drop database if exists $SCRATCH with (force)" | q "$SU" postgres
+```
+
+#### Putting it in place of the live schema
+
+Only when the live schema is what is wrong, and only after the scratch copy has been looked at.
+The live schema is renamed, not dropped, so this can itself be undone. In the same shell, as one
+paste: each line runs only if the one before it succeeded.
+
+```bash
+cd ~/docker/portfolio-ai && docker compose stop api worker &&
+ASIDE="portfolio_rag_aside_$(date -u +%Y%m%d%H%M%S)" &&
+echo "alter schema portfolio_rag rename to $ASIDE" | q "$ROLE" portfolio_ai &&
+docker exec -i "$PG" pg_restore -U "$ROLE" -d portfolio_ai \
+  --no-owner --no-privileges --single-transaction < "$DUMP" &&
+echo "restored; the schema from before is $ASIDE" && echo "$COUNTS" | q "$ROLE" portfolio_ai
+```
+
+The `stop` takes up to 45 s, and the chat is down from there. **If it does not end with
+`restored` and the counts, the restore did not happen**: it is all or nothing. All that can have
+changed is the old schema's name, so give the name back and start what was stopped:
+
+```bash
+echo "alter schema $ASIDE rename to portfolio_rag" | q "$ROLE" portfolio_ai
+docker compose start api worker
+```
+
+If it did end with the counts, start the containers by whichever of these fits. Step 3 printed
+two `migration` lines, the backup's and the live schema's:
+
+- **They are the same:** `docker compose start api worker`, which starts the two containers
+  that were stopped. Not `up -d`: after an earlier `rollback-portfolio-ai`, that would put them
+  back on `:latest`.
+- **The backup is behind, and the code stays** because the data was the problem, not the deploy:
+  `deploy-portfolio-ai`. It finds the migration pending, dumps the restored schema, migrates it
+  forward, starts and verifies. This is the usual case with the newest dump, which the deploy
+  script takes just before it migrates.
+- **The backup is behind, and that deploy is being undone:** `rollback-portfolio-ai` (§10),
+  which starts both containers on the images recorded before the last run of
+  `deploy-portfolio-ai`. It is the right one only if the deploy being undone *was* the last
+  run: every run records its own "before".
+
+Then check that the code and the schema agree. The rollback's own checks cannot see a mismatch,
+because `/readyz` only asks whether the database answers.
+
+```bash
+docker compose exec -T worker alembic current
+```
+
+It should print the migration followed by `(head)`. A migration without `(head)` is a schema
+behind the code. An error about a revision it cannot locate is a schema ahead of the code.
+
+What was written after the dump is in the set-aside schema and not in the restored one:
+conversations, feedback, and any article ingested since. The next hourly ingestion brings the
+articles back by itself.
+
+**To undo the restore**, in the same shell, swap the two schemas back. The restored one keeps an
+`_aside_` name, so the clean-up below finds it.
+
+```bash
+cd ~/docker/portfolio-ai && docker compose stop api worker &&
+echo "alter schema portfolio_rag rename to ${ASIDE}_restored" | q "$ROLE" portfolio_ai &&
+echo "alter schema $ASIDE rename to portfolio_rag" | q "$ROLE" portfolio_ai &&
+echo "the schema from before the restore is live again" && echo "$COUNTS" | q "$ROLE" portfolio_ai
+```
+
+Then `docker compose start api worker`. If `rollback-portfolio-ai` was used above, the
+containers are pinned to the older images and it is `docker compose up -d` instead, which puts
+them back on `:latest`. Either way, run the `alembic current` check again.
+
+**Clean up within a few days, and no later.** Nothing reads the set-aside schema and no dump
+includes it, but the nightly retention purge does not reach it either, and it holds visitors'
+conversations. The same is true of a scratch database that step 4 never dropped. When the
+restored schema has proved itself, run the first block of this section again in a new shell,
+then find what was set aside:
+
+```bash
+ASIDE="$(echo "select nspname from pg_namespace where nspname like 'portfolio\_rag\_aside\_%'" \
+  | q "$ROLE" portfolio_ai)"
+echo "$ASIDE"
+```
+
+That should print exactly one name. Only if it does, drop it:
+
+```bash
+echo "drop schema $ASIDE cascade" | q "$ROLE" portfolio_ai
+```
+
+It lists the tables it takes with it.
+
+> **Rehearsed twice on 2026-10-09**, against the development database with that database's
+> names, inside a scratch database throughout:
+>
+> - the command blocks of steps 1 to 4, and the counts matched the live schema each time;
+> - a restore without the extension, which failed with the error quoted in step 1 and left
+>   nothing behind;
+> - the rename and restore that put a backup in place;
+> - a restore from a dump cut short, which failed and left only the renamed schema, and the
+>   rename that gives the name back;
+> - undoing a restore, and the clean-up's lookup and `drop schema`.
+>
+> The first run, which restored with `--exit-on-error`, also ran a nearest-neighbour query on
+> the restored chunks.
+>
+> **Not rehearsed:** everything that stops or starts production's containers, the
+> `alembic current` check among it.
+>
+> The first run also tried the command this section used to give, `pg_restore -U postgres` with
+> `--schema=portfolio_rag`, into a database that already held the schema. It failed with 65
+> errors and changed nothing. Its comment said "into a scratch schema first", which no flag of
+> `pg_restore` can do.
 
 ### Collation version mismatch
 
@@ -1463,8 +1644,10 @@ the fact-check of 2026-09-23.)
   empty at restore time was never a backup.
 - **`pg_dump` must not be older than the server.** Running it inside the Postgres container makes
   that impossible to get wrong.
-- **Restoring a `portfolio_rag` dump needs the `vector` extension present first**, or it fails on
-  the first table with `type "vector" does not exist`.
+- **Restoring a `portfolio_rag` dump needs the `vector` extension present first**, or it fails
+  with `type "public.vector" does not exist`.
+- **A restore runs as `portfolio_ai`, into a scratch database first.** `pg_restore` cannot rename
+  a schema, and with `--no-owner` whoever runs it owns the tables. §11.
 - **`TZ=Europe/London` on the worker.** Without it every crontab time is an hour out for half the
   year, and nothing reports it.
 - **`PORTFOLIO_AI_API_KEY` lives in two `.env` files.** Rotate both, restart both.
