@@ -53,11 +53,11 @@ host ports at all.
 | Auth | Bearer token, checked by FastAPI, attached server-side by the Express API | §6, §12 |
 | Migrations | **Alembic, run as a one-shot before the containers start** | §8, §9 |
 | Timezone | **`TZ=Europe/London`** on the worker | §6, §11 |
-| Deploy dir | **`/opt/portfolio-ai`**, holding `docker-compose.yml` and `.env` | §6, §9 |
+| Deploy dir | **`~/docker/portfolio-ai`**, holding `docker-compose.yml` and `.env`, beside the site's `~/docker/my-portfolio` | §6, §9 |
 
 Everything environment-specific — the Postgres service name, credentials, the API key — lives in
-`/opt/portfolio-ai/.env` on the box and nowhere else. **This repository is public**, so every value
-of that kind appears here as a `<placeholder>`.
+`~/docker/portfolio-ai/.env` on the box and nowhere else. **This repository is public**, so every
+value of that kind appears here as a `<placeholder>`.
 
 One placeholder does double duty. `<postgres-container>` is the Postgres container's **name**,
 which is what `docker exec` takes — and on a user-defined network like `traefik_proxy`, a
@@ -385,16 +385,16 @@ script itself.
 ## 6. Files on the server
 
 ```bash
-sudo mkdir -p /opt/portfolio-ai
-sudo chown "$USER:$USER" /opt/portfolio-ai
-cd /opt/portfolio-ai
+mkdir -p ~/docker/portfolio-ai
+cd ~/docker/portfolio-ai
 ```
 
-Two files, and only two. **There is no source checkout on the server** — the image carries the
-code, which is the entire point of building it in CI.
+Two files go there by hand, and only two. **There is no source checkout on the server** — the
+image carries the code, which is the entire point of building it in CI. The deploy script later
+adds two folders of its own beside them, `backups/` and `.deploy-state/` (§9).
 
 ```
-/opt/portfolio-ai/
+~/docker/portfolio-ai/
 ├── docker-compose.yml    copied from this repo: docker/docker-compose.yml
 └── .env                  never committed, chmod 600
 ```
@@ -404,6 +404,18 @@ code, which is the entire point of building it in CI.
 chmod 600 .env
 chmod 644 docker-compose.yml
 ```
+
+> **The compose file names its own project: `name: portfolio-ai`. Do not remove that line.**
+> Compose finds its own containers by project name and, left to itself, takes the name from the
+> folder the file is in. Then a renamed folder would orphan the two running containers, and
+> `deploy-portfolio-ai` would record no rollback target, pull and migrate before failing at
+> `up -d` on a container name already in use. And this file in the site's folder,
+> `~/docker/my-portfolio`, would be the same project as the site: both have a service called
+> `api`, so a deploy here would replace the site's Express container with this project's API and
+> remove its nginx container as an orphan.
+>
+> The folder was `/opt/portfolio-ai` until 2026-10-09. Moving it needed nothing stopped: `mv`,
+> then the new path in the two scripts (§9, §10).
 
 ### `.env`
 
@@ -520,7 +532,7 @@ Do the first one a command at a time. The script in §9 does exactly this, and r
 once means a failure names its own step instead of being one line in a wrapper's output.
 
 ```bash
-cd /opt/portfolio-ai
+cd ~/docker/portfolio-ai
 
 # 1. Pull. Nothing has started yet, so a bad tag or a missing login fails here, harmlessly.
 docker compose pull
@@ -686,7 +698,7 @@ migration never runs without a completed backup.
 set -euo pipefail
 
 # --- Configuration -----------------------------------------------------------
-DEPLOY_DIR="/opt/portfolio-ai"
+DEPLOY_DIR="$HOME/docker/portfolio-ai"   # Install writes the absolute path over this line
 COMPOSE_FILE="docker-compose.yml"
 
 PG_CONTAINER="postgres"        # the Postgres container
@@ -852,7 +864,18 @@ say "Deployed"
 
 ```bash
 sudo nano /usr/local/bin/deploy-portfolio-ai     # paste the script above, save
+```
+
+Then, with the editor closed:
+
+```bash
 sudo chmod 0755 /usr/local/bin/deploy-portfolio-ai
+
+# Write the directory in as an absolute path. The double quotes let your own shell
+# expand $HOME now, before sudo runs anything.
+sudo sed -i "s|^DEPLOY_DIR=.*|DEPLOY_DIR=\"$HOME/docker/portfolio-ai\"|" \
+  /usr/local/bin/deploy-portfolio-ai
+grep -n '^DEPLOY_DIR=' /usr/local/bin/deploy-portfolio-ai   # your own home, not /root
 
 deploy-portfolio-ai --backup
 ```
@@ -862,6 +885,12 @@ the Postgres container is `postgres`, the database and its owning role are both 
 An earlier version read those from environment variables set in `/etc/profile.d/`, which only
 login shells source — under `sudo` or a fresh terminal they were simply absent and the script
 died on its first lines. If you created that file, it is no longer used and can be deleted.
+
+The directory is the one value the script above does not spell out. It is under a home
+directory, and the real path would put the server's user name in a public repository, so the
+script is printed with `$HOME` and the `sed` writes the real path over it. Leaving `$HOME` in
+the installed script would repeat the mistake in the paragraph above: under `sudo` it can be
+root's, and the script would die looking for a directory that is not there.
 
 `--backup` on the first run forces a dump with nothing to migrate, so the backup path is
 proved on a day when it is not load-bearing.
@@ -888,8 +917,10 @@ The API release (build step 4) is one. On a box that already runs ingestion:
    box. It enables the `api` service, with its health check and its 45 s stop grace period, and
    puts `traefik.enable=false` on both services.
 3. **The scripts.** Replace `/usr/local/bin/deploy-portfolio-ai` with the script above, and
-   `/usr/local/bin/rollback-portfolio-ai` with the one in §10. Both now wait for the API to be
-   healthy and ready. The deploy script from before this release does not know the API exists.
+   `/usr/local/bin/rollback-portfolio-ai` with the one in §10, then run the `sed` from each one's
+   Install block: the scripts are printed with `$HOME`, and the `sed` is what writes the real
+   directory back in. Both now wait for the API to be healthy and ready. The deploy script from
+   before this release does not know the API exists.
 4. **Check what the containers will read**, with §8 step 2. A misspelt key shows up there as a
    setting still at its default.
 5. **Deploy** with `deploy-portfolio-ai`. This release has no migration, so no backup is taken.
@@ -927,7 +958,7 @@ rollback-portfolio-ai --yes    # does not ask
 set -euo pipefail
 
 # --- Configuration -----------------------------------------------------------
-DEPLOY_DIR="/opt/portfolio-ai"
+DEPLOY_DIR="$HOME/docker/portfolio-ai"   # Install writes the absolute path over this line
 COMPOSE_FILE="docker-compose.yml"
 # -----------------------------------------------------------------------------
 
@@ -1027,7 +1058,17 @@ echo "Fix the bad build before deploying, or the next deploy brings it straight 
 
 ```bash
 sudo nano /usr/local/bin/rollback-portfolio-ai     # paste the script above, save
+```
+
+Then, with the editor closed:
+
+```bash
 sudo chmod 0755 /usr/local/bin/rollback-portfolio-ai
+
+# The same absolute path as the deploy script's, for the same reason (§9, Install).
+sudo sed -i "s|^DEPLOY_DIR=.*|DEPLOY_DIR=\"$HOME/docker/portfolio-ai\"|" \
+  /usr/local/bin/rollback-portfolio-ai
+grep -n '^DEPLOY_DIR=' /usr/local/bin/rollback-portfolio-ai   # your own home, not /root
 ```
 
 It pins images through a Compose override rather than editing `docker-compose.yml`, so the override
@@ -1058,7 +1099,7 @@ Nothing calls it until the site's own API does, in build step 6.
 Everything is JSON, one object per line, on stdout — collected by Docker.
 
 ```bash
-cd /opt/portfolio-ai
+cd ~/docker/portfolio-ai
 docker compose logs -f worker
 docker compose logs --since 24h worker | grep -v '"level":"info"'
 docker compose logs -f api
@@ -1165,7 +1206,7 @@ real visitors' conversations and could not be told apart from them afterwards.
 ### Backups
 
 `deploy-portfolio-ai` dumps `portfolio_rag` before any migration and keeps 30 days of them in
-`/opt/portfolio-ai/backups`. That covers the deploy-shaped risk. It does **not** cover the box
+`~/docker/portfolio-ai/backups`. That covers the deploy-shaped risk. It does **not** cover the box
 dying, so if the Postgres container is not already in a host-level backup, that is a separate
 problem and a more important one.
 
@@ -1175,7 +1216,7 @@ Restore is deliberately manual:
 # Into a scratch schema first, always. Never straight over the live one.
 docker exec -i <postgres-container> pg_restore \
     -U postgres -d portfolio_ai --no-owner --no-privileges \
-    --schema=portfolio_rag < /opt/portfolio-ai/backups/portfolio_rag-<stamp>.dump
+    --schema=portfolio_rag < ~/docker/portfolio-ai/backups/portfolio_rag-<stamp>.dump
 ```
 
 > The dump contains columns of type `public.vector`. Restoring into a database without the
@@ -1240,8 +1281,8 @@ API's. They must match, and changing one without the other returns 401 to every 
 ```bash
 openssl rand -hex 32
 # edit both .env files, then restart both:
-docker compose -f /opt/portfolio-ai/docker-compose.yml up -d api
-docker compose -f <portfolio-dir>/docker-compose.yml up -d api
+docker compose -f ~/docker/portfolio-ai/docker-compose.yml up -d api
+docker compose -f ~/docker/my-portfolio/docker-compose.yml up -d api
 ```
 
 ---
@@ -1407,6 +1448,9 @@ the fact-check of 2026-09-23.)
   refuses it; in the containers the file arrives as environment variables and an unknown one is
   never looked at, so the setting keeps its default. §8 step 2 prints what the containers read.
 - **`docker compose restart` does not re-read `.env`.** `docker compose up -d` does.
+- **`name: portfolio-ai` stays in the compose file.** Without it Compose takes the project name
+  from the folder, and a renamed folder, or one shared with the site, changes which containers a
+  deploy touches. §6.
 - **Never `COPY .env` into the image.** A layer is immutable, the image is public, and deleting
   the file later does not remove it from history.
 - **`docker image prune -a` on this box reaches other projects.** The deploy script's prune is

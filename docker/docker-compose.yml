@@ -1,4 +1,4 @@
-# Production deploy template. Lives on the server as /opt/portfolio-ai/docker-compose.yml.
+# Production deploy template. Lives on the server as ~/docker/portfolio-ai/docker-compose.yml.
 #
 # This file is a template on purpose: it names no hosts, no addresses and no
 # credentials, because the repository is public. Everything specific lives in the
@@ -14,6 +14,13 @@
 # Migrations as a separate one-shot rather than in an entrypoint, so the schema
 # change is a step somebody takes and watches, not something that happens
 # invisibly whenever a container restarts.
+
+# The project name, said here rather than left to Compose, which would otherwise
+# take it from whatever folder this file is in. Compose finds its own containers
+# by this name. Left to the folder, renaming the folder would orphan the running
+# containers, and this file in the site's folder would make the two projects one:
+# both have a service called `api`, and a deploy here would replace the site's.
+name: portfolio-ai
 
 services:
   # The chat API. Nothing outside the Docker network can reach it: the only caller
