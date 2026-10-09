@@ -111,8 +111,8 @@ the host part of `DATABASE_URL`. §5a finds it and §5g proves it resolves.
   more importantly, a heartbeat — a webhook that stops firing looks exactly like a repository
   nobody has committed to, while a scheduled run that stops succeeding says so in the logs.
 - **Postgres** — already on the box and already shared with n8n. This project only ever writes to
-  its own `portfolio_rag` schema. The live `mihaylov_rag_documents` and `mihaylov_chat_histories`
-  tables belong to n8n and are not touched until cutover (§12).
+  its own `portfolio_rag` schema. The `mihaylov_rag_documents` and `mihaylov_chat_histories`
+  tables belong to n8n and are not touched until n8n is retired (§12, step 7).
 - **One image, two services.** One build, one tag, one thing to roll back.
 
 ---
@@ -1248,6 +1248,10 @@ docker compose -f <portfolio-dir>/docker-compose.yml up -d api
 
 ## 12. Cutover from n8n
 
+**Done on 2026-10-09, through step 5.** The site's chat runs on this service. Step 6, the week of
+watching, is under way; step 7 retires n8n after it, and step 8 is golden_v2. What follows is
+the runbook as it was followed, kept as the record and for the rollback in step 6.
+
 Until cutover, **both systems run side by side and neither notices the other.** n8n keeps serving
 the live chat from `mihaylov_rag_documents`; this project writes only to `portfolio_rag`. That is
 the whole point of the separate schema, and it means the vector store here can be built, ingested
@@ -1350,12 +1354,17 @@ In order, on the server unless it says otherwise:
    n8n's "Portfolio | Knowledgebase -> RAG Vector Store" workflow first, which also means a
    rollback never has to revert the knowledge base.
 
-   The push with the chat UI and the knowledge base was made on 2026-10-08, so both clocks are
-   running, and the first re-index it is in front of is Monday 2026-10-12. The project card's
-   image and the CV were committed afterwards: push those too before pulling the site image.
+   After starting the new site image, purge Cloudflare's cache. The project card's image changed
+   under an unchanged file name, and the site's nginx gives images a 30-day cache lifetime, so
+   the edge would otherwise go on serving the old one.
 
-   The same day, update this repository's `README.md`: its Status section still says the front
-   end and the switch-over are next, and the assistant's article now links visitors to it.
+   As it happened: both pushes were made on 2026-10-08, the second carrying the project card's
+   image and the CV, and the site image was pulled on 2026-10-09, before the first Monday
+   re-index.
+
+   The same day, update this repository's `README.md`, because the assistant's article links
+   visitors to it: its Status section said the front end and the switch-over were next. Done on
+   2026-10-09.
 6. **Watch for a week.** Both systems still work; only the traffic has moved. Look at the
    portfolio API's `chat_stream` lines (outcomes other than `completed` and `client_gone`), this
    service's errors and `daily_spend_cap_reached`, and any `icon_request_reached_api`, which means

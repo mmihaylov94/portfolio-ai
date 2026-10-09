@@ -39,15 +39,14 @@ This project spans two codebases:
   changed as part of this work**, so its current state is a starting point, not a constraint.
   It has its own `CLAUDE.md` worth reading before touching it.
 
-Current state there, as of 2026-10-08: the live chat is still the stock `@n8n/chat` widget posting
-straight from the browser to n8n (unauthenticated); the site is fully prerendered with no Nitro
-runtime in production; session id lives in `localStorage["n8n-chat/sessionId"]`. The Express API
-now has `/api/chat` and `/api/chat/feedback` (step 6), which proxy to this service and stay
-switched off until `PORTFOLIO_AI_URL` is set. The new chat UI that calls them, and the rewritten
-knowledge base that describes the new system, are on the portfolio's `main`, which was pushed on
-2026-10-08. **That push began the cutover**: it builds the site image with the new chat, and puts
-the new articles in front of n8n's weekly re-index, next on Monday 2026-10-12
-(docs/DEPLOYMENT.md §12). **The old widget has no feedback**, despite what the old README claimed.
+Current state there, as of 2026-10-09: **the cutover happened on 2026-10-09** (docs/DEPLOYMENT.md
+§12, steps 1 to 5). The live chat is the site's own chat UI, which calls `/api/chat` and
+`/api/chat/feedback` on the Express API, and those proxy to this service. The site is fully
+prerendered with no Nitro runtime in production; the conversation lives in
+`localStorage["portfolio-chat/v1"]`. n8n's chat workflow is left running, unused, for a week: it
+is what a rollback of the site image falls back to. After that week n8n's workflows are retired
+and `mihaylov_chat_histories` is dropped. **The old widget had no feedback**, despite what the
+old README claimed.
 
 Settled cross-repo decisions:
 
@@ -61,7 +60,7 @@ Settled cross-repo decisions:
   DOM-querying in `useAiChat.ts` and the MutationObserver that injects the "Start over" button.
   Nothing about the old widget's UX needs reproducing.
 - **Existing conversations are not migrated.** `session_id` is just `crypto.randomUUID()` in
-  `localStorage`; `mihaylov_chat_histories` is dropped at cutover.
+  `localStorage`; `mihaylov_chat_histories` is dropped when n8n's workflows are retired.
 - **Article validation lives here, runs there.** `portfolio-ai-validate` is a command in *this*
   package that calls the same `parse_document` and `chunk_document` the pipeline uses, so
   "passes CI" and "will be indexed" cannot drift apart. The portfolio repo runs it from the
@@ -300,7 +299,7 @@ it compares git blob SHAs and stops.
 
 - **Two environments, two machines.** Local is a LAN server holding nothing live — purge, drop
   and re-ingest there freely. Production is an EC2 instance that also runs the live site, n8n and
-  the live `mihaylov_rag_documents` / `mihaylov_chat_histories` tables. **Never point a dev
+  n8n's `mihaylov_rag_documents` / `mihaylov_chat_histories` tables. **Never point a dev
   command at production**; check which `DATABASE_URL` is loaded before anything that writes.
 - **Port 5433, not 5432.** Only 5433 has pgvector. A wrong port connects fine and then fails at
   the first migration with `type "vector" does not exist`, which reads like a broken migration
@@ -322,11 +321,12 @@ it compares git blob SHAs and stops.
   it stops protecting as the corpus grows, since a floor of 8 guards 11 documents and guards
   nothing at 50. Checked twice: optimistically after discovery, before anything is fetched or
   spent, and exactly at the purge itself.
-- **The n8n tables (`mihaylov_rag_documents`, `mihaylov_chat_histories`) are live production.**
+- **The n8n tables (`mihaylov_rag_documents`, `mihaylov_chat_histories`) are the rollback.**
   In production they live in n8n's database; this project has its **own database**,
   `portfolio_ai`, on the same Postgres instance, with the `portfolio_rag` schema inside it.
-  Never point this project at n8n's database, and do not touch or drop the old tables until
-  cutover is explicitly confirmed. (Locally, `portfolio_rag` shares a database with other things —
+  Never point this project at n8n's database, and do not touch or drop the old tables: retiring
+  them is the owner's step, a week after cutover (docs/DEPLOYMENT.md §12, step 7).
+  (Locally, `portfolio_rag` shares a database with other things —
   the schema is what isolates it there, and production is stricter.)
 - **Do not commit secrets.** `OPENAI_API_KEY`, `DATABASE_URL`, `PORTFOLIO_AI_API_KEY` and
   `SMTP_APP_PASSWORD` come from `.env`, which is gitignored. The repo is public, so a leaked
@@ -358,8 +358,9 @@ it compares git blob SHAs and stops.
 
 ## Current state
 
-Steps 1-5 of the build order (ARCHITECTURE.md §12) are done and step 6 is under way, and
-**every open requirement question is closed** (the decisions log is ARCHITECTURE.md §13).
+Steps 1-5 of the build order (ARCHITECTURE.md §12) are done, the cutover in step 6
+happened on 2026-10-09, and **every open requirement question is closed** (the decisions log is
+ARCHITECTURE.md §13).
 
 - **Foundations** — packaging, settings, logging, the async pool, migrations, tests, CI and the
   image on GHCR. Written up as ten lessons in `docs/lessons/`.
@@ -369,7 +370,7 @@ Steps 1-5 of the build order (ARCHITECTURE.md §12) are done and step 6 is under
 - **API** — FastAPI over the assistant, private to the Docker network: bearer auth, per-session
   and global limits, the daily spend cap, answers as JSON or streamed as server-sent events, the
   feedback endpoint, and the nightly retention purge. The portfolio's Express routes that call it
-  are built (step 6) and deploy switched off until cutover.
+  went live at cutover.
 
 - **Evals** — `python -m portfolio_ai.evals`: golden_v1 (54 cases from the eleven articles),
   deterministic retrieval and rule checks, a `gpt-5` judge, and runs stored with their full
@@ -381,13 +382,13 @@ Steps 1-5 of the build order (ARCHITECTURE.md §12) are done and step 6 is under
   n8n parity. Classifier prompt version 2 fixed the misroutes the runs found (`classifier-v2`).
 
 **Step 6**, the front end and cutover, is in phases:
-1. the Express proxy in the portfolio repo: built, with tests, deployed switched off;
-2. the new chat UI: built, with unit tests for its logic, and committed on the portfolio's
-   `main`. Its answer renderer ports `postprocess.py`'s link pattern, checked against a fixture
-   of Python's matches;
-3. the rewritten assistant article and the other copy that becomes false at cutover: written and
-   committed there too, as are the project card's new image and the CV;
-4. cutover itself, by the runbook in docs/DEPLOYMENT.md §12;
+1. the Express proxy in the portfolio repo: built, with tests, and switched on at cutover;
+2. the new chat UI: built, with unit tests for its logic, and live. Its answer renderer ports
+   `postprocess.py`'s link pattern, checked against a fixture of Python's matches;
+3. the rewritten assistant article and the other copy that became false at cutover, the project
+   card's image and the CV included: live;
+4. cutover itself: done on 2026-10-09, by the runbook in docs/DEPLOYMENT.md §12. A week of
+   watching follows, and then n8n's workflows are retired (steps 6 and 7 there);
 5. then golden_v2.
 
 After that, analytics reporting (7). The chat prompt's weak cases at `minimal` (the end of Results

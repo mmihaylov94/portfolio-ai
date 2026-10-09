@@ -1,12 +1,13 @@
 # Portfolio AI Assistant — Architecture & Design
 
-Python replacement for the two n8n workflows that currently power the AI chat box on
-[mihaylov.io](https://mihaylov.io), plus an evaluation harness and an analytics/feedback loop.
+Python replacement for the two n8n workflows that powered the AI chat box on
+[mihaylov.io](https://mihaylov.io) until 2026-10-09, plus an evaluation harness and an
+analytics/feedback loop.
 
-**Status:** build steps 1-5 done (foundations, ingestion, assistant core, API, evals). Step 6 under
-way: the Express proxy is deployed switched off, and the chat UI and the rewritten content are
-on the portfolio's `main`, pushed on 2026-10-08, which began the cutover.
-**Last updated:** 2026-10-08
+**Status:** build steps 1-5 done (foundations, ingestion, assistant core, API, evals). Step 6: the
+cutover happened on 2026-10-09, and the site's chat runs on this service. n8n's workflows are
+retired after a week of watching; then golden_v2, and step 7.
+**Last updated:** 2026-10-09
 
 ---
 
@@ -298,7 +299,7 @@ afterwards. `first_token_ms` is how long the visitor waited for words, as oppose
 for the whole answer; with streaming those are very different numbers.
 `session_id` is an opaque string minted by the browser (`crypto.randomUUID()` in `localStorage`).
 Existing `@n8n/chat` conversations are **not** migrated — a clean break was accepted, so the old
-`mihaylov_chat_histories` table is simply dropped at cutover.
+`mihaylov_chat_histories` table is simply dropped when n8n's workflows are retired.
 
 The three extra columns exist purely for §10: `top_score` is the best cosine similarity from
 retrieval (the content-gap signal), `fallback_used` flags the "I do not have that information"
@@ -708,8 +709,8 @@ and fails unless the first event reaches the browser before the upstream finishe
 
 ### The chat UI (portfolio repo)
 
-Built in step 6, with its own README and CLAUDE.md sections. It is on the portfolio's `main`,
-and pushing that on 2026-10-08 began the cutover, because a push builds the site image.
+Built in step 6, with its own README and CLAUDE.md sections. It has been live since the
+cutover on 2026-10-09.
 `@n8n/chat` is gone, and with it the DOM-querying in `useAiChat.ts` and the MutationObserver
 that injected a "Start over" button. **The UX is a clean-sheet redesign**, and
 **existing conversations are not migrated**: the session id is a plain `crypto.randomUUID()`.
@@ -1126,7 +1127,8 @@ listed in `.env.example` before `Settings` knows them.
    deactivate the n8n workflows and drop `mihaylov_chat_histories`, and `mihaylov_rag_documents`
    once the new ingestion has a month of clean runs behind it (DEPLOYMENT.md §12). This is the largest chunk of portfolio-repo work in the
    project, planned on its own: the proxy ships first, switched off, and the UI and the rewritten
-   article ship together at cutover.
+   article ship together at cutover. **Cut over on 2026-10-09**; the week of watching and
+   retiring n8n remain.
 7. **Analytics reporting** — signals, clustering, digest, `promote-case`. Deliberately last:
    analytics on zero traffic tells you nothing, and the queries will be better designed after
    seeing a few hundred real questions.

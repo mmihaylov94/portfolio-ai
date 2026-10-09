@@ -2,8 +2,8 @@
 
 [![CI](https://github.com/mmihaylov94/portfolio-ai/actions/workflows/ci.yml/badge.svg)](https://github.com/mmihaylov94/portfolio-ai/actions/workflows/ci.yml)
 
-A retrieval-augmented assistant for the knowledge base behind [mihaylov.io](https://mihaylov.io),
-built in Python to replace an existing n8n implementation.
+The retrieval-augmented assistant behind the chat on [mihaylov.io](https://mihaylov.io), built in
+Python. It replaced an n8n implementation in October 2026.
 
 Four parts:
 
@@ -32,7 +32,8 @@ embedding call, vector query and agent loop iteration is visible in the source.
 
 ## Status
 
-Under construction, and useful already.
+Live: the chat on [mihaylov.io](https://mihaylov.io) has answered from this service since
+9 October 2026.
 
 - **Foundations** — packaging, configuration, logging, the database layer, migrations, tests, the
   lint and type gates, CI and the published image.
@@ -46,10 +47,16 @@ Under construction, and useful already.
 - **Evals** — a harness that scores the assistant against a golden dataset of 54 questions:
   retrieval, routing, the style and safety rules, an LLM judge's grades, latency and cost, with
   every run stored alongside the configuration that produced it.
+- **The site's chat** — the chat box itself, in the site's own repository
+  ([my-portfolio](https://github.com/mmihaylov94/my-portfolio)): answers streamed as they are
+  written, the documents each one drew on listed under it, and thumbs up/down on every answer.
+  The site's API passes each question to this service, which has no public address.
 
 The baseline the assistant is judged against is recorded, with runs at lower reasoning effort
-beside it, in [docs/EVALS.md](docs/EVALS.md). Next is the front end and the switch-over. The
-build order is in [ARCHITECTURE.md](ARCHITECTURE.md) §12.
+beside it, in [docs/EVALS.md](docs/EVALS.md). Still to build is the analytics reporting: what
+visitors ask and where answers fall short is captured already, and clustering it into content
+gaps and a weekly digest waits for real traffic. The build order is in
+[ARCHITECTURE.md](ARCHITECTURE.md) §12.
 
 ## Getting started
 
