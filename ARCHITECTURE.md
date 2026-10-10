@@ -6,8 +6,10 @@ analytics/feedback loop.
 
 **Status:** build steps 1-5 done (foundations, ingestion, assistant core, API, evals). Step 6: the
 cutover happened on 2026-10-09, and the site's chat runs on this service. golden_v2 and its
-baseline followed the same day. n8n's workflows are retired after a week of watching; then step 7.
-**Last updated:** 2026-10-09
+baseline followed the same day. On 2026-10-10 the chat prompt, the eval judge and the model that
+writes the answers changed, each measured and none deployed yet (docs/EVALS.md). n8n's workflows
+are retired after a week of watching; then step 7.
+**Last updated:** 2026-10-10
 
 ---
 
@@ -791,8 +793,9 @@ to the model reduced to their documents in first-seen order. It reports:
 
 **Classification:** accuracy against the labelled category, or a route the case also accepts.
 
-**Answer quality** (LLM-as-judge, `gpt-5` scoring 1–5 with a written rationale):
-- *Faithfulness*: grounded in the passages shown, nothing invented. Links are left to the rules.
+**Answer quality** (LLM-as-judge, `gpt-6.1-sol` scoring 1–5 with a written rationale):
+- *Faithfulness*: grounded in the passages shown, nothing invented. A link itself is left to
+  the rules; what the answer says the link or the site holds is not.
 - *Completeness*: against the reference answer.
 - *Style / persona*: concise, third person, conversational, not a CV dump.
 - *Declined*: whether the answer said it did not know, in any wording.
@@ -815,18 +818,19 @@ are what a lower effort saves), and cost per answer, with the judge's cost kept 
 ### Usage
 
 ```bash
-uv run python -m portfolio_ai.evals run --label v2-top-k-8 --top-k 8 \
-    --chat-effort minimal --classifier-effort minimal --dry-run   # the plan; spends nothing
-uv run python -m portfolio_ai.evals run --label v2-top-k-8 --top-k 8 \
-    --chat-effort minimal --classifier-effort minimal   # only top_k differs from v2-baseline
-uv run python -m portfolio_ai.evals compare v2-baseline v2-top-k-8   # totals, and every case that moved
+uv run python -m portfolio_ai.evals run --label luna-mini --dry-run   # the plan; spends nothing
+uv run python -m portfolio_ai.evals run --label luna-mini             # the settings in use
+uv run python -m portfolio_ai.evals run --label top-k-8 --top-k 8     # one setting changed from it
+uv run python -m portfolio_ai.evals compare luna-mini top-k-8   # totals, and every case that moved
+uv run python -m portfolio_ai.evals rejudge luna-mini --label luna-mini-regraded   # after a new judge
 ```
 
 Every run stores its full config (models, efforts, `top_k`, search rounds, every prompt version,
 the judge, the knowledge base's fingerprint, git SHA) so results stay comparable months later.
 The judge model is pinned independently of the model under test, and the judge is **never** the
-same call that produced the answer. Evals run locally against the development database; the
-command refuses production.
+same call that produced the answer. When the judge or its rubric changes, the stored baseline is
+graded again by the new one (`rejudge`), because scores from two judges are not comparable.
+Evals run locally against the development database; the commands that spend refuse production.
 
 ---
 
@@ -1083,9 +1087,9 @@ config rather than failing on the first request.
 | `PORTFOLIO_AI_API_KEY` | bearer token, at least 32 characters; also set in the Express API's `.env`. The API will not start without it |
 | `GITHUB_REPO` / `GITHUB_BRANCH` / `GITHUB_DOCS_PATH` | `mmihaylov94/my-portfolio` / `main` / `knowledgebase` |
 | `GITHUB_TOKEN` | optional; raises the API rate limit, required if the repo goes private |
-| `CHAT_MODEL` / `CLASSIFIER_MODEL` / `EMBEDDING_MODEL` / `JUDGE_MODEL` | defaults `gpt-5-mini`, `gpt-5-mini`, `text-embedding-3-small`, `gpt-5` |
+| `CHAT_MODEL` / `CLASSIFIER_MODEL` / `EMBEDDING_MODEL` / `JUDGE_MODEL` | defaults `gpt-6-luna`, `gpt-5-mini`, `text-embedding-3-small`, `gpt-6.1-sol` |
 | `EMBEDDING_DIMENSIONS` | `1536` — changing this requires a re-embed and a migration |
-| `CHAT_REASONING_EFFORT` / `CLASSIFIER_REASONING_EFFORT` | unset = the model's own default, which is what n8n sends. The largest lever on latency there is |
+| `CHAT_REASONING_EFFORT` / `CLASSIFIER_REASONING_EFFORT` | defaults `none` / `minimal`, the lowest each model takes; a pair the model does not take is refused at startup. Set empty, the model's own default applies, which is what n8n sent. The largest lever on latency there is |
 | `AGENT_MAX_SEARCH_ROUNDS` | default `3`; the first search is always made |
 | `RETRIEVAL_TOP_K` | default `20` |
 | `MEMORY_WINDOW_TURNS` | default `25`, counted in exchanges (50 messages), as n8n counts it |
@@ -1189,6 +1193,9 @@ Non-negotiable from the first commit, because git history is published too:
 | Model API | OpenAI Responses API, `store=False`, reasoning passed back between tool calls | §8 |
 | Classifier context | The previous exchange, not the message alone as in n8n | §8 |
 | Classifier prompt | n8n's, plus the names of his projects and a rule for short replies (version 2); the validator warns on a project it does not name | §9 |
+| Chat prompt | n8n's, with one line added and four replaced (version 2); wider rewrites were measured and dropped | §9 |
+| Chat model | `gpt-6-luna` at effort `none` since 2026-10-10: higher faithfulness and style than `gpt-5-mini` on golden_v2, at about a third of the cost | §9 |
+| Classifier model | Stays `gpt-5-mini` at `minimal`: it routes as well as `gpt-6-luna`, and its call takes about 0.8s against 1.4s | §9 |
 | First retrieval | Forced, not left to the model, so every answer records a `top_score` | §8 |
 | Rate limits | 20/session/15m, 60/IP/15m, one answer in flight per session, plus a daily spend ceiling | §8 |
 | Visitor disconnects mid-answer | The answer finishes and is stored and counted; it runs in its own task, not the request | §8 |
@@ -1200,7 +1207,7 @@ Non-negotiable from the first commit, because git history is published too:
 | Eval datasets | Frozen by content hash once a run of them completes (a failed run doesn't count); changes go into a new version | §9 |
 | Where evals run | Locally, against the development database; refused in production | §9 |
 | Eval retrieval score | Documents, not chunks, in first-seen order; any expected document is a hit | §9 |
-| Eval judge | `gpt-5`, pinned apart from the chat model; grades claims, and leaves links to the rules | §9 |
+| Eval judge | `gpt-6.1-sol` with rubric version 2 since 2026-10-10 (`gpt-5` before), pinned apart from the chat model; a change of judge re-grades the stored baseline | §9 |
 | Retention | 90 days raw; derived data kept indefinitely | §10 |
 | Digest delivery | Gmail SMTP via `smtplib`, recipient in env | §10 |
 | Ingestion schedule | Hourly, on the hour | §11 |

@@ -189,9 +189,14 @@ migrations/      datasets/      tests/unit  tests/integration      docker/
   page), both on the prompt's allowed list, so the sentence around it still reads.
 - **Answer style:** 2–4 sentences, conversational, no section headers, no bullet lists unless
   asked. Offer more detail rather than dumping it.
-- **Defaults carried over from n8n:** chat model `gpt-5-mini`, embeddings `text-embedding-3-small`
-  at 1536 dimensions, `top_k = 20`, memory window 25 **exchanges** (50 messages -- n8n's
-  setting counts exchanges, and earlier drafts of these notes misread it as messages).
+- **Models, since 2026-10-10:** `gpt-6-luna` at effort `none` writes the answers, `gpt-5-mini` at
+  `minimal` routes each message, and `gpt-6.1-sol` judges the evals. Until then `gpt-5-mini`,
+  n8n's model, did the first two and `gpt-5` judged. A model and its effort go together:
+  `gpt-6-luna`'s lowest is `none`, `gpt-5-mini`'s is `minimal`, OpenAI refuses each for the
+  other, and so do the settings at startup.
+- **Carried over from n8n, unchanged:** embeddings `text-embedding-3-small` at 1536 dimensions,
+  `top_k = 20`, memory window 25 **exchanges** (50 messages -- n8n's setting counts exchanges,
+  and earlier drafts of these notes misread it as messages).
 - **Frontmatter keys** in source docs: `doc_id`, `source_type`, `page_type`, `title`, `url`,
   `tags`, `last_verified`. `doc_id` is the stable identity used for upserts and purges.
 - **Chunking** is one chunk per H2 section, chunk text = `"{section_title}\n\n{section_body}"`.
@@ -204,9 +209,11 @@ migrations/      datasets/      tests/unit  tests/integration      docker/
   the n8n-parity default took 26.7s with the first word at 22.4s; `low` 10.6s/7.8s; `minimal`
   9.2s/5.9s, and cheaper each time. Measured on golden_v1 (2026-09-25, docs/EVALS.md):
   `minimal` brings the median first word from 15.6s to 3.9s and cuts the answer's cost by 45%,
-  with no measurable loss in completeness or style and a small one in faithfulness. Production's
-  `.env` now sets `minimal` for both the chat and the classifier; the code default stays at
-  parity. `CHAT_REASONING_EFFORT` and `CLASSIFIER_REASONING_EFFORT` in `.env` change it.
+  with no measurable loss in completeness or style and a small one in faithfulness. Each model
+  now runs at the lowest effort it takes, `none` for `gpt-6-luna` and `minimal` for
+  `gpt-5-mini`, and those are the code's defaults. The classifier counts as much as the chat:
+  every message waits for it first, which is why it stayed on `gpt-5-mini` (about 0.8s a call)
+  when the answers moved to `gpt-6-luna` (about 1.4s for the same call).
 - **Analytics signals are recorded at answer time and cannot be backfilled:** `top_score`
   (best cosine similarity), `fallback_used` (the "I do not have that information" answer) and
   `classification` go on every `chat_messages` row. Build these in with the API, not later.
@@ -219,7 +226,7 @@ migrations/      datasets/      tests/unit  tests/integration      docker/
   fix is to **write a knowledge base article, never to widen the crawl.**
 - **Rate limits:** 20 messages per session per 15 min (FastAPI), 60 per IP per 15 min (Express),
   one answer in flight per session (409), `MAX_CONCURRENT_TURNS` in flight overall (503), plus
-  `DAILY_SPEND_CAP_USD` over a rolling 24 hours (default $1.00, about 250 answers) that returns
+  `DAILY_SPEND_CAP_USD` over a rolling 24 hours (default $1.00, about 1,600 answers) that returns
   a polite refusal rather than an error; `0` turns the chat off. The daily cap is the real
   protection; the others just stop casual abuse.
 - **Retention is 90 days** for raw `chat_messages` and feedback. `content_gaps`, aggregates and
@@ -277,12 +284,12 @@ uv run python -m portfolio_ai.api                     # the API as production ru
 uv run python -m portfolio_ai.analytics purge --dry-run   # retention sweep, counting only
 
 uv run python -m portfolio_ai.evals check datasets/golden_v2.yaml     # no DB, no network
-uv run python -m portfolio_ai.evals run --label v2-top-k-8 --top-k 8 \
-    --chat-effort minimal --classifier-effort minimal --dry-run      # the plan; spends nothing
-uv run python -m portfolio_ai.evals run --label v2-top-k-8 --top-k 8 \
-    --chat-effort minimal --classifier-effort minimal   # one setting changed from v2-baseline
-uv run python -m portfolio_ai.evals show v2-baseline --failures
-uv run python -m portfolio_ai.evals compare v2-baseline v2-top-k-8
+uv run python -m portfolio_ai.evals run --label luna-mini --dry-run    # the plan; spends nothing
+uv run python -m portfolio_ai.evals run --label luna-mini              # the settings in use
+uv run python -m portfolio_ai.evals run --label top-k-8 --top-k 8      # one setting changed from it
+uv run python -m portfolio_ai.evals show top-k-8 --failures
+uv run python -m portfolio_ai.evals compare luna-mini top-k-8
+uv run python -m portfolio_ai.evals rejudge luna-mini --label luna-mini-regraded --dry-run   # a new judge
 
 uv run analytics report --since 7d                    # digest to stdout
 uv run analytics digest                               # build + email it (Gmail SMTP)
@@ -339,11 +346,18 @@ it compares git blob SHAs and stops.
   feedback 404) and check OpenAI with the terminal chat's `--no-save`.
 - **Embedding dimension changes are migrations.** Changing `EMBEDDING_DIMENSIONS` or the
   embedding model invalidates every stored vector and requires a full re-embed.
-- **Evals cost money.** A full golden_v2 run is about $1.00, most of it the `gpt-5` judge
-  (`--no-judge` about $0.12 at `minimal`). Say what a run or a sweep will cost before starting it.
-- **Evals run locally, against the dev database.** `run` refuses `ENVIRONMENT=production`. The
-  dev `.env` sets both reasoning efforts to `low`, so a run meant to match production passes
-  `--chat-effort minimal --classifier-effort minimal`; read the dry run's configuration first.
+- **Evals cost money.** A full golden_v2 run is about $0.55, nearly all of it the `gpt-6.1-sol`
+  judge (`--no-judge` about 3 cents). Say what a run or a sweep will cost before starting it.
+- **Evals run locally, against the dev database.** `run` and `rejudge` refuse
+  `ENVIRONMENT=production`. A run inherits whatever the dev `.env` sets, so read the dry run's
+  configuration first, and give a model and its effort together.
+- **The judge is the ruler.** Changing `JUDGE_MODEL` or `prompts/judge.md` makes every new score
+  incomparable with every stored one. Grade the stored baseline again first (`evals rejudge`),
+  and compare new runs with that. `compare` leaves the judge's scores out when two runs had
+  different judges.
+- **Measure a prompt wording with repetitions before a full run**, and change one line at a
+  time. At the lowest effort a rule aimed at one case leaks into others, and naming a phrase to
+  avoid can bring it out (docs/EVALS.md, "The chat prompt, version 2").
 - **golden_v2 is the current dataset, and the default.** golden_v1 describes the knowledge base
   before the cutover and is kept for its runs; the two cannot be compared with each other.
 - **A dataset freezes once a run of it completes.** Scores are only comparable on identical
@@ -379,18 +393,31 @@ ARCHITECTURE.md §13).
   went live at cutover.
 
 - **Evals** — `python -m portfolio_ai.evals`: a golden dataset, deterministic retrieval and rule
-  checks, a `gpt-5` judge, and runs stored with their full configuration for comparison.
+  checks, a judge (`gpt-6.1-sol`, rubric version 2), and runs stored with their full
+  configuration for comparison.
   golden_v1 (54 cases from the eleven articles before the cutover) is frozen: the `gpt-5-mini`
   baseline at n8n's settings (parity by construction) and runs at chat effort `low` and `minimal`
   are in docs/EVALS.md.
 
-  Production's `.env` sets both efforts to `minimal`, on those results; the code default stays at
-  n8n parity. Classifier prompt version 2 fixed the misroutes the runs found (`classifier-v2`).
+  Those results put production at `minimal`. Classifier prompt version 2 fixed the misroutes
+  the runs found (`classifier-v2`).
 
   golden_v2 (62 cases, from the articles after the cutover) is the current dataset and is frozen
-  too. Its baseline at production's settings, `v2-baseline`, is what any change is now measured
-  against: every route right, every case finding an article that answers it, faithfulness 4.92,
-  completeness 4.60, style 4.71, first word at a median of 2.8s.
+  too. `v2-baseline` is `gpt-5-mini` at production's settings of 2026-10-09, and
+  `v2-baseline-sol` is the same answers graded by the current judge, which is what a new run is
+  compared with.
+
+  2026-10-10 changed three things, each measured (docs/EVALS.md): the chat prompt went to
+  version 2, the judge to `gpt-6.1-sol` with rubric version 2, and the answers to `gpt-6-luna`.
+  `luna-v3` is the run of the new chat: every route right, and faithfulness 4.92, completeness
+  4.17 and style 4.82 against the baseline's 4.82 / 4.19 / 4.39, at a fifth of the cost per
+  answer. It had `gpt-6-luna` routing as well. The settings adopted route with `gpt-5-mini`,
+  which costs about a third of the baseline per answer and has no run of its own yet: a
+  comparison of one setting needs that run first (`luna-mini` in the commands above).
+  **None of it is deployed.** Production still runs `gpt-5-mini` with chat prompt version 1.
+  Deploying it means changing the server's `.env` first, and changing it back before any
+  rollback of the image (docs/DEPLOYMENT.md §9), and the knowledge base article that names
+  the model along with it.
 
 **Step 6**, the front end and cutover, is in phases:
 1. the Express proxy in the portfolio repo: built, with tests, and switched on at cutover;
@@ -402,10 +429,11 @@ ARCHITECTURE.md §13).
    watching follows, and then n8n's workflows are retired (steps 6 and 7 there);
 5. golden_v2 and its baseline: done on 2026-10-09.
 
-After the week of watching, analytics reporting (7). The chat prompt's weak cases at `minimal`
-(the end of Results in docs/EVALS.md) are worth fixing whenever convenient: answers that run
-long, `pretend-mihail` offering its summary instead of giving it, and an invented pointer to a
-privacy policy that the judge does not catch.
+After the week of watching, analytics reporting (7). Still open from the evals:
+- "tell me everything" runs long on every model and wording tried;
+- no run has exactly the adopted pairing (`gpt-6-luna` answering, `gpt-5-mini` routing, the
+  final prompt). That run, about $0.55, is the baseline the next change is measured against;
+- golden_v3, whose list is in docs/EVALS.md.
 
 Analytics reporting is last on purpose — it needs real traffic to be worth writing. The
 *capture* (feedback, `top_score`, `fallback_used`, where a conversation came from) shipped with

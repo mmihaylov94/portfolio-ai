@@ -173,6 +173,12 @@ per-call record stored for it in `chat_messages.llm_calls`:
 The answering call reasons through 704 tokens before it writes a word, and that is where most of
 the wait is. See [What the numbers look like](#what-the-numbers-look-like).
 
+That record is from 2026-09-22: `gpt-5-mini` for every call, no effort set, and the prompts as
+n8n wrote them. Since 2026-10-10 the answers are written by `gpt-6-luna` at effort `none` under
+`rag_agent@2`, which is n8n's prompt with one line added and four replaced, and the classifier
+is `gpt-5-mini` at `minimal` under `classifier@2`. A turn now reaches its first word in about
+three seconds. [EVALS.md](EVALS.md) has what each change was measured against.
+
 ## Which piece does what
 
 | Module | What's in it | Its job |
@@ -332,9 +338,11 @@ to the same value:
 | `minimal` | 5.9s | 9.2s | $0.0024 |
 
 All three made the same search and named the same projects. The evals have since measured what
-the lower settings cost in quality: at `minimal`, almost nothing (EVALS.md, Results). Production's
-`.env` now sets `minimal`; the code default stays at n8n parity. `CHAT_REASONING_EFFORT` and
-`CLASSIFIER_REASONING_EFFORT` in `.env` change it for a session.
+the lower settings cost in quality: at `minimal`, almost nothing (EVALS.md, Results). Those
+timings are `gpt-5-mini`'s. Since 2026-10-10 the answers are written by `gpt-6-luna` at `none`,
+its own lowest effort, and the classifier is still `gpt-5-mini` at `minimal`; those are the
+code's defaults. `CHAT_MODEL`, `CHAT_REASONING_EFFORT` and their `CLASSIFIER_` twins in `.env`
+change them, a model and its effort together: the settings refuse a pair that does not match.
 
 Two things about retrieval are worth knowing before reading any scores. First, the scale depends on
 how the query is phrased. On this corpus, the model's keyword-style queries score around 0.4 to 0.5

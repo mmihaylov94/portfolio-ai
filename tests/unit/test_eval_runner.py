@@ -30,6 +30,8 @@ from portfolio_ai.assistant.agent import (
 )
 from portfolio_ai.assistant.classifier import Classification
 from portfolio_ai.assistant.memory import HistoryMessage
+from portfolio_ai.assistant.prompts.loader import JUDGE
+from portfolio_ai.db import documents as documents_db
 from portfolio_ai.db import evals as evals_db
 from portfolio_ai.db.documents import RetrievedChunk
 from portfolio_ai.db.evals import (
@@ -40,8 +42,8 @@ from portfolio_ai.db.evals import (
     StoredResult,
     SyncedDataset,
 )
+from portfolio_ai.evals import datasets, runner
 from portfolio_ai.evals import judge as judging
-from portfolio_ai.evals import runner
 from portfolio_ai.evals.datasets import Dataset
 from portfolio_ai.exceptions import AssistantError, ConfigError, EvalError
 from portfolio_ai.llm.responses import CallUsage
@@ -164,6 +166,8 @@ class Judge:
     """Stands in for judge.judge: a fixed verdict, or an error."""
 
     error: Exception | None = None
+    # What the judge says of every answer: whether it declined to answer.
+    declined: bool = False
     asked: list[str] = field(default_factory=list)
 
     async def judge(
@@ -180,7 +184,7 @@ class Judge:
         if self.error is not None:
             raise self.error
         verdict = judging.Verdict(
-            faithfulness=5, completeness=4, style=5, declined=False, rationale="Good."
+            faithfulness=5, completeness=4, style=5, declined=self.declined, rationale="Good."
         )
         return judging.Judgement(verdict, _usage("judge", "0.02"))
 
@@ -286,7 +290,7 @@ class Store:
             for result in self.results
         ]
 
-    async def find_run(self, label: str) -> RunRecord:
+    async def find_run(self, label: str) -> RunRecord | None:
         await asyncio.sleep(0)
         status, totals = self.finished[-1]
         return RunRecord(
@@ -372,6 +376,21 @@ async def test_only_picks_cases_and_an_unknown_one_is_refused() -> None:
 
 
 @pytest.mark.usefixtures("store")
+@pytest.mark.parametrize(
+    "pair",
+    [
+        {"chat_model": "gpt-6-luna", "chat_effort": "minimal"},
+        {"classifier_model": "gpt-6-luna", "classifier_effort": "minimal"},
+    ],
+    ids=["chat", "classifier"],
+)
+async def test_an_effort_the_model_does_not_take_is_refused(pair: dict[str, Any]) -> None:
+    """--chat-model without --chat-effort, or the reverse: OpenAI would refuse every call.
+    The classifier's pair is a separate mistake to make, and is checked separately."""
+    with pytest.raises(EvalError, match="gpt-6-luna does not take the effort 'minimal'"):
+        await _plan(config=replace(CONFIG, **pair))
+
+
 async def test_a_model_the_price_table_does_not_know_is_refused() -> None:
     """A typo would fail every call and pay for every answer that did not."""
     with pytest.raises(EvalError, match="No price for gpt-5-mni, gtp-5"):
@@ -447,10 +466,10 @@ async def test_the_run_records_the_configuration_that_produced_it(store: Store) 
 
     [config] = store.configs
     assert config["chat_model"] == "gpt-5-mini"
-    assert config["judge"] == {"model": "gpt-5", "prompt": "judge@1"}
+    assert config["judge"] == {"model": "gpt-5", "prompt": JUDGE.ref}
     assert config["corpus"] == {"documents": 2, "chunks": 20, "fingerprint": "abc123abc123"}
     assert config["git"] == {"revision": "abc", "dirty": False}
-    assert "judge@1" in str(config["prompts"])
+    assert JUDGE.ref in str(config["prompts"])
 
 
 @pytest.mark.usefixtures("judge")
@@ -519,3 +538,350 @@ async def test_a_run_interrupted_part_way_is_marked_failed(
         await running
 
     assert store.finished == [("failed", None)]
+
+
+# --- grading a stored run again -------------------------------------------------
+
+OLD_SCORES: dict[str, object] = {
+    "faithfulness": 5,
+    "completeness": 5,
+    "style": 3,
+    "declined": True,
+}
+
+
+def _held(case_id: int, route: Classification, answer: str, **overrides: Any) -> StoredResult:
+    """A result as the first run stored it, graded by the first judge."""
+    graded = route != "out_of_scope"
+    values: dict[str, Any] = {
+        "case_id": case_id,
+        "answer": answer,
+        "classification": route,
+        "retrieved_chunk_ids": [CHUNK.chunk_id] if route == "mihail_related" else [],
+        "retrieved_doc_ids": ["about-mihail"] if route == "mihail_related" else [],
+        "recall": 1.0 if route == "mihail_related" else None,
+        "precision": 1.0 if route == "mihail_related" else None,
+        "mrr": 1.0 if route == "mihail_related" else None,
+        "judge_scores": dict(OLD_SCORES) if graded else None,
+        "judge_rationale": "The first judge's reading." if graded else None,
+        "violations": {},
+        "prompt_tokens": 500,
+        "completion_tokens": 50,
+        "cost": Decimal("0.004"),
+        "judge_cost": Decimal("0.01") if graded else None,
+        "latency_ms": 9000,
+        "first_token_ms": 7000,
+        "top_score": 0.8 if route == "mihail_related" else None,
+        "fallback_used": False,
+        "links_removed": 0,
+        "searches": [],
+        "calls": [
+            _usage("answer", "0.004").as_record(),
+            *([_usage("judge", "0.01").as_record()] if graded else []),
+        ],
+        "error": None,
+        **overrides,
+    }
+    return StoredResult(**values)
+
+
+def _source_config() -> dict[str, Any]:
+    return {
+        "chat_model": "gpt-5-mini",
+        "prompts": ["classifier@2", "rag_agent@1", "judge@1"],
+        "judge": {"model": "gpt-5", "prompt": "judge@1"},
+        "corpus": {"documents": 2, "chunks": 20, "fingerprint": "abc123abc123"},
+        "dataset": {
+            "name": "golden_test",
+            "content_hash": DATASET.content_hash,
+            "cases": 3,
+            "only": None,
+        },
+        "concurrency": 4,
+        "git": {"revision": "old", "dirty": False},
+    }
+
+
+@dataclass
+class Graded(Store):
+    """A database that already holds one complete run, "baseline", graded by gpt-5."""
+
+    status: str = "complete"
+    source_config: dict[str, Any] = field(default_factory=_source_config)
+    held: list[tuple[str, StoredResult]] = field(
+        default_factory=lambda: [
+            # The first judge said this one declined, which made it a finding, and the
+            # rules found a bullet list in it. Only the first rests on the judge.
+            (
+                "job-title",
+                _held(
+                    1,
+                    "mihail_related",
+                    "He is a Solutions Architect.",
+                    violations={"bullet_list": 3, "declined_answerable": True},
+                ),
+            ),
+            ("hello", _held(2, "small_talk", "Hi, how can I help?")),
+            ("weather", _held(3, "out_of_scope", "I can only help with Mihail.")),
+        ]
+    )
+    # The passages the knowledge base still holds, by id.
+    passages: dict[int, RetrievedChunk] = field(default_factory=lambda: {CHUNK.chunk_id: CHUNK})
+
+    def __post_init__(self) -> None:
+        self.taken.add("baseline")
+
+    async def find_run(self, label: str) -> RunRecord | None:
+        if label != "baseline":
+            return await super().find_run(label) if self.finished else None
+        await asyncio.sleep(0)
+        return RunRecord(
+            id=3,
+            label="baseline",
+            dataset_id=1,
+            dataset="golden_test",
+            status=self.status,
+            config=self.source_config,
+            totals={},
+            started_at=dt.datetime(2026, 10, 9, tzinfo=dt.UTC),
+            finished_at=None,
+        )
+
+    async def stored_results(
+        self,
+        run_id: int,  # ruff: ignore[unused-method-argument]
+    ) -> list[tuple[str, StoredResult]]:
+        await asyncio.sleep(0)
+        return list(self.held)
+
+    async def chunks_by_id(self, chunk_ids: Sequence[int]) -> list[RetrievedChunk]:
+        await asyncio.sleep(0)
+        return [self.passages[chunk_id] for chunk_id in chunk_ids if chunk_id in self.passages]
+
+
+@pytest.fixture
+def graded(monkeypatch: pytest.MonkeyPatch) -> Graded:
+    stand_in = Graded()
+    for name in (
+        "label_taken",
+        "corpus_state",
+        "create_run",
+        "insert_result",
+        "finish_run",
+        "find_run",
+        "stored_results",
+    ):
+        monkeypatch.setattr(evals_db, name, getattr(stand_in, name))
+    monkeypatch.setattr(evals_db, "results", stand_in.results_for)
+    monkeypatch.setattr(documents_db, "chunks_by_id", stand_in.chunks_by_id)
+    monkeypatch.setattr(runner, "git_revision", lambda: {"revision": "abc", "dirty": False})
+    # The dataset file the source run names: here, the three cases above.
+    monkeypatch.setattr(datasets, "load", lambda path: DATASET)  # ruff: ignore[unused-lambda-argument]
+    return stand_in
+
+
+async def _regrade(**overrides: Any) -> runner.Regrade:
+    arguments: dict[str, Any] = {
+        "label": "baseline-sol",
+        "judge_model": "gpt-6.1-sol",
+        "concurrency": 2,
+        **overrides,
+    }
+    return await runner.prepare_rejudge("baseline", **arguments)
+
+
+async def test_a_stored_run_is_graded_again_and_its_answers_are_kept(
+    graded: Graded, judge: Judge
+) -> None:
+    record = await runner.rejudge(await _regrade(), on_result=_ignore)
+
+    assert record.status == "complete"
+    # The fixed out-of-scope reply has nothing in it to grade, the second time either.
+    assert sorted(judge.asked) == ["hello", "job-title"]
+
+    by_case = {result.case_id: result for result in graded.results}
+    job_title, before = by_case[1], graded.held[0][1]
+    # The answer, and everything measured about it, is the first run's.
+    assert (job_title.answer, job_title.cost, job_title.latency_ms) == (
+        before.answer,
+        before.cost,
+        before.latency_ms,
+    )
+    assert job_title.retrieved_chunk_ids == before.retrieved_chunk_ids
+    # The judge's part is the new judge's.
+    assert job_title.judge_scores == {
+        "faithfulness": 5,
+        "completeness": 4,
+        "style": 5,
+        "declined": False,
+    }
+    assert job_title.judge_rationale == "Good."
+    assert job_title.judge_cost == Decimal("0.02")
+    assert [(call["step"], call["cost_usd"]) for call in job_title.calls] == [
+        ("answer", "0.004"),
+        ("judge", "0.02"),
+    ]
+    assert by_case[3] == graded.held[2][1]
+
+
+@pytest.mark.usefixtures("judge")
+async def test_what_rested_on_the_first_judge_is_worked_out_again(graded: Graded) -> None:
+    """The first judge read the answer as declining, which made it a finding. The new one
+    does not, so the finding goes. The bullet list is in the text, and stays."""
+    await runner.rejudge(await _regrade(), on_result=_ignore)
+
+    job_title = next(result for result in graded.results if result.case_id == 1)
+    assert job_title.violations == {"bullet_list": 3}
+
+
+async def test_a_new_judge_that_reads_an_answer_as_declining_makes_it_a_finding(
+    graded: Graded, judge: Judge
+) -> None:
+    graded.held[0] = ("job-title", _held(1, "mihail_related", "I do not have that."))
+    judge.declined = True
+
+    await runner.rejudge(await _regrade(), on_result=_ignore)
+
+    job_title = next(result for result in graded.results if result.case_id == 1)
+    assert job_title.violations == {"declined_answerable": True}
+
+
+@pytest.mark.usefixtures("judge")
+async def test_the_new_run_names_its_judge_and_where_its_answers_came_from(
+    graded: Graded,
+) -> None:
+    await runner.rejudge(await _regrade(), on_result=_ignore)
+
+    [config] = graded.configs
+    assert config["judge"] == {"model": "gpt-6.1-sol", "prompt": JUDGE.ref}
+    assert config["rejudged_from"] == "baseline"
+    # How the answers were written is the source run's record, untouched. That
+    # includes the code: `git` is the commit that wrote them, and the commit that
+    # graded them again is recorded beside it.
+    assert config["chat_model"] == "gpt-5-mini"
+    assert config["corpus"] == graded.source_config["corpus"]
+    assert config["git"] == {"revision": "old", "dirty": False}
+    assert config["rejudged_git"] == {"revision": "abc", "dirty": False}
+    # The rubric is named in two places, and both name the new one.
+    assert config["prompts"] == ["classifier@2", "rag_agent@1", JUDGE.ref]
+
+
+@pytest.mark.usefixtures("judge")
+async def test_only_grades_the_results_asked_for(graded: Graded) -> None:
+    plan = await _regrade(only=frozenset({"hello"}))
+
+    await runner.rejudge(plan, on_result=_ignore)
+
+    assert (plan.subset, plan.graded) == (True, 1)
+    assert [result.case_id for result in graded.results] == [2]
+    dataset = graded.configs[0]["dataset"]
+    assert isinstance(dataset, dict)
+    assert (dataset["cases"], dataset["only"]) == (1, ["hello"])
+
+
+async def test_a_judge_that_fails_on_a_stored_answer_says_why_and_the_rest_go_on(
+    graded: Graded, judge: Judge
+) -> None:
+    judge.error = AssistantError("The assistant is unavailable.")
+
+    record = await runner.rejudge(await _regrade(), on_result=_ignore)
+
+    assert record.status == "complete"
+    job_title = next(result for result in graded.results if result.case_id == 1)
+    assert job_title.judge_scores is None
+    assert job_title.error == "judge: AssistantError: The assistant is unavailable."
+    # Nothing of the first judge stays behind as if it had graded this run: not its
+    # call, its reasons or what it cost.
+    assert [call["step"] for call in job_title.calls] == ["answer"]
+    assert (job_title.judge_rationale, job_title.judge_cost) == (None, None)
+
+
+@pytest.mark.usefixtures("judge")
+async def test_an_answer_the_first_judge_failed_on_is_graded_and_the_error_goes(
+    graded: Graded,
+) -> None:
+    """The error recorded beside an answer is the judge's. A new judge that reads the
+    answer leaves nothing to report."""
+    graded.held[0] = (
+        "job-title",
+        _held(
+            1,
+            "mihail_related",
+            "He is a Solutions Architect.",
+            judge_scores=None,
+            judge_rationale=None,
+            error="judge: AssistantError: The assistant is unavailable.",
+        ),
+    )
+
+    await runner.rejudge(await _regrade(), on_result=_ignore)
+
+    job_title = next(result for result in graded.results if result.case_id == 1)
+    assert job_title.error is None
+    assert job_title.judge_scores is not None
+
+
+@pytest.mark.parametrize(
+    ("change", "arguments", "problem"),
+    [
+        ({}, {"label": "baseline"}, "already exists"),
+        ({}, {"judge_model": "gpt-9"}, "No price for gpt-9"),
+        ({}, {"only": frozenset({"nope"})}, "has no result for: nope"),
+        ({"status": "failed"}, {}, "is failed, not complete"),
+        ({"hash": "another"}, {}, "its cases have changed"),
+        ({"fingerprint": "ffffffffffff"}, {}, "knowledge base has changed"),
+        ({"passages": "gone"}, {}, "no longer stored under the ids it recorded"),
+    ],
+    ids=[
+        "label-taken",
+        "judge-unpriced",
+        "unknown-case",
+        "source-not-complete",
+        "dataset-changed",
+        "knowledge-base-changed",
+        "knowledge-base-indexed-again",
+    ],
+)
+async def test_a_regrade_that_cannot_be_trusted_is_refused_before_anything_is_spent(
+    graded: Graded,
+    judge: Judge,
+    change: dict[str, str],
+    arguments: dict[str, Any],
+    problem: str,
+) -> None:
+    graded.status = change.get("status", graded.status)
+    if "hash" in change:
+        graded.source_config["dataset"]["content_hash"] = change["hash"]
+    if "fingerprint" in change:
+        graded.source_config["corpus"]["fingerprint"] = change["fingerprint"]
+    if "passages" in change:
+        # `ingestion --force`: every passage has a new id, and the fingerprint, which
+        # is of what the documents say, is what it was.
+        graded.passages.clear()
+
+    with pytest.raises(EvalError, match=problem):
+        await _regrade(**arguments)
+
+    assert (graded.configs, judge.asked) == ([], [])
+
+
+@pytest.mark.usefixtures("graded", "judge")
+async def test_a_run_that_does_not_exist_cannot_be_graded_again() -> None:
+    with pytest.raises(EvalError, match="no run labelled 'nope'"):
+        await runner.prepare_rejudge("nope", label="x", judge_model="gpt-6.1-sol")
+
+
+@pytest.mark.usefixtures("judge")
+async def test_a_passage_that_is_gone_stops_the_regrade_and_marks_it_failed(
+    graded: Graded,
+) -> None:
+    """Every id is looked up before the run is created (the refusal above). This is a
+    passage that goes after that, while the answers are being graded: the judge is not
+    shown part of what an answer was written from."""
+    plan = await _regrade()
+    graded.passages.clear()
+
+    with pytest.raises(EvalError, match="no longer in the knowledge base"):
+        await runner.rejudge(plan, on_result=_ignore)
+
+    assert graded.finished == [("failed", None)]

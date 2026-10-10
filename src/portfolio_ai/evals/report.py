@@ -22,6 +22,7 @@ from decimal import Decimal
 from typing import Any
 
 from portfolio_ai.db.evals import ResultRow, RunRecord
+from portfolio_ai.evals.metrics import FALLBACK_RULES
 
 type Totals = dict[str, Any]
 
@@ -255,12 +256,27 @@ def _cell(value: Any, decimals: int) -> str:
     return str(value)
 
 
-def _table(runs: Sequence[RunRecord]) -> list[list[str]]:
+# The headline rows that are the judge's reading: its three scores, the fallback
+# figures, which rest on whether it says an answer declined, and the count of cases
+# breaking any rule, because two of the rules are those fallback findings. The count
+# was added up when the run finished, so hiding the two rules' own rows does not take
+# them out of it: `compare v2-baseline v2-baseline-sol` showed one case fewer breaking
+# a rule, between two runs of the very same answers.
+_JUDGES = ("judge.", "fallback.", "cases_with_violations")
+
+
+def _table(runs: Sequence[RunRecord], *, judged: bool = True) -> list[list[str]]:
     """The headline figures as rows of cells: label, one per run, and the change
-    when there are exactly two. Both the text and the Markdown layouts draw this."""
+    when there are exactly two. Both the text and the Markdown layouts draw this.
+
+    ``judged=False`` leaves out what the judge said, for two runs graded by different
+    judges: their scores would sit side by side looking comparable, and are not.
+    """
     rows: list[list[str]] = []
 
     for label, path, convert, decimals in _ROWS:
+        if not judged and path.startswith(_JUDGES):
+            continue
         values = [convert(_get(run.totals or {}, path)) for run in runs]
         row = [label, *(_cell(value, decimals) for value in values)]
         if len(runs) == PAIR:
@@ -270,6 +286,8 @@ def _table(runs: Sequence[RunRecord]) -> list[list[str]]:
 
     rules = sorted({rule for run in runs for rule in (run.totals or {}).get("rules", {})})
     for rule in rules:
+        if not judged and rule in FALLBACK_RULES:
+            continue
         counts = [(run.totals or {}).get("rules", {}).get(rule, 0) for run in runs]
         row = [f"rule: {rule}", *(str(count) for count in counts)]
         if len(runs) == PAIR:
@@ -283,11 +301,25 @@ def _labels(runs: Sequence[RunRecord]) -> list[str]:
     return ["", *(run.label for run in runs), *(["change"] if len(runs) == PAIR else [])]
 
 
-def headline(runs: Sequence[RunRecord]) -> list[str]:
+def headline(runs: Sequence[RunRecord], *, judged: bool = True) -> list[str]:
     """The totals of one or more runs side by side, with the change when two."""
     return [
         f"{row[0]:<30}" + "".join(f"{cell:>16}" for cell in row[1:])
-        for row in [_labels(runs), *_table(runs)]
+        for row in [_labels(runs), *_table(runs, judged=judged)]
+    ]
+
+
+def different_judges(a: RunRecord, b: RunRecord) -> list[str]:
+    """What to say above a comparison of two runs that were not graded by one judge."""
+
+    def named(run: RunRecord) -> str:
+        judge = run.config.get("judge") or {}
+        return f"{judge.get('model', 'no judge')} {judge.get('prompt', '')}".rstrip()
+
+    return [
+        f"{a.label} was graded by {named(a)} and {b.label} by {named(b)}.",
+        "Scores from different judges are not comparable, so the judge's scores and its",
+        "reading of which answers declined are left out. The rest is compared.",
     ]
 
 
@@ -300,8 +332,17 @@ def describe(run: RunRecord) -> list[str]:
     chat_effort = config.get("chat_effort") or "default"
     classifier_effort = config.get("classifier_effort") or "default"
     dirty = " (with uncommitted changes)" if git.get("dirty") else ""
+    # A re-grade holds another run's answers. Said first among the details, because
+    # every line under it but the judge's describes that other run.
+    source = config.get("rejudged_from")
+    regrade = [f"  answers     {source}'s, graded again and not asked again"] if source else []
+    # For a re-grade, `git` is the code that wrote the answers and this is the code
+    # that graded them.
+    graded_at = (config.get("rejudged_git") or {}).get("revision")
+    regraded = f", graded again at {graded_at}" if graded_at else ""
     return [
         f"{run.label}  ({run.dataset}, {run.status}, started {run.started_at:%Y-%m-%d %H:%M})",
+        *regrade,
         f"  chat        {config.get('chat_model')}, effort {chat_effort}",
         f"  classifier  {config.get('classifier_model')}, effort {classifier_effort}",
         f"  retrieval   top_k {config.get('top_k')}, up to {config.get('max_search_rounds')} "
@@ -309,7 +350,7 @@ def describe(run: RunRecord) -> list[str]:
         f"  judge       {judge.get('model', 'none')} {judge.get('prompt', '')}".rstrip(),
         f"  corpus      {corpus.get('documents')} documents, {corpus.get('chunks')} chunks, "
         f"{corpus.get('fingerprint')}",
-        f"  code        {git.get('revision', 'unknown')}{dirty}",
+        f"  code        {git.get('revision', 'unknown')}{dirty}{regraded}",
     ]
 
 
@@ -383,10 +424,14 @@ def _explain(row: ResultRow) -> list[str]:
 # --- two runs, case by case -----------------------------------------------------
 
 
-def _differences(a: ResultRow, b: ResultRow) -> tuple[list[str], list[str]]:
-    """What got worse and what got better from run A to run B, for one case."""
+def _differences(a: ResultRow, b: ResultRow, *, judged: bool) -> tuple[list[str], list[str]]:
+    """What got worse and what got better from run A to run B, for one case.
+
+    ``judged=False`` skips what rests on the judge: see :func:`_table`.
+    """
     worse: list[str] = []
     better: list[str] = []
+    ignored = () if judged else FALLBACK_RULES
 
     def note(changed: bool, text: str, *, improved: bool) -> None:
         if changed:
@@ -404,26 +449,33 @@ def _differences(a: ResultRow, b: ResultRow) -> tuple[list[str], list[str]]:
             improved=b.recall > 0,
         )
 
-    for name in JUDGED:
+    for name in JUDGED if judged else ():
         before = (a.judge_scores or {}).get(name)
         after = (b.judge_scores or {}).get(name)
         if before is not None and after is not None and abs(after - before) >= SCORE_CHANGE:
             note(True, f"{name} {before} -> {after}", improved=after > before)
 
-    for rule in sorted(set(b.violations) - set(a.violations)):
+    for rule in sorted(set(b.violations) - set(a.violations) - set(ignored)):
         worse.append(f"+{rule}")
-    for rule in sorted(set(a.violations) - set(b.violations)):
+    for rule in sorted(set(a.violations) - set(b.violations) - set(ignored)):
         better.append(f"-{rule}")
 
+    def failed(row: ResultRow) -> bool:
+        # An error beside an answer is the judge's own: the answer was written, and
+        # grading it failed. With the judge left out, only a missing answer counts.
+        return bool(row.error) if judged else row.answer is None
+
     note(
-        bool(a.error) != bool(b.error),
-        "error" if b.error else "no longer errors",
-        improved=not b.error,
+        failed(a) != failed(b),
+        "error" if failed(b) else "no longer errors",
+        improved=not failed(b),
     )
     return worse, better
 
 
-def compare(a_rows: Sequence[ResultRow], b_rows: Sequence[ResultRow]) -> list[str]:
+def compare(
+    a_rows: Sequence[ResultRow], b_rows: Sequence[ResultRow], *, judged: bool = True
+) -> list[str]:
     """The cases that changed between two runs of the same dataset."""
     before = {row.case_id: row for row in a_rows}
     worse: list[str] = []
@@ -433,7 +485,7 @@ def compare(a_rows: Sequence[ResultRow], b_rows: Sequence[ResultRow]) -> list[st
         earlier = before.get(row.case_id)
         if earlier is None:
             continue
-        got_worse, got_better = _differences(earlier, row)
+        got_worse, got_better = _differences(earlier, row, judged=judged)
         if got_worse:
             worse.append(f"  {row.key:<32}{'; '.join(got_worse + got_better)}")
         elif got_better:
@@ -447,9 +499,15 @@ def compare(a_rows: Sequence[ResultRow], b_rows: Sequence[ResultRow]) -> list[st
     return lines
 
 
-def markdown(runs: Sequence[RunRecord], changes: Sequence[str]) -> str:
+def markdown(
+    runs: Sequence[RunRecord],
+    changes: Sequence[str],
+    *,
+    judged: bool = True,
+    notice: Sequence[str] = (),
+) -> str:
     """The comparison as Markdown, for pasting into docs/EVALS.md."""
     labels = _labels(runs)
-    lines = ["| " + " | ".join(labels) + " |", "|" + "---|" * len(labels)]
-    lines += ["| " + " | ".join(row) + " |" for row in _table(runs)]
+    lines = [*notice, "| " + " | ".join(labels) + " |", "|" + "---|" * len(labels)]
+    lines += ["| " + " | ".join(row) + " |" for row in _table(runs, judged=judged)]
     return "\n".join([*lines, "", "```", *changes, "```", ""])

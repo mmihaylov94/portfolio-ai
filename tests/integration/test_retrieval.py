@@ -60,6 +60,41 @@ async def test_the_document_travels_with_the_chunk() -> None:
     assert "freelance" in found[0].content
 
 
+async def test_chunks_are_read_back_by_id_in_the_order_asked() -> None:
+    """What `evals rejudge` needs: the passages an answer was shown, long after the
+    search, in the order it was shown them. An id that has gone is simply not there."""
+    await corpus.seed(
+        "tech-stack",
+        "Tech Stack",
+        [
+            ("Does Mihail use Laravel?", "Yes, it is his main PHP framework.", corpus.axis(0)),
+            ("What about Vue?", "Vue and Nuxt on the front end.", corpus.axis(1)),
+        ],
+        url="https://mihaylov.io/?section=about",
+    )
+    laravel, vue = await docs_db.search_chunks(corpus.axis(0), top_k=2)
+    gone = max(laravel.chunk_id, vue.chunk_id) + 1000
+
+    # Vue is asked for twice. Postgres can hand `id = any(array)` rows back in the
+    # array's order all by itself, so two ids out of order prove nothing about this
+    # function; what Postgres never does is hand one row back twice.
+    found = await docs_db.chunks_by_id([vue.chunk_id, gone, laravel.chunk_id, vue.chunk_id])
+
+    assert [chunk.chunk_id for chunk in found] == [vue.chunk_id, laravel.chunk_id, vue.chunk_id]
+    assert (found[0].doc_id, found[0].title, found[0].url) == (
+        "tech-stack",
+        "Tech Stack",
+        "https://mihaylov.io/?section=about",
+    )
+    assert (found[0].section_title, found[0].content) == (
+        "What about Vue?",
+        "Vue and Nuxt on the front end.",
+    )
+    # Not a search, so no similarity to report.
+    assert found[0].score == pytest.approx(0.0)
+    assert await docs_db.chunks_by_id([]) == []
+
+
 async def test_top_k_limits_what_comes_back() -> None:
     await corpus.seed(
         "faq",

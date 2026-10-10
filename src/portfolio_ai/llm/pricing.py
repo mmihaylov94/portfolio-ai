@@ -58,6 +58,11 @@ PRICES: dict[str, ModelPrice] = {
     "text-embedding-3-large": ModelPrice(Decimal("0.13"), Decimal("0.13"), Decimal("0")),
     "gpt-5-mini": ModelPrice(Decimal("0.25"), Decimal("0.025"), Decimal("2.00")),
     "gpt-5": ModelPrice(Decimal("1.25"), Decimal("0.125"), Decimal("10.00")),
+    # The smallest GPT-6 model, checked on the same page on 2026-10-10. Its lowest
+    # effort is `none`, and it does not take gpt-5's `minimal` (config.py).
+    "gpt-6-luna": ModelPrice(Decimal("0.10"), Decimal("0.01"), Decimal("0.50")),
+    # The eval judge since 2026-10-10. Its lowest effort is `low`: no `none`, no `minimal`.
+    "gpt-6.1-sol": ModelPrice(Decimal("2.00"), Decimal("0.10"), Decimal("10.00")),
 }
 
 _PER_MILLION = Decimal(1_000_000)

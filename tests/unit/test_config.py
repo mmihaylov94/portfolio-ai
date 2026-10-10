@@ -14,7 +14,7 @@ from pathlib import Path
 import pytest
 from pydantic import ValidationError
 
-from portfolio_ai.config import Settings
+from portfolio_ai.config import Settings, effort_problem
 
 ENV_EXAMPLE = Path(__file__).resolve().parents[2] / ".env.example"
 
@@ -68,17 +68,84 @@ def test_retrieval_top_k_is_bounded() -> None:
         _settings(retrieval_top_k=500)
 
 
-def test_assistant_defaults_are_the_n8n_settings() -> None:
+def test_assistant_defaults_are_the_measured_settings() -> None:
     settings = _settings()
 
-    assert settings.chat_model == "gpt-5-mini"
-    assert settings.classifier_model == "gpt-5-mini"
-    assert settings.chat_reasoning_effort is None
+    # The answers come from gpt-6-luna; the routing stays with gpt-5-mini, which does it
+    # as well and about half a second sooner. Each has the lowest effort it takes.
+    assert (settings.chat_model, settings.chat_reasoning_effort) == ("gpt-6-luna", "none")
+    assert (settings.classifier_model, settings.classifier_reasoning_effort) == (
+        "gpt-5-mini",
+        "minimal",
+    )
+    # The judge is the ruler every stored score was read with. A changed default is a
+    # new ruler, and docs/EVALS.md says what has to be graded again first.
+    assert settings.judge_model == "gpt-6.1-sol"
     assert settings.memory_window_turns == 25
 
 
 def test_reasoning_effort_accepts_the_known_values() -> None:
-    assert _settings(classifier_reasoning_effort="minimal").classifier_reasoning_effort == "minimal"
+    assert _settings(classifier_reasoning_effort="low").classifier_reasoning_effort == "low"
+
+
+@pytest.mark.parametrize(
+    ("overrides", "named"),
+    [
+        ({"chat_reasoning_effort": "minimal"}, "CHAT_REASONING_EFFORT"),
+        ({"chat_model": "gpt-5-mini"}, "CHAT_REASONING_EFFORT"),
+        ({"classifier_reasoning_effort": "none"}, "CLASSIFIER_REASONING_EFFORT"),
+        ({"classifier_model": "gpt-6-luna"}, "CLASSIFIER_REASONING_EFFORT"),
+    ],
+    ids=[
+        "chat-effort-from-the-old-model",
+        "chat-model-without-its-effort",
+        "classifier-effort-from-the-other-model",
+        "classifier-model-without-its-effort",
+    ],
+)
+def test_an_effort_its_model_does_not_take_is_refused_at_startup(
+    overrides: dict[str, str], named: str
+) -> None:
+    """gpt-5-mini's lowest effort is "minimal" and gpt-6-luna's is "none", and OpenAI
+    refuses each for the other. Changing one of the pair in .env and not the other
+    would fail every visitor's question; this fails the process at startup instead."""
+    with pytest.raises(ValidationError, match=f"{named}: .* does not take the effort"):
+        _settings(**overrides)
+
+
+def test_two_wrong_pairs_are_reported_together() -> None:
+    """One restart to learn of both, rather than one each."""
+    with pytest.raises(ValidationError) as caught:
+        _settings(
+            chat_model="gpt-6-luna",
+            chat_reasoning_effort="minimal",
+            classifier_model="gpt-6-luna",
+            classifier_reasoning_effort="minimal",
+        )
+
+    message = str(caught.value)
+    assert "CHAT_REASONING_EFFORT: gpt-6-luna does not take" in message
+    assert "CLASSIFIER_REASONING_EFFORT: gpt-6-luna does not take" in message
+
+
+def test_a_dated_model_name_is_checked_like_the_model_it_is() -> None:
+    """OpenAI serves each model under a dated name too. The price table already reads
+    one as its model; the effort check has to, or the dated name is a way past it."""
+    assert effort_problem("gpt-6-luna-2026-09-15", "minimal") is not None
+    assert effort_problem("gpt-6-luna-2026-09-15", "none") is None
+    with pytest.raises(ValidationError, match="does not take the effort"):
+        _settings(chat_model="gpt-6-luna-2026-09-15", chat_reasoning_effort="minimal")
+
+
+def test_a_model_this_project_has_not_used_is_not_checked() -> None:
+    assert _settings(chat_model="some-new-model", chat_reasoning_effort="minimal").chat_model
+
+
+def test_the_effort_none_is_a_value_and_not_the_absence_of_one() -> None:
+    """GPT-6 models take "none" where gpt-5-mini takes "minimal". It is a string that is
+    sent; leaving the setting out, or blank, sends nothing and gets the model's default."""
+    assert _settings(chat_reasoning_effort="none").chat_reasoning_effort == "none"
+    assert _settings(chat_reasoning_effort="").chat_reasoning_effort is None
 
 
 def test_reasoning_effort_rejects_anything_else() -> None:

@@ -7,10 +7,13 @@ than a diff of a Python string full of escaped quotes.
 Each file opens with a small YAML block: a ``version``, where the text came from,
 and what was changed on the way in. Five were ported from the n8n workflow this
 project replaces, word for word apart from the two corrections listed in
-``rag_agent.md``. One has since been changed on purpose, after an eval run: the
-classifier, at version 2, adds to n8n's text without removing any of it. Two are
-new: the reply sent once the daily spending limit is reached (n8n had no limit),
-and the eval judge's rubric.
+``rag_agent.md``. Two have since been changed on purpose, each after an eval run.
+The classifier, at version 2, adds to n8n's text without removing any of it. The
+agent's prompt, at version 2, adds one line and replaces four, the smallest of the
+changes measured that helped without breaking something else. Two are new: the
+reply sent once the daily spending limit is reached (n8n had no limit), and the
+eval judge's rubric, itself at version 2 since the first baseline showed two faults
+in how it graded.
 
 **The version is recorded with every answer** (``chat_messages.llm_calls``) and with
 every eval run (``eval_runs.config``), so a score can always be traced to the prompt
@@ -49,7 +52,7 @@ class Prompt:
 
     @property
     def ref(self) -> str:
-        """``rag_agent@1`` -- what gets recorded alongside every call that used it."""
+        """``rag_agent@2`` -- what gets recorded alongside every call that used it."""
         return f"{self.name}@{self.version}"
 
     @property

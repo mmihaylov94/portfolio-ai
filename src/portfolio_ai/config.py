@@ -12,6 +12,7 @@ arrives as a string that each caller parses in its own way, and a missing variab
 discovered halfway through serving a request rather than when the process boots.
 """
 
+import re
 from decimal import Decimal
 from functools import lru_cache
 from typing import Literal
@@ -35,7 +36,42 @@ _MIN_SECRET_LENGTH = 32
 # to the code that sends it (llm/responses.py) because Settings needs it, and this
 # module cannot import from llm/ -- llm/ imports this module, and the two would then
 # each need the other to finish loading first.
-type ReasoningEffort = Literal["minimal", "low", "medium", "high"]
+#
+# The lowest value differs by model family: gpt-5 and gpt-5-mini take "minimal", and
+# the GPT-6 models take "none" instead. OpenAI refuses the wrong one on the first
+# call, so a model and its effort change together.
+#
+# "none" here is a string OpenAI is sent, asking for no reasoning. It is not Python's
+# None, which on these settings means "nothing set, so nothing sent, so the model's
+# own default applies" -- usually medium, the opposite end.
+type ReasoningEffort = Literal["none", "minimal", "low", "medium", "high"]
+
+# The efforts each model this project has used will take. A model that is not here is
+# not checked: this exists to catch the one known mistake, not to list OpenAI's models.
+_EFFORTS: dict[str, frozenset[str]] = {
+    "gpt-5": frozenset({"minimal", "low", "medium", "high"}),
+    "gpt-5-mini": frozenset({"minimal", "low", "medium", "high"}),
+    "gpt-6-luna": frozenset({"none", "low", "medium", "high"}),
+    "gpt-6.1-sol": frozenset({"low", "medium", "high"}),
+}
+
+# OpenAI also serves each model under a dated name, "gpt-6-luna-2026-09-15", which
+# takes the same efforts. The same pattern is in llm/pricing.py, for the same reason;
+# it is repeated rather than shared because this module cannot import from llm/.
+_SNAPSHOT_DATE = re.compile(r"-\d{4}-\d{2}-\d{2}$")
+
+
+def effort_problem(model: str, effort: ReasoningEffort | None) -> str | None:
+    """What is wrong with sending ``effort`` to ``model``, or None when nothing is.
+
+    Used twice: by the settings, so a wrong pair in ``.env`` stops the process at
+    startup, and by an eval run, which can override either one from the command line
+    and would otherwise find out on its first call.
+    """
+    allowed = _EFFORTS.get(model) or _EFFORTS.get(_SNAPSHOT_DATE.sub("", model))
+    if effort is None or allowed is None or effort in allowed:
+        return None
+    return f"{model} does not take the effort {effort!r}. It takes: {', '.join(sorted(allowed))}."
 
 
 class Settings(BaseSettings):
@@ -106,16 +142,23 @@ class Settings(BaseSettings):
     retrieval_top_k: int = Field(default=20, ge=1, le=100)
 
     # --- Assistant ------------------------------------------------------------
-    # The defaults are what the n8n workflow runs, so the first version of the
-    # assistant is a port rather than a port plus changes nobody measured. Step 5's
-    # evals are where any of these should move, one at a time.
-    chat_model: str = "gpt-5-mini"
+    # Since 2026-10-10 the answers are written by gpt-6-luna at effort "none", which
+    # scored higher than gpt-5-mini on golden_v2 for about a third of the cost. The
+    # classifier stays on gpt-5-mini at "minimal": the two route equally well, and every
+    # message waits for the classifier first, where gpt-5-mini answers in about 0.8s
+    # and gpt-6-luna in about 1.4s. docs/EVALS.md has the runs.
+    #
+    # Until then the defaults were what the n8n workflow ran, gpt-5-mini for both with
+    # no effort set, so that the first version was a port and not a port plus changes
+    # nobody had measured.
+    chat_model: str = "gpt-6-luna"
     classifier_model: str = "gpt-5-mini"
-    # Unset sends nothing, so the model's own default applies -- medium, for
-    # gpt-5-mini, which is also what n8n sent by never setting it. `minimal` halved
-    # the classifier's latency in a nine-question check; that is a hint, not evidence.
-    classifier_reasoning_effort: ReasoningEffort | None = None
-    chat_reasoning_effort: ReasoningEffort | None = None
+    # An effort has to be one the model beside it takes (_EFFORTS above); the settings
+    # refuse a pair that does not match. Set to nothing in .env (`CHAT_REASONING_EFFORT=`)
+    # it is sent as nothing, and the model's own default applies, which is medium:
+    # several times slower to the first word than the lowest.
+    classifier_reasoning_effort: ReasoningEffort | None = "minimal"
+    chat_reasoning_effort: ReasoningEffort | None = "none"
     # How much conversation the model sees, in exchanges: one question plus one
     # answer. 25 is n8n's number, and n8n's means exchanges too -- its memory node
     # hands LangChain k=25, which returns the last 2 * k messages. Earlier project
@@ -130,8 +173,10 @@ class Settings(BaseSettings):
     # --- Evals ----------------------------------------------------------------
     # The model that grades answers in an eval run. Stronger than the model under
     # test, and pinned separately from it, so changing the chat model changes what
-    # is being measured and never the ruler measuring it.
-    judge_model: str = "gpt-5"
+    # is being measured and never the ruler measuring it. Changing this one changes
+    # the ruler: nothing it grades can be compared with what the last judge graded,
+    # so a stored run is graded again first (`evals rejudge`).
+    judge_model: str = "gpt-6.1-sol"
 
     # --- Ingestion source -----------------------------------------------------
     # The repository ingestion reads from. Public, so the token below is optional.
@@ -213,11 +258,15 @@ class Settings(BaseSettings):
     def _blank_means_unset(cls, value: object) -> object:
         """Read ``CHAT_REASONING_EFFORT=`` as "not set" rather than as an invalid value.
 
-        An empty assignment is how a lot of people write "leave this at the default"
-        in a .env file. Without this it would fail validation as not one of the four
-        allowed words, which is technically correct and helps nobody -- and for the
-        two secrets, a blank line copied from .env.example would fail the length
-        check below on every command, including the ones that never use them.
+        An empty assignment is how a lot of people write "nothing here" in a .env
+        file. Without this it would fail validation as not one of the allowed words,
+        which is technically correct and helps nobody -- and for the two secrets, a
+        blank line copied from .env.example would fail the length check below on
+        every command, including the ones that never use them.
+
+        For the two efforts, "not set" is not this file's default. The defaults above
+        are each model's lowest effort; a blank line sends no effort at all, and the
+        model then uses its own, which is a good deal slower.
         """
         if isinstance(value, str) and not value.strip():
             return None
@@ -260,6 +309,34 @@ class Settings(BaseSettings):
         port = urlparse(self.database_url).port
         if port != _LOCAL_PGVECTOR_PORT:
             raise ValueError(f"Local pgvector runs on port {_LOCAL_PGVECTOR_PORT}.")
+        return self
+
+    @model_validator(mode="after")
+    def _effort_suits_its_model(self) -> "Settings":
+        """Refuse an effort the model beside it does not take.
+
+        gpt-5-mini's lowest effort is "minimal" and gpt-6-luna's is "none", and each
+        refuses the other's. OpenAI says so only when it is called, which for the chat
+        means on a visitor's question: every answer would fail until someone read the
+        logs. Checked here, a wrong pair stops the process at startup and names the
+        setting to change. Both pairs are checked before anything is raised, so two
+        wrong lines are reported together rather than one per restart.
+        """
+        pairs = (
+            ("CHAT_REASONING_EFFORT", self.chat_model, self.chat_reasoning_effort),
+            (
+                "CLASSIFIER_REASONING_EFFORT",
+                self.classifier_model,
+                self.classifier_reasoning_effort,
+            ),
+        )
+        problems = [
+            f"{setting}: {problem}"
+            for setting, model, effort in pairs
+            if (problem := effort_problem(model, effort))
+        ]
+        if problems:
+            raise ValueError(" ".join(problems))
         return self
 
 

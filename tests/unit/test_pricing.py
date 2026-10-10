@@ -21,6 +21,17 @@ def test_chat_models_bill_input_and_output_separately() -> None:
     assert cost_usd("gpt-5-mini", 1_000_000, 1_000_000) == Decimal("2.25")
 
 
+def test_gpt_6_luna_is_priced() -> None:
+    """An unpriced model is refused by an eval run and recorded at $0 anywhere else."""
+    assert cost_usd("gpt-6-luna", 1_000_000, 1_000_000) == Decimal("0.60")
+    assert cost_usd("gpt-6-luna", 1_000_000, cached_tokens=1_000_000) == Decimal("0.01")
+
+
+def test_the_judge_model_is_priced() -> None:
+    """A dot in a model's name is not the date the snapshot rule strips."""
+    assert cost_usd("gpt-6.1-sol", 1_000_000, 1_000_000) == Decimal("12.00")
+
+
 def test_a_dated_snapshot_is_priced_as_its_alias() -> None:
     """Responses name the snapshot that ran, not the alias that was requested. The
     first live call reported gpt-5-mini-2025-08-07 and was priced at $0."""

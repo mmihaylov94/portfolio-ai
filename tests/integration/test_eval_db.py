@@ -5,6 +5,7 @@ with a complete run cannot change under the same name, so every score stored aga
 it was earned on the same cases.
 """
 
+import dataclasses
 from decimal import Decimal
 from typing import Any
 
@@ -221,6 +222,31 @@ async def test_a_run_and_its_results_come_back_as_they_were_stored() -> None:
     assert record.config == {"chat_model": "gpt-5-mini"}
     assert record.finished_at is not None
     assert [run.label for run in await evals_db.list_runs()] == ["baseline"]
+
+
+async def test_results_can_be_read_back_in_the_shape_they_were_written() -> None:
+    """`evals rejudge` writes a stored result out again under a new run with only the
+    judge's part changed, so it has to get back everything that was written, including
+    what `results` leaves out: the passage ids, the searches and the links removed."""
+    synced = await evals_db.sync_dataset(_dataset())
+    run_id = await evals_db.create_run(dataset_id=synced.id, label="baseline", config={})
+    written = _result(synced.case_ids["job-title"], links_removed=2)
+    await evals_db.insert_result(run_id, written)
+    await evals_db.insert_result(
+        run_id,
+        _result(synced.case_ids["are-you-mihail"], answer=None, classification=None, cost=None),
+    )
+
+    read = await evals_db.stored_results(run_id)
+
+    assert [key for key, _ in read] == ["job-title", "are-you-mihail"]
+    first = read[0][1]
+    # Field by field against what was handed to insert_result, not against a second
+    # read: two reads through the same function agree about a column it forgets.
+    # asdict turns a dataclass into a plain dict, so a failure names the field.
+    assert dataclasses.asdict(first) == dataclasses.asdict(written)
+    assert (first.retrieved_chunk_ids, first.links_removed) == ([1, 2], 2)
+    assert read[1][1].answer is None
 
 
 async def test_the_corpus_is_counted_and_fingerprinted() -> None:

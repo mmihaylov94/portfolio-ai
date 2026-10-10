@@ -211,6 +211,23 @@ Look for these first; each one has cost real time here.
   Examples use a label that is free.
 - Escape sequences typed into a tool call can arrive decoded: `\u3000` as an invisible character,
   `\\` as one backslash. Scan written files for invisible and control characters.
+- A setting value an older image does not know breaks an image rollback: a `Literal[...]` field
+  is a closed list per image, and the rollback runs the old image on today's `.env`. A release
+  that adds a value says how `.env` goes back first.
+- A fingerprint of content is not a fingerprint of ids. `ingestion --force` gives every chunk a
+  new id and leaves the documents' fingerprint alone, so anything stored by chunk id needs the
+  ids checked as well.
+- Hiding rows of a table does not take them out of a total that was added up earlier. When a
+  figure is left out as not comparable, look for every count it was folded into.
+- `print(None)` beside a setting whose valid value is `none` differs by a capital and means the
+  opposite. A check that prints a setting prints "not set" in words.
+- Postgres can return `id = any(array)` rows in the array's order by itself, so an "in the order
+  asked" test passes with the reordering deleted. Ask for one id twice: no query returns a row
+  twice.
+- `copy == first`, both read through the function under test, cannot see a column that function
+  drops. Compare what was read with what was written.
+- A check made by `prepare` and again per case is two checks: a refusal that can only happen
+  after the run is created uses the label and leaves a failed run behind a dry run that passed.
 
 When a finding is a new kind of mistake, suggest a one-line entry for this list.
 

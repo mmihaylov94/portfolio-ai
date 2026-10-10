@@ -87,7 +87,7 @@ uv run python -m portfolio_ai.analytics purge --dry-run   # what the retention s
 
 uv run python -m portfolio_ai.evals check datasets/golden_v2.yaml    # validate the golden set
 uv run python -m portfolio_ai.evals run --label my-run --dry-run     # plan an eval run; no spend
-uv run python -m portfolio_ai.evals compare v2-baseline my-run       # two runs, case by case
+uv run python -m portfolio_ai.evals compare v2-baseline-sol my-run   # two runs, case by case
 ```
 
 A Postgres instance with the `pgvector` extension is required. `DATABASE_URL` must point at it

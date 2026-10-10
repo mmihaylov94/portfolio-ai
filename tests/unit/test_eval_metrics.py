@@ -313,3 +313,21 @@ def test_declining_an_answerable_question_is_recorded() -> None:
     )
 
     assert found == {"declined_answerable": True}
+
+
+def test_the_findings_named_as_the_judges_are_the_ones_it_can_produce() -> None:
+    """`evals rejudge` takes FALLBACK_RULES off a stored result and works them out
+    again, and `compare` leaves them out between two judges. A finding this function
+    can return that is missing from the list would be carried over from the first
+    judge as if the second had said it."""
+    unanswerable = _case(expected_doc_ids=(), expect_fallback=True)
+    produced: set[str] = set()
+    for case in (_case(), unanswerable):
+        for declined in (True, False):
+            produced |= set(
+                metrics.fallback_violations(
+                    case, route="mihail_related", fallback_used=False, declined=declined
+                )
+            )
+
+    assert produced == set(metrics.FALLBACK_RULES)

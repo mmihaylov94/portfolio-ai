@@ -118,6 +118,16 @@ async def test_no_effort_means_nothing_is_sent(fake: FakeOpenAI) -> None:
     assert fake.requests[1]["reasoning"] == {"effort": "minimal"}
 
 
+async def test_the_effort_none_is_sent_like_any_other(fake: FakeOpenAI) -> None:
+    """ "none" is truthy as a string. A check written `if effort` keeps it; one written
+    against the word would drop it, and a GPT-6 model would reason at its default."""
+    fake.say("Hi.")
+
+    await _collect(effort="none")
+
+    assert fake.requests[0]["reasoning"] == {"effort": "none"}
+
+
 async def test_tool_choice_is_only_sent_with_tools(fake: FakeOpenAI) -> None:
     fake.say("Hi.")
     fake.search("x")

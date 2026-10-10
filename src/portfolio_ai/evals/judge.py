@@ -31,10 +31,11 @@ from portfolio_ai.llm.responses import CallUsage
 
 SCORES = range(1, 6)
 
-# OPENAI_TIMEOUT_SECONDS (30) is sized for a visitor waiting on an answer. The judge
-# reads twenty-odd passages at gpt-5's default effort, and on the longest answers
-# took longer than that on every retry: three of the first baseline's 54 cases went
-# ungraded. Nobody is waiting on a judge, so it gets room.
+# OPENAI_TIMEOUT_SECONDS (30) is sized for a visitor waiting on an answer. The first
+# judge, gpt-5 at its default effort, read twenty-odd passages and on the longest
+# answers took longer than that on every retry: three of the first baseline's 54
+# cases went ungraded. Nobody is waiting on a judge, whichever model it is, so it
+# gets room.
 JUDGE_TIMEOUT_SECONDS = 180.0
 
 

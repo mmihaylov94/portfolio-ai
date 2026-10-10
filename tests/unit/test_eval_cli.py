@@ -6,11 +6,14 @@ process would take over the test runner's capture for every test after these.
 """
 
 import asyncio
+import dataclasses
+import datetime as dt
 import inspect
 import io
 import os
 import re
 import sys
+from decimal import Decimal
 from pathlib import Path
 from typing import Any
 
@@ -19,7 +22,7 @@ from typer.testing import CliRunner
 
 from portfolio_ai.config import get_settings
 from portfolio_ai.db import evals as evals_db
-from portfolio_ai.db.evals import Corpus, RunRecord
+from portfolio_ai.db.evals import Corpus, ResultRow, RunRecord
 from portfolio_ai.evals import cli, datasets, runner
 
 GOLDEN = Path(__file__).resolve().parents[2] / "datasets" / "golden_v2.yaml"
@@ -138,7 +141,7 @@ def test_a_dry_run_prints_the_plan_and_runs_nothing(monkeypatch: pytest.MonkeyPa
     )
 
     assert result.exit_code == 0, result.output
-    assert "chat        gpt-5-mini, effort default" in result.output
+    assert "chat        gpt-6-luna, effort default" in result.output
     assert "top_k 8" in result.output
     assert "11 documents, 111 chunks" in result.output
     assert "dataset     new: stored when the run starts" in result.output
@@ -159,7 +162,31 @@ def test_the_effort_given_overrides_the_environment(monkeypatch: pytest.MonkeyPa
     )
 
     assert "effort high" in inherited.output
-    assert "chat        gpt-5-mini, effort default" in forced.output
+    assert "chat        gpt-6-luna, effort default" in forced.output
+
+
+@pytest.mark.usefixtures("indexed")
+def test_a_gpt_6_model_is_planned_with_its_own_lowest_effort() -> None:
+    """Two things had to exist first: a price for the model, without which a run is
+    refused, and "none" as an effort, which is not the same as sending no effort."""
+    result = CliRunner().invoke(
+        cli.app,
+        [
+            "run",
+            "--dataset",
+            str(GOLDEN),
+            "--label",
+            "luna",
+            "--chat-model",
+            "gpt-6-luna",
+            "--chat-effort",
+            "none",
+            "--dry-run",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert "chat        gpt-6-luna, effort none" in result.output
 
 
 def test_showing_a_run_that_does_not_exist_says_so(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -186,6 +213,162 @@ def test_listing_before_any_run(monkeypatch: pytest.MonkeyPatch) -> None:
 
     assert result.exit_code == 0
     assert "No runs yet." in result.output
+
+
+def _stored_run(label: str, judge: str, rubric: str, **config: Any) -> RunRecord:
+    return RunRecord(
+        id=3,
+        label=label,
+        dataset_id=1,
+        dataset="golden_v2",
+        status="complete",
+        config={"judge": {"model": judge, "prompt": rubric}, **config},
+        totals={"classification": {"accuracy": 1.0}, "judge": {"faithfulness": 4.92}},
+        started_at=dt.datetime(2026, 10, 9, tzinfo=dt.UTC),
+        finished_at=None,
+    )
+
+
+def test_a_regrade_is_refused_in_production(monkeypatch: pytest.MonkeyPatch) -> None:
+    """It spends money and writes a run, as `run` does."""
+    monkeypatch.setenv("ENVIRONMENT", "production")
+    get_settings.cache_clear()
+
+    result = CliRunner().invoke(cli.app, ["rejudge", "v2-baseline", "--label", "x", "--dry-run"])
+
+    assert result.exit_code != 0
+    assert "ENVIRONMENT is 'production'" in result.output
+
+
+@pytest.mark.usefixtures("indexed")
+def test_a_regrade_dry_run_prints_the_plan_and_grades_nothing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source = _stored_run(
+        "v2-baseline",
+        "gpt-5",
+        "judge@1",
+        corpus={"fingerprint": "0123456789ab"},
+        dataset={"content_hash": datasets.load(GOLDEN).content_hash},
+    )
+
+    async def find_run(label: str) -> RunRecord | None:
+        await asyncio.sleep(0)
+        return source if label == "v2-baseline" else None
+
+    async def stored_results(run_id: int) -> list[Any]:  # ruff: ignore[unused-function-argument]
+        await asyncio.sleep(0)
+        return []
+
+    async def must_not_run(*args: Any, **kwargs: Any) -> None:  # ruff: ignore[unused-function-argument]
+        await asyncio.sleep(0)
+        raise AssertionError("a dry run graded something")
+
+    monkeypatch.setattr(evals_db, "find_run", find_run)
+    monkeypatch.setattr(evals_db, "stored_results", stored_results)
+    # The source run names its dataset; wherever the tests run from, it is this file.
+    monkeypatch.setattr(datasets, "path_for", lambda name: GOLDEN)  # ruff: ignore[unused-lambda-argument]
+    monkeypatch.setattr(runner, "rejudge", must_not_run)
+
+    result = CliRunner().invoke(
+        cli.app,
+        [
+            "rejudge",
+            "v2-baseline",
+            "--label",
+            "v2-baseline-sol",
+            "--judge-model",
+            "gpt-6.1-sol",
+            "--dry-run",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert "v2-baseline-sol: 0 results of v2-baseline (golden_v2)" in result.output
+    assert "judge       gpt-6.1-sol judge@" in result.output
+    assert "was         gpt-5 judge@1" in result.output
+    assert "nothing was graded, spent or stored" in result.output
+
+
+def _graded_answer(faithfulness: int) -> ResultRow:
+    """One knowledge-base answer as `compare` reads it back, with the judge's score."""
+    return ResultRow(
+        case_id=1,
+        key="job-title",
+        question="What is Mihail's job title?",
+        category="mihail_related",
+        also_accept=[],
+        expected_doc_ids=["about-mihail"],
+        expect_fallback=False,
+        answer="He is a Solutions Architect.",
+        route="mihail_related",
+        retrieved_doc_ids=["about-mihail"],
+        recall=1.0,
+        precision=1.0,
+        mrr=1.0,
+        judge_scores={
+            "faithfulness": faithfulness,
+            "completeness": 5,
+            "style": 5,
+            "declined": False,
+        },
+        judge_rationale="Scripted.",
+        violations={},
+        prompt_tokens=1000,
+        completion_tokens=100,
+        cost=Decimal("0.004"),
+        judge_cost=Decimal("0.02"),
+        latency_ms=10_000,
+        first_token_ms=8_000,
+        top_score=0.7,
+        fallback_used=False,
+        calls=[],
+        error=None,
+    )
+
+
+def test_comparing_runs_graded_by_different_judges_says_so_and_shows_no_scores(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """The same answer, scored 5 by one judge and 2 by the other. Under one judge that
+    is a case that got worse; under two it is two rulers, and it is not listed: not in
+    the table, not in the case list, and not in the Markdown file either."""
+    runs = {
+        "v2-baseline": _stored_run("v2-baseline", "gpt-5", "judge@1"),
+        "v2-baseline-sol": dataclasses.replace(
+            _stored_run("v2-baseline-sol", "gpt-6.1-sol", "judge@2"), id=4
+        ),
+    }
+    rows = {3: [_graded_answer(5)], 4: [_graded_answer(2)]}
+
+    async def find_run(label: str) -> RunRecord | None:
+        await asyncio.sleep(0)
+        return runs.get(label)
+
+    async def results(run_id: int) -> list[ResultRow]:
+        await asyncio.sleep(0)
+        return rows[run_id]
+
+    monkeypatch.setattr(evals_db, "find_run", find_run)
+    monkeypatch.setattr(evals_db, "results", results)
+    written = tmp_path / "compare.md"
+
+    result = CliRunner().invoke(
+        cli.app, ["compare", "v2-baseline", "v2-baseline-sol", "--markdown", str(written)]
+    )
+
+    assert result.exit_code == 0, result.output
+    assert (
+        "v2-baseline was graded by gpt-5 judge@1 and v2-baseline-sol by gpt-6.1-sol judge@2."
+        in result.output
+    )
+    assert "faithfulness" not in result.output
+    assert "classification" in result.output
+    assert "worse in the second run (0)" in result.output
+    markdown = written.read_text(encoding="utf-8")
+    assert markdown.startswith("v2-baseline was graded by gpt-5 judge@1")
+    assert "faithfulness" not in markdown
+    assert "worse in the second run (0)" in markdown
 
 
 def test_a_console_that_cannot_encode_a_character_prints_a_placeholder(

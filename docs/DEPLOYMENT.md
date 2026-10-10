@@ -445,15 +445,18 @@ PORTFOLIO_AI_API_KEY=<generated>
 IP_HASH_SALT=<generated>
 
 # The most visitors can spend in any 24 hours, in dollars. Past it, every message
-# gets a polite "back tomorrow" instead of an answer. 1.00 is about 250 answers.
+# gets a polite "back tomorrow" instead of an answer. 1.00 is about 1,600 answers.
 # 0 turns the chat off. See "The daily spending limit" in §11.
 DAILY_SPEND_CAP_USD=1.00
 
-# How long the models think before they answer. Unset, both run at the model's own
-# default, which the evals measured at a median of 15.6 seconds to the first word;
-# at minimal it was 3.9, for 45% less per answer (docs/EVALS.md). The code default
-# stays unset, to match n8n, so production has to say so here.
-CHAT_REASONING_EFFORT=minimal
+# How long the models think before they answer: the lowest each one takes. The
+# answers are written by gpt-6-luna, whose lowest is `none`; the classifier is
+# gpt-5-mini, whose lowest is `minimal`. These are also the code's defaults, so the
+# two lines are here to be seen. A model given an effort it does not take is refused
+# when the containers start, with the setting named. Set to nothing, no effort is
+# sent and the model uses its own, which is far slower: gpt-5-mini's was measured at
+# 15.6 seconds to the first word. `none` is a value; an empty line is not `none`.
+CHAT_REASONING_EFFORT=none
 CLASSIFIER_REASONING_EFFORT=minimal
 
 # Source of the knowledge base. The defaults are already correct for this
@@ -549,7 +552,8 @@ print('API secrets   ', 'key set' if s.portfolio_ai_api_key else 'KEY MISSING', 
 print('limits        ', s.session_rate_limit, 'per', s.session_rate_window_minutes, 'min;', s.max_concurrent_turns, 'in flight')
 print('spending cap  ', '$' + str(s.daily_spend_cap_usd), 'a day')
 print('retention     ', s.chat_retention_days, 'days')
-print('efforts       ', 'chat', s.chat_reasoning_effort, '/ classifier', s.classifier_reasoning_effort)
+print('chat          ', s.chat_model, 'at', s.chat_reasoning_effort or 'NOT SET, so the model default')
+print('classifier    ', s.classifier_model, 'at', s.classifier_reasoning_effort or 'NOT SET, so the model default')
 "
 
 # 3. Migrate. Creates the portfolio_rag schema and eleven tables. Additive only --
@@ -933,6 +937,70 @@ The API release (build step 4) is one. On a box that already runs ingestion:
 
 Then set a monthly budget on the OpenAI project, if there is not one already (§11, Cost).
 
+The release that moves the answers to `gpt-6-luna` (2026-10-10) is another, and the order
+matters. The new image's default chat model is `gpt-6-luna`, which does not take the effort
+`minimal`, and a model paired with an effort it does not take is refused when a container
+starts. So the `.env` changes first:
+
+1. **`.env`.** In the deployment directory, set the chat's effort to `none` and leave the
+   classifier's at `minimal`:
+
+   ```bash
+   sed -i 's/^CHAT_REASONING_EFFORT=.*/CHAT_REASONING_EFFORT=none/' .env
+   grep -E '^(CHAT|CLASSIFIER)_(MODEL|REASONING_EFFORT)=' .env
+   ```
+
+   The second line should print `CHAT_REASONING_EFFORT=none` and
+   `CLASSIFIER_REASONING_EFFORT=minimal`, and nothing else. If it also prints a `CHAT_MODEL` or
+   `CLASSIFIER_MODEL` line, delete both, so that the image's defaults are what runs:
+
+   ```bash
+   sed -i '/^CHAT_MODEL=/d; /^CLASSIFIER_MODEL=/d' .env
+   ```
+
+   A `CHAT_MODEL=gpt-5-mini` line is the one that matters, and the `.env.example` this file was
+   started from had it. With that line and the effort still at `minimal`, nothing fails: the
+   deploy succeeds and the answers go on coming from `gpt-5-mini`, now under a prompt tuned on
+   `gpt-6-luna`.
+2. **Pull, and check what the containers will read**, with §8 steps 1 and 2. It should print
+   `chat  gpt-6-luna at none` and `classifier  gpt-5-mini at minimal`. A pair that does not
+   match fails here, harmlessly, with the setting named. A model line left behind shows here
+   too, as the wrong model, and is the only place it does.
+3. **Deploy** with `deploy-portfolio-ai`. There is no migration.
+4. **Check it** with the terminal chat and `--no-save` (§11), which stores nothing: one question
+   about Mihail's work should answer in a few sentences and close with an offer of more.
+5. **The same day, the knowledge base.** `knowledgebase/projects/portfolio-ai-assistant.md` in
+   the portfolio repository says `gpt-5-mini` writes the answers. Change it to `gpt-6-luna`; the
+   hourly ingestion picks it up. The project card's image carries the old model's name in its
+   text as well.
+
+To go back to the old model alone, set `CHAT_MODEL=gpt-5-mini` and
+`CHAT_REASONING_EFFORT=minimal` in `.env` and run `docker compose up -d`. No rollback of the
+image is needed for that: the model is a setting. It is `gpt-5-mini` under chat prompt version
+2, though, a pairing no full eval run has measured. What was measured is `gpt-5-mini` with
+prompt version 1, and that is the image before this release.
+
+**Rolling the image back past this release needs `.env` put back first.**
+`rollback-portfolio-ai` (§10) starts the older image on today's `.env`, and that image has never
+heard of the effort `none`. It refuses to start:
+
+```
+Configuration is invalid:
+  CHAT_REASONING_EFFORT: Input should be 'minimal', 'low', 'medium' or 'high'
+```
+
+The API goes down, the rollback stops at its health check, and every scheduled job fails until
+the line is changed. So, before the rollback:
+
+```bash
+sed -i 's/^CHAT_REASONING_EFFORT=.*/CHAT_REASONING_EFFORT=minimal/' .env
+grep -E '^(CHAT|CLASSIFIER)_(MODEL|REASONING_EFFORT)=' .env
+```
+
+The second line should print the two effort lines, both `minimal`, and no model line: the older
+image's own default is `gpt-5-mini`. Set the chat's effort to `none` again before the next
+deploy, as in step 1.
+
 ---
 
 ## 10. `rollback-portfolio-ai`
@@ -1074,6 +1142,11 @@ grep -n '^DEPLOY_DIR=' /usr/local/bin/rollback-portfolio-ai   # your own home, n
 It pins images through a Compose override rather than editing `docker-compose.yml`, so the override
 is not sticky: the next `deploy-portfolio-ai` runs without it and moves forward on `:latest` again.
 Rollback is a way to stop the bleeding, not a state to live in — fix the bad build before deploying.
+
+**It runs the old image on today's `.env`.** The image goes back; the file does not. A release
+that taught the settings a new value leaves a `.env` the image before it cannot read, and that
+image then refuses to start. The `gpt-6-luna` release is the one case so far, and its note at
+the end of §9 has the line to change first.
 
 Three things it guards against that the first version did not:
 
@@ -1449,8 +1522,9 @@ Two things spend money, and neither is bounded by anything in Docker:
 - **Ingestion** re-embeds only what changed, so a normal day is effectively free. A `--force` run
   re-embeds all eleven documents, which is fractions of a cent.
 - **Chat** is the real number, and it scales with visitors. `DAILY_SPEND_CAP_USD` (default $1.00
-  a day, about 250 answers) is the actual protection — on breach the API returns a polite refusal
-  rather than an error. Set it before the chat is reachable from the site, not after. Behind it,
+  a day, about 1,600 answers) is the actual protection — on breach the API returns a polite
+  refusal rather than an error. Set it before the chat is reachable from the site, not after.
+  Behind it,
   set a monthly budget on the OpenAI project itself: the one limit that holds even if this code
   is wrong.
 

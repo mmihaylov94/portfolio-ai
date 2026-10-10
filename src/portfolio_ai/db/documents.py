@@ -11,6 +11,7 @@ Parameters are always ``%s`` placeholders. Never an f-string, never concatenatio
 
 import datetime as dt
 import math
+from collections.abc import Sequence
 from dataclasses import dataclass
 
 import structlog
@@ -309,6 +310,55 @@ async def search_chunks(vector: list[float], *, top_k: int) -> list[RetrievedChu
             score=float(row["score"]),
         )
         for row in rows
+    ]
+
+
+async def chunks_by_id(chunk_ids: Sequence[int]) -> list[RetrievedChunk]:
+    """The chunks with these ids, in the order the ids are given.
+
+    For reading back what an answer was shown long after the search that found it,
+    which is what ``evals rejudge`` does. No search happens here, so there is no
+    similarity to report: ``score`` is 0.0, and nothing that calls this reads it.
+
+    A chunk gets a new id whenever its document is indexed again, so an id from an old
+    run may be gone. It is then simply missing from the result: the caller compares
+    lengths, and does not go on with part of what an answer was shown.
+
+    ``= any(%s)`` is how psycopg 3 takes a list. It sends a Python list as one array
+    parameter, and ``in %s`` -- which psycopg 2 expanded into a list of values -- is
+    not valid here.
+    """
+    if not chunk_ids:
+        return []
+
+    pool = await get_pool()
+    async with pool.connection() as conn, conn.cursor() as cur:
+        await cur.execute(
+            """
+            select c.id, c.section, c.section_title, c.content,
+                   d.doc_id, d.title, d.url
+            from chunks c
+            join documents d on d.id = c.document_id
+            where c.id = any(%s)
+            """,
+            (list(chunk_ids),),
+        )
+        found = {row["id"]: row for row in await cur.fetchall()}
+
+    return [
+        RetrievedChunk(
+            chunk_id=row["id"],
+            doc_id=row["doc_id"],
+            title=row["title"],
+            url=row["url"],
+            section=row["section"],
+            section_title=row["section_title"],
+            content=row["content"],
+            score=0.0,
+        )
+        for chunk_id in chunk_ids
+        # := assigns and tests in one expression, so each id is looked up once.
+        if (row := found.get(chunk_id)) is not None
     ]
 
 

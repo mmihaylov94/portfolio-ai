@@ -26,8 +26,10 @@ case that moved.** Every design decision below follows from that one sentence.
 
   A score that moved can then be traced to whatever differed.
 - **The ruler is held still too.** The judge's model is pinned separately from the model under
-  test (`JUDGE_MODEL`), and its rubric is versioned like any prompt. Trying `gpt-5` as the chat
-  model changes what is measured, never how.
+  test (`JUDGE_MODEL`), and its rubric is versioned like any prompt. Trying another chat model
+  changes what is measured, never how. When the ruler itself has to change, a new judge model
+  or a new rubric, the stored baseline is graded again by the new one first (`rejudge`): scores
+  from two judges are not comparable.
 - **Look at cases, not only averages.** Models do not answer the same question the same way
   twice. On fifty cases, one answer changing its mind moves an average by two points. `compare`
   lists the cases that changed. When an average moves and no case changed much, that is noise.
@@ -54,6 +56,7 @@ uv run python -m portfolio_ai.evals run --dataset golden_v1 --label baseline \
 
 **Prepare** (`runner.prepare`) is every check that can refuse a run, and it spends nothing:
 - every model has a price in `llm/pricing.py`;
+- the chat model and the classifier each take the effort they are paired with;
 - the label is free;
 - the dataset is not a changed copy of one that is frozen;
 - any `--only` cases exist;
@@ -233,13 +236,14 @@ would misfile.
 
 ### The judge
 
-`evals/judge.py` asks `JUDGE_MODEL` (`gpt-5`) to grade each answer against the rubric in
-`prompts/judge.md`. It uses the same `responses.parse` structured call the classifier uses, so
-the reply is held to a schema:
+`evals/judge.py` asks `JUDGE_MODEL` to grade each answer against the rubric in
+`prompts/judge.md`. Since 2026-10-10 that is `gpt-6.1-sol` with rubric version 2; before, it was
+`gpt-5` with version 1, and Results below says what the change did to the scores. It uses the
+same `responses.parse` structured call the classifier uses, so the reply is held to a schema:
 
 | Field | Scale | Against |
 |---|---|---|
-| `faithfulness` | 1-5, or null | the passages Rachel was shown: nothing claimed that they don't support. Null only when the answer claims nothing about Mihail |
+| `faithfulness` | 1-5, or null | the passages Rachel was shown: nothing claimed about Mihail, his work or his site that they don't support. Null only when the answer claims nothing about Mihail |
 | `completeness` | 1-5, or null | the reference answer's key facts |
 | `style` | 1-5 | the persona and answer style: conversational, 2-4 sentences, third person |
 | `declined` | yes / no | whether the answer said it did not know |
@@ -273,6 +277,55 @@ it. The rubric now says every link is checked separately, and the same answer sc
 kind of disagreement between the judge and a rule is worth reading every time: one of them is
 wrong, and which one says what to fix.
 
+**What an answer says of a link is not left out.** That exemption turned out too wide. In
+golden_v2's baseline two answers pointed visitors to a privacy policy the site does not have,
+beside a link that is real, and scored 5: the link was exempt, and what the answer claimed of it
+went with it. Rubric version 2 leaves the link itself to the rule and scores the claim: saying
+the site has a policy, a page, a section or a note that no passage mentions is unsupported.
+
+**The one-sentence fallback is not marked down.** The prompt prescribes the "I don't have that
+information in my knowledge base" reply word for word, and rubric version 1 scored it 3 for
+style three times in one run, for being a single sentence with no offer of more. Version 2 says
+not to.
+
+**Changing the judge.** A judge is its model and its rubric together, and both are recorded with
+every run. A run graded by one cannot be compared with a run graded by another, so when either
+changes, the run to compare against is graded again first, under a label of its own:
+
+```bash
+uv run python -m portfolio_ai.evals rejudge luna-v3 --label luna-v3-regraded --dry-run
+uv run python -m portfolio_ai.evals rejudge luna-v3 --label luna-v3-regraded
+```
+
+That is how `v2-baseline-sol` was made from `v2-baseline` when the judge became `gpt-6.1-sol`.
+
+`rejudge` has the current judge grade a stored run's answers, and stores the result as a new
+run. Nothing is asked again: the answer, the route, what was retrieved, the rule checks, the
+timings and what the answer cost are copied from the source run, and only the judge's scores,
+its rationale and its call are new. The two findings that rest on whether an answer declined
+are worked out again, because that is the judge's reading.
+
+The new run's configuration is the source run's with the judge replaced. It carries
+`rejudged_from`, and `show` says whose answers a re-grade holds. `git` stays the commit that
+wrote the answers, and the commit that graded them again is `rejudged_git`. The first two
+re-grades, `sol-try` and `v2-baseline-sol`, were made before that distinction: their `code` line
+is the commit they were graded at, and the answers' is `v2-baseline`'s.
+
+It refuses when the answers cannot be graded fairly, and it refuses before a run is created:
+the source run did not complete, the dataset file has changed, or the passages the answers
+were shown can no longer be read back. A stored result keeps only the ids of those passages,
+and two things can come between an id and its text:
+- a document that has changed since. The knowledge base's fingerprint is of what the documents
+  say, and is then no longer the one the source run recorded;
+- a document indexed again without changing, which is what `ingestion --force` does. Every
+  chunk gets a new id and the fingerprint stays what it was, so the ids are looked up as well.
+
+`compare` knows about this. Given two runs graded by different judges, it says so first and
+leaves out everything that is the judge's reading: its three scores, which answers declined,
+the count of cases breaking a rule (two of the rules are those findings), and a judge's own
+failure to grade an answer. Routing, retrieval, the other rules, speed and cost are still
+compared.
+
 ### Operational
 
 Every result keeps:
@@ -292,23 +345,30 @@ counted the classifier too, so the figure they stored is higher than the chat's.
 
 ## The commands
 
-All run from the repository root, locally. `run` refuses `ENVIRONMENT=production`: it spends
-money and writes to the eval tables, and none of that belongs in production.
+All run from the repository root, locally. `run` and `rejudge` refuse
+`ENVIRONMENT=production`: they spend money and write to the eval tables, and none of that
+belongs in production.
 
 ```bash
 uv run python -m portfolio_ai.evals check datasets/golden_v2.yaml
-uv run python -m portfolio_ai.evals run --label v2-top-k-8 --top-k 8 \
-    --chat-effort minimal --classifier-effort minimal --dry-run
-uv run python -m portfolio_ai.evals run --label v2-top-k-8 --top-k 8 \
-    --chat-effort minimal --classifier-effort minimal
+uv run python -m portfolio_ai.evals run --label luna-mini --dry-run
+uv run python -m portfolio_ai.evals run --label luna-mini
+uv run python -m portfolio_ai.evals run --label top-k-8 --top-k 8
 uv run python -m portfolio_ai.evals list
-uv run python -m portfolio_ai.evals show v2-baseline --failures
-uv run python -m portfolio_ai.evals compare v2-baseline v2-top-k-8 --markdown ../compare.md
+uv run python -m portfolio_ai.evals show top-k-8 --failures
+uv run python -m portfolio_ai.evals compare luna-mini top-k-8 --markdown ../compare.md
+uv run python -m portfolio_ai.evals rejudge luna-mini --label luna-mini-regraded --dry-run
 ```
 
-A label is used once. `v2-baseline` is taken, so the example measures one change against it,
-`top_k` 8, under a label of its own. `run` uses golden_v2 unless `--dataset` names another, and
-golden_v1 is named only to add to the runs already made of it.
+A label is used once, and a comparison means something only when one setting differs. So the
+example runs the settings in use first, as `luna-mini`, and then one change against that,
+`top_k` 8. The first run is needed because no stored run has exactly those settings: `luna-v3`
+had `gpt-6-luna` routing, and the routing has since gone back to `gpt-5-mini`. Comparing
+`top-k-8` with `luna-v3` would measure two changes at once. Each of the two runs costs about
+$0.55.
+
+`run` uses golden_v2 unless `--dataset` names another, and golden_v1 is named only to add to the
+runs already made of it. `rejudge` is for the day the judge changes ("The judge", above).
 
 `compare` refuses two runs of different datasets, because their cases differ. `--markdown`
 writes the comparison as a table, ready to paste into the Results section below. The path above
@@ -316,26 +376,30 @@ puts it outside the checkout, so it cannot be committed by accident.
 
 `run` takes one option per setting it can vary. Each defaults to what `.env` says:
 - `--chat-model` and `--classifier-model`
-- `--chat-effort` and `--classifier-effort`, where `default` sends none, so the model's own
-  default applies
+- `--chat-effort` and `--classifier-effort`, where `default` sends no effort at all, so the
+  model's own default applies. `none` is a value in its own right, the lowest a GPT-6 model
+  takes, as `minimal` is for `gpt-5-mini`
 - `--top-k` and `--max-search-rounds`
 - `--judge-model`, or `--no-judge` to skip grading
 
 `--only KEY` runs single cases, and `--concurrency` sets how many run at once (default 4).
 
-**Always read the dry run's configuration before a real run.** The development `.env` sets both
-efforts to `low`, and production runs both at `minimal`. A baseline run without
-`--chat-effort minimal --classifier-effort minimal` would be measuring something other than what
-production runs, and would be labelled as if it were. golden_v1's `baseline` passed `default` for
-both, because production then ran n8n's configuration. The same care goes for a run compared
-against a baseline: an option left out is inherited from `.env`, which can change two settings
-at once, so name every setting the baseline named and change only the one being measured.
+**Always read the dry run's configuration before a real run.** The code's defaults are what
+production is meant to run: `gpt-6-luna` at `none` writing the answers, `gpt-5-mini` at `minimal`
+routing. A development `.env` can say something else, and an option left out of the command is
+inherited from it. So a run without options measures whatever `.env` holds and is labelled as if
+it were production, and a run that names one setting can differ from its baseline in two. Name
+every setting the baseline named, and change only the one being measured.
 
-**Cost.** Grading costs 1.4¢ to 1.6¢ an answer at `gpt-5`. A knowledge-base answer at
-`gpt-5-mini` costs about 0.4¢ at the default effort and 0.2¢ at `minimal`. A full golden_v2 run is
-about $1.00, $0.89 of it the judge; golden_v1's 54 cases cost about $0.75. `--no-judge` keeps
-every deterministic measurement and costs only the answers: $0.12 for golden_v2 at `minimal`,
-and more at a higher effort.
+**A model and its effort go together.** `gpt-6-luna`'s lowest effort is `none` and `gpt-5-mini`'s
+is `minimal`, and OpenAI refuses each for the other. `--chat-model gpt-5-mini` on its own would
+inherit `none`, so the run is refused before it starts; give both. The settings make the same
+check when the process starts, for the same pair set in `.env`.
+
+**Cost.** Grading costs about 0.9¢ an answer at `gpt-6.1-sol`; it was 1.4¢ to 1.6¢ at `gpt-5`.
+An answer from `gpt-6-luna` costs about 0.05¢, where `gpt-5-mini` cost 0.2¢ at `minimal`. A full
+golden_v2 run is about $0.55, $0.51 of it the judge. `--no-judge` keeps every deterministic
+measurement and costs only the answers, about 3¢.
 
 ## Which piece does what
 
@@ -344,10 +408,11 @@ and more at a higher effort.
 | `evals/datasets.py` | the YAML format as pydantic models, its validation, and the content hash that freezes a dataset |
 | `evals/metrics.py` | retrieval scores and the rules: everything deterministic |
 | `evals/judge.py` | the judge's brief, its structured verdict, and what counts as unusable |
-| `evals/runner.py` | `prepare` (the checks) and `execute` (the run), with bounded concurrency |
+| `evals/runner.py` | `prepare` (the checks) and `execute` (the run), with bounded concurrency; `prepare_rejudge` and `rejudge`, the same pair for grading a stored run again |
 | `evals/report.py` | a run's totals, and every table and comparison the commands print |
-| `evals/cli.py` | `check`, `run`, `list`, `show`, `compare` |
-| `db/evals.py` | the eval tables: dataset sync with the freeze, the run lifecycle, results, the corpus fingerprint |
+| `evals/cli.py` | `check`, `run`, `rejudge`, `list`, `show`, `compare` |
+| `db/evals.py` | the eval tables: dataset sync with the freeze, the run lifecycle, results (as a report reads them, and as they were written), the corpus fingerprint |
+| `db/documents.py` | `chunks_by_id`: the passages an answer was shown, read back for the judge |
 | `assistant/prompts/judge.md` | the rubric, versioned and pinned like every prompt |
 | `migrations/versions/0005_eval_harness.py` | case keys, history, expected fallback, accepted routes, unique labels, and the per-result timing and signal columns |
 
@@ -417,37 +482,62 @@ on Windows the protection is weaker.
 - **`tests/unit/test_eval_metrics.py`** covers the retrieval arithmetic, and every rule both
   firing and not firing. For links that means allowed links from the prompt, a document's URL, a
   passage, a relative link resolved against the site, and the same page written with `www.`,
-  bold or a `mailto:`. For persona it means "I'm Mihail's assistant", straight and curly.
+  bold or a `mailto:`. For persona it means "I'm Mihail's assistant", straight and curly. A
+  required phrase is found through the non-breaking hyphens and spaces a model writes.
 - **`tests/unit/test_eval_judge.py`** runs the judge through the fake OpenAI, so the real SDK
   builds the request and parses the reply. It checks what the judge is shown, that unusable and
   out-of-range replies are recorded rather than raised, that null scores are allowed, and that
   its longer timeout reaches the request without changing any other call's.
 - **`tests/unit/test_eval_runner.py`** replaces the assistant, the judge and the database with
   stand-ins, and checks:
-  - an unpriced model, a used label, a frozen dataset that changed and an unindexed document
-    are each refused before anything runs, and the plan says where the dataset stands;
+  - an unpriced model, an effort the model does not take, a used label, a frozen dataset that
+    changed and an unindexed document are each refused before anything runs, and the plan says
+    where the dataset stands;
   - every case is stored with its measurements and its calls, and the fixed reply goes
     ungraded;
   - a failing case is recorded while the rest continue;
   - a rejected key stops the run and marks it failed;
   - concurrency stays within its bound;
-  - a cancelled run is marked failed.
+  - a cancelled run is marked failed;
+  - a stored run graded again keeps each answer and what was measured of it, and replaces the
+    judge's scores, rationale and call; the two findings that rest on the judge's reading are
+    worked out again; the new run names its judge, the run its answers came from, and the
+    commit that wrote them apart from the commit that graded them; nothing of the first judge
+    is left on an answer the new one fails on, and an error the first judge left goes when the
+    new one grades;
+  - a re-grade is refused before anything is spent when the source run is missing or
+    incomplete, the label is taken, the judge has no price, the dataset or the knowledge base
+    has changed, the passages have new ids, or a case asked for has no result; and a passage
+    that goes while the answers are being graded stops it.
 - **`tests/unit/test_eval_report.py`** checks the totals: accepted routes, averages that skip
   what was not applicable, the phrase-match agreement, percentiles, reasoning tokens without the
-  judge's, and Decimal costs. It also checks the comparison's worse and better lists, and both
-  table layouts.
+  judge's, and Decimal costs. It also checks the comparison's worse and better lists, both
+  table layouts, and that two runs graded by different judges are compared without what the
+  judge said: its scores, its findings, the count that includes them and its own failures. And
+  that a re-grade is described as one.
 - **`tests/unit/test_eval_cli.py`** checks that production is refused, that a dry run executes
-  nothing and says where the dataset stands, that an effort option overrides `.env`, and that
-  `run` defaults to the newest golden file. It
+  nothing and says where the dataset stands, that an effort option overrides `.env`, that
+  `run` defaults to the newest golden file, and that the `check` command printed in the README,
+  CLAUDE.md and this guide names that same file. For `rejudge` it checks the production refusal
+  and that a dry run grades nothing, and for `compare` that two judges are named and that
+  neither the case list nor the Markdown file carries a score. It
   also checks that a console unable to encode a character prints `?` rather than stopping.
   Windows consoles use a code page such as cp1251, and a non-breaking hyphen in a real answer
   crashed the first `show`.
 - **`tests/integration/test_eval_db.py`** runs against Postgres:
   - storing a dataset, and replacing it before a complete run;
   - the freeze after one, and no freeze after a run that failed;
-  - what the dry run reads, unique labels, and a run's results and calls read back exactly.
+  - what the dry run reads, unique labels, and a run's results and calls read back exactly;
+  - a result read back equal, field by field, to the one that was written.
+- **`tests/integration/test_retrieval.py`** checks that the passages an answer was shown come
+  back by id in the order asked, with a missing id simply absent. It asks for one id twice:
+  Postgres can return `id = any(array)` rows in the array's order by itself, and never returns
+  a row twice, so only the repeat proves the ordering is this code's.
 - **`tests/integration/test_eval_run.py`** runs a whole three-case run with only OpenAI faked,
-  from the classifier's call to the stored totals.
+  from the classifier's call to the stored totals. Then it grades that run again: only the
+  judge is called, it is shown the passage read back by id, and the answers are the first
+  run's. And it indexes the same document again, with the same text, and checks the re-grade
+  is refused with no second run created.
 
 ## Results
 
@@ -614,10 +704,11 @@ Total spend on this change: $0.94.
 The first run of golden_v2 (`v2-baseline`), at the settings production runs: chat and classifier
 at `gpt-5-mini` / `minimal`, classifier prompt version 2, `top_k` 20 and up to three searches,
 against the knowledge base as it reads after the cutover (11 documents, 122 chunks, fingerprint
-`ff5bf7fa2152`). It is what later runs of golden_v2 are compared with. It is not comparable with
-any run above, which were all of golden_v1. The run records its code as `f034a6c485f7` with
-uncommitted changes: those were this dataset, the new default and their tests, none of which
-changes how a question is answered or graded.
+`ff5bf7fa2152`). It is not comparable with any run above, which were all of golden_v1. Since the
+judge changed on 2026-10-10, later runs are compared with `v2-baseline-sol`, which is these same
+answers graded by the new judge ("A new judge", below). The run records its code as
+`f034a6c485f7` with uncommitted changes: those were this dataset, the new default and their
+tests, none of which changes how a question is answered or graded.
 
 | | v2-baseline |
 |---|---|
@@ -709,3 +800,190 @@ the match.
 
 Total spend on this change: $1.01. The estimate before the run was $0.90: grading cost 1.6¢ an
 answer here, not the 1.4¢ measured on golden_v1.
+
+### The chat prompt, version 2, 2026-10-10
+
+golden_v2's baseline left four faults in Rachel's answers: answers that run long, parts of an
+answer labelled ("Short answer:"), a refusal to speak as Mihail that offers a summary instead of
+giving it, and pointers to pages the site does not have. The chat prompt was n8n's, word for
+word.
+
+Each wording was measured with repetitions before any full run: the affected cases answered
+five times each through `agent.respond()`, at production's settings, with no judge and nothing
+stored. It is a throwaway script outside the repository, as the classifier fix used. Eight
+cases at first, with `cv-download` and `assistant-source` added as controls once a rewording
+touched the rule about links.
+
+Three wordings on `gpt-5-mini` at `minimal`, against version 1:
+
+| | version 1 | five lines added | eight lines reworded | three reworded, one added |
+|---|---|---|---|---|
+| `pretend-mihail` gives the summary | 0 of 5 | 5 of 5 | 5 of 5 | 5 of 5 |
+| `assistant-how` within four sentences | 2 of 5 | 0 of 5 | 5 of 5 | 5 of 5 |
+| `everything` within four sentences | 0 of 15 | 0 of 5, and 1 fallback | 0 of 5, and 1 fallback | 0 of 5 |
+| bullet lists | 5 of 40 | 5 of 40 | 1 of 40 | 1 of 40 |
+| labels ("Short answer:") | 7 of 40 | 2 of 40 | 5 of 40 | 4 of 40 |
+| privacy answer points to a note the site lacks | 5 of 5 | 4 of 5 | 2 of 5 | 3 of 5 |
+| "Yes" opening a how or what question | 0 of 20 | 0 of 20 | 13 of 20 | 0 of 20 |
+| repository link given (control) | 4 of 5 | not run | 2 of 5 | 4 of 5 |
+
+- **Adding lines beside n8n's did not outweigh them.** The one addition that worked everywhere
+  is the identity line: asked to speak as Mihail, decline and give the answer in the third
+  person in the same reply.
+- **Rewording more of the prompt fixed one fault and caused another.** A sentence saying when an
+  answer may open with "Yes" or "No" put "Yes" at the start of thirteen of twenty answers to how
+  and what questions, and of all five to "What is the n8n Pro Automation Framework?". A reworded
+  rule 9 halved how often the repository link was given. Both
+  rewordings were dropped, and rule 9 and the "Answer pattern" went back to n8n's text.
+- **A sentence about requests for "everything" was dropped too.** With some form of it, "tell me
+  everything" fell back to "I don't have that information" three times in fifteen; without it,
+  never in twenty-five, and the answers were no longer.
+
+Two lessons, both about a small model at the lowest effort. Naming a phrase to avoid can bring
+it out, and a rule aimed at one case leaks into others. And several lines changed at once
+cannot be told apart afterwards: the last attempt was the smallest for that reason.
+
+**The closing offer was found on gpt-6-luna** ("gpt-6-luna", below). n8n's step 3 of the answer
+pattern begins "Optionally", and Luna took it at its word: one offer of more detail in 51
+answers, where `gpt-5-mini` made one in 33 of 52. Making step 3 firm got 18 of 50. Saying it in
+the sentence rule as well, which Luna obeys, got 39 of 50.
+
+Version 2 as committed adds one line and replaces four of n8n's:
+
+- added, under the identity rules: asked to speak as Mihail, say briefly that you cannot and
+  give the answer in the third person in the same reply, in the usual 2-4 sentences;
+- "Default answers should be 2-4 sentences." is now a rule with both ends: never one sentence
+  alone, never more than four unless more detail was asked for on one topic, and the last
+  sentence offers to say more;
+- "Do not write long structured answers unless the user asks for more detail." is "Do not write
+  long or structured answers.";
+- "Prefer short paragraphs over bullet lists." is "Use a bullet list only when the user asks
+  for a list.";
+- step 3 of the answer pattern, "Optionally, one short sentence offering more details…", is
+  "Always finish with one short sentence that offers to say more about a specific part of the
+  topic", except for the fallback sentence.
+
+`tests/unit/test_prompts.py` lists the four replaced lines and holds the prompt to every other
+line of n8n's, in order.
+
+Not fixed by wording, on either model: "tell me everything" still runs to nine sentences or
+more. The repetitions cost $0.55 in all.
+
+### A new judge, 2026-10-10
+
+The judge changed twice over in one step: the model from `gpt-5` to `gpt-6.1-sol`, and the
+rubric from version 1 to version 2 ("The judge", above, has the two rubric fixes and why). So
+that there would be something to compare with, `rejudge` had the new judge grade the answers
+`v2-baseline` had stored, as `v2-baseline-sol`. The 62 answers, their routes, what was
+retrieved and what they cost are identical in the two runs.
+
+| | `gpt-5`, rubric 1 | `gpt-6.1-sol`, rubric 2 |
+|---|---|---|
+| faithfulness | 4.92 | 4.82 |
+| completeness | 4.60 | 4.19 |
+| style | 4.71 | 4.39 |
+| cases breaking a rule | 3 | 2 |
+| judge's cost for the run | $0.89 | $0.51 |
+
+- **It is a stricter reader.** Completeness is lower on 15 answers, eleven by one point and four
+  by two, and in 14 of them its reason is a fact of the reference left out. Style is lower by
+  two on 12; the reasons read were a missing offer of more detail and a sentence that "reads
+  like a CV inventory".
+- **Both rubric fixes bite.** `assistant-privacy`'s "read the full policy" now costs it a
+  faithfulness point ("implies a site document that the passages do not establish"), and
+  `projects-page-link`'s "Threadline project page" takes that answer from 4 to 2. The three
+  one-sentence fallback answers score 5 for style, where they scored 3.
+- **One invented pointer still passes:** `assistant-how`'s "privacy measures described on the
+  site" kept its 5. The rule is in the rubric; this judge did not apply it to that sentence.
+- **`pretend-mihail` is no longer read as declining.** It refuses the first person and offers
+  the summary, which the first judge counted as declining an answerable question. Completeness
+  stays at 1 either way.
+- **It costs less**, because it reasons less: a median of about 4,000 tokens read and 160
+  written per answer, where `gpt-5` wrote about a thousand, most of them reasoning.
+
+Nothing graded by the first judge is comparable with anything graded by the second. `compare`
+says so and leaves the scores out when asked to try.
+
+### gpt-6-luna, 2026-10-10
+
+`gpt-6-luna` is OpenAI's smallest GPT-6 model, released in September 2026, at $0.10 / $0.01 /
+$0.50 per million input, cached and output tokens, against `gpt-5-mini`'s $0.25 / $0.025 / $2.00.
+Its lowest effort is `none`; it does not take `minimal`.
+
+**Repetitions first** (the ten cases, five times each, `gpt-5-mini` still classifying). At
+`none` with the version 2 prompt as it then stood, Luna gave the `pretend-mihail` summary within
+four sentences five times of five, wrote no labels and no bullet lists in forty answers, and
+never pointed the privacy answer at a note the site lacks. Effort `low` bought nothing and was
+slower. On the version 1 prompt, two of five `pretend-mihail` answers were a first-person draft
+in Mihail's voice, so Luna needs version 2 as much as `gpt-5-mini` did.
+
+**Three full runs**, all of golden_v2, all graded by `gpt-6.1-sol` with rubric 2:
+
+| | v2-baseline-sol | luna-v2 | luna-v3 |
+|---|---|---|---|
+| chat | `gpt-5-mini`, `minimal` | `gpt-6-luna`, `none` | `gpt-6-luna`, `none` |
+| classifier | `gpt-5-mini`, `minimal` | `gpt-5-mini`, `minimal` | `gpt-6-luna`, `none` |
+| chat prompt | version 1 | version 2 before the closing offer | version 2 |
+| classification | 1.000 | 1.000 | 1.000 |
+| retrieval hit rate / recall / MRR | 1.000 / 0.958 / 0.931 | 1.000 / 0.985 / 0.963 | 1.000 / 0.985 / 0.974 |
+| faithfulness | 4.82 | 4.85 | **4.92** |
+| completeness | 4.19 | 4.08 | 4.17 |
+| style | 4.39 | 3.57 | **4.82** |
+| answers closing with an offer | 33 of 52 | 1 of 51 | 37 of 52 |
+| first word, median / p95 | **2.8s** / 6.3s | 3.3s / 5.1s | 4.0s / 5.0s |
+| whole answer, median / p95 | 3.6s / 7.1s | 4.0s / 5.9s | 4.6s / 6.0s |
+| cost per answer | $0.0019 | $0.0006 | **$0.0004** |
+| run cost, answers + judge | $0.12 + $0.51 | $0.04 + $0.52 | $0.03 + $0.51 |
+
+- **luna-v2's style fell to 3.57 for one reason.** The judge names the missing offer of more
+  detail in 35 of the 40 answers it scored 3. Eleven answers were also a single sentence. The
+  prompt change above is the fix, and luna-v3 is the run after it.
+- **luna-v3 against the baseline:** seventeen cases better, seven worse. `pretend-mihail` went
+  from 1 to 5 on completeness, and there are no bullet lists.
+- **One answer is clearly worse.** Asked "Where did Mihail do his PhD?", Luna said the
+  knowledge base "doesn't mention a PhD" and that it has no information on where he "may have
+  completed one" (completeness 2). `gpt-5-mini` said he does not have one. One case, and in
+  both Luna runs: luna-v2 scored 3 on it.
+- **One required phrase is missing, as formatting.** `assistant-models` wrote "**GPT-5 mini**"
+  where the case requires "gpt-5-mini", in both Luna runs. The judge gave the answer 5 on
+  everything.
+- **Luna writes Markdown**: bold in 8 of luna-v3's answers and links as `[text](address)`. The
+  site's chat renders both.
+- **"Tell me everything" is still too long**, at style 3.
+
+**The classifier stays on gpt-5-mini.** Checked on its own, every golden_v2 question several
+times with no search and no answer, both models routed everything right: `gpt-6-luna` at `none`
+0 wrong of 434, `gpt-5-mini` at `minimal` 0 wrong of 124 in the same sitting. What differs is
+time. Every message waits for the classifier before anything else happens, and its call takes
+about 0.8s on `gpt-5-mini` and about 1.4s on `gpt-6-luna`, which is most of the gap between
+luna-v2's first word and luna-v3's. Luna would save $0.00017 a message.
+
+**Decided:** `gpt-6-luna` at `none` writes the answers, with chat prompt version 2; `gpt-5-mini`
+at `minimal` routes; `gpt-6.1-sol` judges. Those are the code's defaults since this change.
+
+**Not measured:** no single run has exactly that pairing with the final prompt. luna-v3 has the
+final prompt and Luna classifying; luna-v2 has `gpt-5-mini` classifying and the prompt before
+the closing offer. The two runs routed 61 of the 62 cases alike. `who-are-you` went to small
+talk in luna-v2 and to the knowledge base in luna-v3, both of which the case accepts, and it is
+why luna-v2 has 51 knowledge-base answers and luna-v3 52. So the scores to expect are about
+luna-v3's and the first word about luna-v2's 3.3s. A run of the pairing itself, about $0.55,
+would be the baseline to measure the next change against.
+
+Both Luna runs record the chat prompt as `rag_agent@2`, and they are two texts: the closing
+offer was added between them, while version 2 was still uncommitted, and the number was not
+raised. The "chat prompt" row above is what tells them apart; the recorded version does not.
+
+**More for golden_v3**, since the model changing makes two cases describe the past:
+- `assistant-models` requires "gpt-5-mini", which is what the knowledge base article says
+  writes the answers. When production moves to `gpt-6-luna` the article changes, and this case
+  with it. A required phrase with a hyphen in it also fails "GPT-5 mini", which is the same
+  model written as a name.
+- `assistant-quality`'s reference gives `gpt-5` as the judge and the 15.6s to 3.9s result,
+  which is the article's account of the first runs.
+- `projects-page-link` scores 2 for faithfulness under rubric 2 in all three runs, including
+  luna-v3's answer, which says what the reference says: Threadline is in the projects section,
+  with the section's link. The judge reads "in the projects section" as a claim about the site
+  that no passage makes. Either the knowledge base says where a project is shown or the
+  reference stops saying it; as it stands the case cannot be passed.
+
+Total spend on 2026-10-10, across the prompt, the judge and the model: about $2.40.

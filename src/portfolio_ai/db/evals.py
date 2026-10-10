@@ -432,6 +432,67 @@ async def results(run_id: int) -> list[ResultRow]:
     ]
 
 
+async def stored_results(run_id: int) -> list[tuple[str, StoredResult]]:
+    """A run's results as they were written, each with its case's key, in dataset order.
+
+    :func:`results` reads what a report needs. This reads everything, including the
+    ids of the passages each answer was shown and the searches behind it, because its
+    caller (``evals rejudge``) writes the result out again under a new run with only
+    the judge's part changed.
+    """
+    pool = await get_pool()
+    async with pool.connection() as conn, conn.cursor() as cur:
+        await cur.execute(
+            """
+            select c.key, r.case_id, r.answer, r.classification,
+                   r.retrieved_chunk_ids, r.retrieved_doc_ids,
+                   r.recall_at_k, r.precision_at_k, r.mrr,
+                   r.judge_scores, r.judge_rationale, r.rule_violations,
+                   r.prompt_tokens, r.completion_tokens, r.cost_usd, r.judge_cost_usd,
+                   r.latency_ms, r.first_token_ms, r.top_score, r.fallback_used,
+                   r.links_removed, r.searches, r.calls, r.error
+            from eval_results r
+            join eval_cases c on c.id = r.case_id
+            where r.run_id = %s
+            order by c.id
+            """,
+            (run_id,),
+        )
+        rows = await cur.fetchall()
+
+    return [
+        (
+            row["key"],
+            StoredResult(
+                case_id=row["case_id"],
+                answer=row["answer"],
+                classification=row["classification"],
+                retrieved_chunk_ids=list(row["retrieved_chunk_ids"] or []),
+                retrieved_doc_ids=list(row["retrieved_doc_ids"] or []),
+                recall=row["recall_at_k"],
+                precision=row["precision_at_k"],
+                mrr=row["mrr"],
+                judge_scores=row["judge_scores"],
+                judge_rationale=row["judge_rationale"],
+                violations=row["rule_violations"] or {},
+                prompt_tokens=row["prompt_tokens"],
+                completion_tokens=row["completion_tokens"],
+                cost=row["cost_usd"],
+                judge_cost=row["judge_cost_usd"],
+                latency_ms=row["latency_ms"],
+                first_token_ms=row["first_token_ms"],
+                top_score=row["top_score"],
+                fallback_used=row["fallback_used"],
+                links_removed=row["links_removed"],
+                searches=list(row["searches"] or []),
+                calls=list(row["calls"] or []),
+                error=row["error"],
+            ),
+        )
+        for row in rows
+    ]
+
+
 _RUN_COLUMNS = """
     select r.id, r.label, r.dataset_id, d.name as dataset, r.status, r.config, r.totals,
            r.started_at, r.finished_at

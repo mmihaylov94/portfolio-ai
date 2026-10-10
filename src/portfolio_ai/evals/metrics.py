@@ -235,6 +235,12 @@ def rule_violations(
     return found
 
 
+# The two findings below rest on whether an answer declined, which is the judge's
+# reading when there is a judge. So they are the part of a stored result that a new
+# judge can change: `evals rejudge` takes them off and works them out again.
+FALLBACK_RULES = ("did_not_decline", "declined_answerable")
+
+
 def fallback_violations(
     case: EvalCase, *, route: str, fallback_used: bool, declined: bool | None
 ) -> Violations:

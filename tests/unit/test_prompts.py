@@ -6,7 +6,7 @@ from pathlib import Path
 import pytest
 
 from portfolio_ai.assistant.prompts import loader
-from portfolio_ai.assistant.prompts.loader import ALL, CLASSIFIER, RAG_AGENT, Prompt
+from portfolio_ai.assistant.prompts.loader import ALL, RAG_AGENT, Prompt
 
 # Each prompt's version and a hash of its text. This is the test that fails when a
 # prompt is edited, and it is meant to.
@@ -19,11 +19,11 @@ from portfolio_ai.assistant.prompts.loader import ALL, CLASSIFIER, RAG_AGENT, Pr
 PINNED = {
     "classifier": (2, "2397208265ab"),
     "small_talk": (1, "4e7ec2947c35"),
-    "rag_agent": (1, "7cbb3c6d8e57"),
+    "rag_agent": (2, "447fb30a2253"),
     "search_tool": (1, "e8ed50f414ec"),
     "out_of_scope_reply": (1, "915ed598f0a1"),
     "daily_limit_reply": (1, "f4daad636fed"),
-    "judge": (1, "17a5b3808a98"),
+    "judge": (2, "d8c0973fd84d"),
 }
 
 # The n8n export the prompts were ported from. Gitignored -- it carries n8n instance
@@ -81,14 +81,30 @@ def test_an_empty_prompt_is_refused() -> None:
         loader.parse("broken", "---\nversion: 1\n---\n\n   \n")
 
 
-@pytest.mark.skipif(not N8N_EXPORT.exists(), reason="the n8n export is only on the dev machine")
-def test_version_one_prompts_are_word_for_word_what_n8n_runs() -> None:
-    """The port is verbatim, apart from the two corrections rag_agent.md lists.
+# The prompts that came from n8n. The rest were written here and have no original.
+PORTED = ("classifier", "small_talk", "rag_agent", "search_tool", "out_of_scope_reply")
 
-    Only version-1 prompts that came from n8n are compared. Once a prompt is
-    deliberately changed and its version bumped, it has left n8n behind on purpose;
-    and a prompt written here, like the daily-limit reply, has no original at all.
-    """
+# n8n's lines that a later version replaced on purpose. Every other line of n8n's has to
+# be there still, in order, so rewording a tuned line shows up twice in a diff: in the
+# prompt, and here.
+REWORDED: dict[str, tuple[str, ...]] = {
+    # Version 2, after golden_v2's baseline: the three response style lines about length
+    # and lists, and the answer pattern's last step. Adding lines beside them was
+    # measured first and did not outweigh them. Rewording rule 9 and the whole "Answer
+    # pattern" as well was measured too, and dropped: each fixed one fault and caused
+    # another (docs/EVALS.md).
+    "rag_agent": (
+        "- Default answers should be 2\N{EN DASH}4 sentences.",
+        "- Do not write long structured answers unless the user asks for more detail.",
+        "- Prefer short paragraphs over bullet lists.",
+        # gpt-6-luna read "optionally" literally, and never made the offer.
+        "3. Optionally, one short sentence offering more details if the user is interested.",
+    ),
+}
+
+
+def _n8n_originals() -> dict[str, str]:
+    """n8n's own text for each ported prompt, read from the export."""
     nodes = {
         node["name"]: node["parameters"]
         for node in json.loads(N8N_EXPORT.read_text(encoding="utf-8"))["nodes"]
@@ -106,27 +122,50 @@ def test_version_one_prompts_are_word_for_word_what_n8n_runs() -> None:
             "value"
         ],
     }
-
-    for prompt in ALL:
-        if prompt.version == 1 and prompt.name in originals:
-            assert prompt.text == originals[prompt.name].strip(), prompt.name
+    return {name: text.strip() for name, text in originals.items()}
 
 
 @pytest.mark.skipif(not N8N_EXPORT.exists(), reason="the n8n export is only on the dev machine")
-def test_the_classifier_keeps_every_line_of_n8ns_prompt_in_order() -> None:
-    """Version 2 adds the project names, a rule and examples, and removes nothing.
+def test_version_one_prompts_are_word_for_word_what_n8n_runs() -> None:
+    """The port is verbatim, apart from the two corrections rag_agent.md lists.
 
-    The word-for-word test above stops looking at a prompt once its version moves,
-    so this is what holds the classifier to "only added to".
+    Only version-1 prompts that came from n8n are compared. Once a prompt is
+    deliberately changed and its version bumped, the test below takes over; and a
+    prompt written here, like the daily-limit reply, has no original at all.
     """
-    nodes = {
-        node["name"]: node["parameters"]
-        for node in json.loads(N8N_EXPORT.read_text(encoding="utf-8"))["nodes"]
-    }
-    original = nodes["AI | Classify Message"]["options"]["systemPromptTemplate"].strip()
-    ours = iter(CLASSIFIER.text.splitlines())
+    originals = _n8n_originals()
 
-    for line in original.splitlines():
+    for prompt in ALL:
+        if prompt.version == 1 and prompt.name in originals:
+            assert prompt.text == originals[prompt.name], prompt.name
+
+
+@pytest.mark.skipif(not N8N_EXPORT.exists(), reason="the n8n export is only on the dev machine")
+@pytest.mark.parametrize(
+    "prompt",
+    [prompt for prompt in ALL if prompt.name in PORTED and prompt.version > 1],
+    ids=lambda prompt: prompt.ref,
+)
+def test_a_changed_prompt_keeps_n8ns_lines_in_order_but_for_the_ones_listed(prompt: Prompt) -> None:
+    """The classifier at version 2 only adds to n8n's text. The agent's prompt at
+    version 2 also replaces the four lines listed in ``REWORDED``, and nothing else.
+
+    The word-for-word test above stops looking at a prompt once its version moves, so
+    this is what holds a changed one to what was decided.
+    """
+    original = _n8n_originals()[prompt.name].splitlines()
+    replaced = REWORDED.get(prompt.name, ())
+    kept = prompt.text.splitlines()
+
+    # The list cannot go stale: each line on it was n8n's, and is no longer ours.
+    for line in replaced:
+        assert line in original, line
+        assert line not in kept, line
+
+    ours = iter(kept)
+    for line in original:
+        if line in replaced:
+            continue
         # `in` on an iterator consumes it up to the match, so each line has to be
         # found after the one before it: the order is checked, not just presence.
         assert line in ours, line

@@ -4,6 +4,7 @@
 
     check datasets/golden_v2.yaml           validate a dataset file; no database, no network
     run --dataset golden_v2 --label baseline [--dry-run] [knobs]
+    rejudge baseline --label baseline-2     a stored run's answers, graded by the judge again
     list                                    every run so far
     show baseline [--failures]              one run, case by case
     compare baseline effort-low             two runs side by side, and what changed
@@ -31,12 +32,13 @@ from typing import Annotated, Any, cast
 import typer
 
 from portfolio_ai.assistant.agent import AssistantConfig
-from portfolio_ai.config import ReasoningEffort, get_settings
+from portfolio_ai.assistant.prompts.loader import JUDGE
+from portfolio_ai.config import ReasoningEffort, Settings, get_settings
 from portfolio_ai.db import evals as evals_db
 from portfolio_ai.db.evals import RunRecord
 from portfolio_ai.db.pool import close_pool
 from portfolio_ai.evals import datasets, report, runner
-from portfolio_ai.evals.runner import Plan, Progress
+from portfolio_ai.evals.runner import Plan, Progress, Regrade
 from portfolio_ai.exceptions import EvalError, PortfolioAIError
 from portfolio_ai.llm.client import close_client
 from portfolio_ai.logging import configure_logging
@@ -51,10 +53,12 @@ class Effort(StrEnum):
 
     ``default`` is the one addition: it sends no effort at all, so the model's own
     default applies -- which is what n8n sent, and what a baseline has to be run at
-    even when the local .env sets something else.
+    even when the local .env sets something else. ``none`` is a different thing: an
+    effort that is sent, asking a GPT-6 model for no reasoning.
     """
 
     DEFAULT = "default"
+    NONE = "none"
     MINIMAL = "minimal"
     LOW = "low"
     MEDIUM = "medium"
@@ -66,7 +70,7 @@ def _effort(choice: Effort | None, current: ReasoningEffort | None) -> Reasoning
         return current
     if choice is Effort.DEFAULT:
         return None
-    # The remaining members' values are exactly the four ReasoningEffort spells;
+    # The remaining members' values are exactly the five ReasoningEffort spells;
     # cast() tells mypy so, without changing anything at run time.
     return cast("ReasoningEffort", choice.value)
 
@@ -134,6 +138,18 @@ def check(path: Annotated[Path, typer.Argument(help="The dataset file.")]) -> No
 
 
 # --- run ------------------------------------------------------------------------
+
+
+def _development_only() -> Settings:
+    """The settings, or a refusal: the commands that spend and write are local only."""
+    settings = get_settings()
+    if settings.environment != "local":
+        raise typer.BadParameter(
+            f"ENVIRONMENT is {settings.environment!r}. Evals run against the development "
+            "database only: they spend money and write to the eval tables.",
+            param_hint="ENVIRONMENT",
+        )
+    return settings
 
 
 def _print_plan(plan: Plan) -> None:
@@ -209,13 +225,7 @@ def run(  # ruff: ignore[too-many-arguments] -- one per knob, and every one is n
     ] = False,
 ) -> None:
     """Answer and grade every case in a dataset, and store the run."""
-    settings = get_settings()
-    if settings.environment != "local":
-        raise typer.BadParameter(
-            f"ENVIRONMENT is {settings.environment!r}. Evals run against the development "
-            "database only: they spend money and write to the eval tables.",
-            param_hint="ENVIRONMENT",
-        )
+    settings = _development_only()
 
     # Warnings only: a line per OpenAI call would bury the progress lines.
     configure_logging("WARNING")
@@ -259,6 +269,71 @@ def run(  # ruff: ignore[too-many-arguments] -- one per knob, and every one is n
     for line in [*report.describe(record), "", *report.headline([record])]:
         typer.echo(line)
     typer.secho(f"\nCase by case: python -m portfolio_ai.evals show {label} --failures", fg=DIM)
+
+
+# --- rejudge --------------------------------------------------------------------
+
+
+def _print_regrade(plan: Regrade) -> None:
+    was = plan.source.config.get("judge") or {}
+    typer.echo(
+        f"\n{plan.label}: {len(plan.items)} results of {plan.source.label} ({plan.source.dataset})"
+    )
+    typer.echo(f"  judge       {plan.judge_model} {JUDGE.ref}, {plan.graded} answers to grade")
+    typer.echo(f"  was         {was.get('model', 'none')} {was.get('prompt', '')}".rstrip())
+    typer.echo("  answers     as stored: nothing is asked again")
+    typer.echo(f"  at once     {plan.concurrency}\n")
+
+
+@app.command()
+def rejudge(  # ruff: ignore[too-many-arguments] -- one per knob, as `run` has
+    source: Annotated[str, typer.Argument(help="The run whose stored answers are graded.")],
+    *,
+    label: Annotated[str, typer.Option("--label", help="A name for the new run, unique.")],
+    judge_model: Annotated[str | None, typer.Option(help="Default: JUDGE_MODEL.")] = None,
+    only: Annotated[
+        list[str] | None, typer.Option("--only", help="Grade just this case. Repeatable.")
+    ] = None,
+    concurrency: Annotated[
+        int, typer.Option(min=1, max=10, help="Answers graded at once.")
+    ] = runner.DEFAULT_CONCURRENCY,
+    dry_run: Annotated[
+        bool, typer.Option("--dry-run", help="Check everything and stop. Spends nothing.")
+    ] = False,
+) -> None:
+    """Grade a stored run's answers again with the current judge, as a new run.
+
+    For when the judge's model or its rubric changes. Scores from two judges cannot
+    be compared, so the run everything is measured against is graded again by the new
+    one. The answers are the stored ones: only the judge is paid for.
+    """
+    settings = _development_only()
+    configure_logging("WARNING")
+
+    async def work() -> RunRecord | None:
+        plan = await runner.prepare_rejudge(
+            source,
+            label=label,
+            judge_model=judge_model or settings.judge_model,
+            concurrency=concurrency,
+            only=frozenset(only or ()),
+        )
+        _print_regrade(plan)
+        if dry_run:
+            return None
+        return await runner.rejudge(plan, on_result=_print_progress)
+
+    record = _in_loop(work)
+    if record is None:
+        typer.echo("Dry run: every check passed, and nothing was graded, spent or stored.")
+        return
+
+    typer.echo("")
+    for line in [*report.describe(record), "", *report.headline([record])]:
+        typer.echo(line)
+    typer.secho(
+        f"\nBeside the first judge: python -m portfolio_ai.evals compare {source} {label}", fg=DIM
+    )
 
 
 # --- reading runs back ----------------------------------------------------------
@@ -344,17 +419,26 @@ def compare(
             "dataset are comparable."
         )
 
-    changes = report.compare(a_rows, b_rows)
+    # A judge is its model and its rubric. Two runs graded by different ones were
+    # measured with different rulers, so what the judge said is left out and the rest
+    # is still compared.
+    same_judge = a.config.get("judge") == b.config.get("judge")
+    notice = [] if same_judge else [*report.different_judges(a, b), ""]
+
+    changes = report.compare(a_rows, b_rows, judged=same_judge)
     for line in [
         *report.describe(a),
         *report.describe(b),
         "",
-        *report.headline([a, b]),
+        *notice,
+        *report.headline([a, b], judged=same_judge),
         "",
         *changes,
     ]:
         typer.echo(line)
 
     if markdown is not None:
-        markdown.write_text(report.markdown([a, b], changes), encoding="utf-8")
+        markdown.write_text(
+            report.markdown([a, b], changes, judged=same_judge, notice=notice), encoding="utf-8"
+        )
         typer.secho(f"\nWritten to {markdown}", fg=DIM)

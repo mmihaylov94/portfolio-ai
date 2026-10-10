@@ -1,5 +1,6 @@
 """A run's totals, and how two runs are compared: arithmetic on rows, no database."""
 
+import dataclasses
 import datetime as dt
 from decimal import Decimal
 from typing import Any
@@ -255,3 +256,128 @@ def test_the_markdown_comparison_is_a_table_and_the_case_list() -> None:
     assert text.startswith("|  | baseline | effort-low | change |\n|---|---|---|---|\n")
     assert "| classification | 1.000 | 1.000 | +0.000 |" in text
     assert "```\nworse in the second run (0)\n```" in text
+
+
+def _graded_by(run: RunRecord, model: str, prompt: str) -> RunRecord:
+    return dataclasses.replace(run, config={"judge": {"model": model, "prompt": prompt}})
+
+
+def test_two_judges_are_named_and_what_they_said_is_left_out() -> None:
+    """Scores from two judges would sit side by side looking comparable, and are not.
+    Neither is which answers "declined", since that is the judge's reading too."""
+    before = [_row(violations={"declined_answerable": True})]
+    after = [
+        _row(
+            judge_scores={"faithfulness": 2, "completeness": 5, "style": 5, "declined": False},
+            violations={"too_long": 9},
+        )
+    ]
+    old = _graded_by(_run("baseline", before), "gpt-5", "judge@1")
+    new = _graded_by(_run("baseline-sol", after), "gpt-6.1-sol", "judge@2")
+
+    table = report.headline([old, new], judged=False)
+    changes = report.compare(before, after, judged=False)
+
+    first_words = {line.split("  ")[0] for line in table}
+    assert not first_words & {
+        "faithfulness, 1-5",
+        "completeness, 1-5",
+        "style, 1-5",
+        "declined when expected",
+        "declined answerable",
+        "phrase match agrees",
+        "rule: declined_answerable",
+    }
+    assert {"classification", "retrieval hit rate", "rule: too_long"} <= first_words
+    assert changes[0] == "worse in the second run (1)"
+    assert "+too_long" in changes[1]
+    assert "faithfulness" not in "\n".join(changes)
+    assert "declined_answerable" not in "\n".join(changes)
+    assert report.different_judges(old, new)[0] == (
+        "baseline was graded by gpt-5 judge@1 and baseline-sol by gpt-6.1-sol judge@2."
+    )
+
+
+def test_a_total_that_counts_the_judges_findings_is_left_out_with_them() -> None:
+    """The same answer under two judges: the first read it as declining, the second did
+    not. "Cases breaking a rule" was added up when each run finished, so hiding the
+    rule's own row left the count showing one case fewer -- a change between two runs
+    with not one answer different."""
+    before = [_row(violations={"declined_answerable": True})]
+    after = [_row()]
+    old = _graded_by(_run("baseline", before), "gpt-5", "judge@1")
+    new = _graded_by(_run("baseline-sol", after), "gpt-6.1-sol", "judge@2")
+
+    table = report.headline([old, new], judged=False)
+    text = report.markdown([old, new], [], judged=False)
+
+    assert not [line for line in table if line.startswith("cases breaking a rule")]
+    assert "cases breaking a rule" not in text
+    # Nothing in the table says the two runs differ, because nothing comparable does:
+    # every figure in the change column is a zero, "+0.000" or "+0".
+    changed = [line for line in table[1:] if line.split()[-1].strip("+-0.")]
+    assert not changed
+    assert report.compare(before, after, judged=False)[:2] == ["worse in the second run (0)", ""]
+    # One judge, and the count is back.
+    assert any(line.startswith("cases breaking a rule") for line in report.headline([old, new]))
+
+
+def test_a_judge_that_failed_is_not_a_change_between_two_judges() -> None:
+    """An error beside an answer is the judge's: the answer was written, and grading it
+    failed. Between two judges that is one judge's trouble, not a difference in the
+    answers. An answer that was never written still is."""
+    answered = _row()
+    ungraded = _row(judge_scores=None, error="judge: AssistantError: unavailable")
+    unanswered = _row(answer=None, judge_scores=None, error="AssistantError: unavailable")
+
+    assert report.compare([answered], [ungraded], judged=False)[0] == "worse in the second run (0)"
+    assert report.compare([ungraded], [answered], judged=False)[2] == "better in the second run (0)"
+    assert "error" in report.compare([answered], [unanswered], judged=False)[1]
+    # Under one judge, a judge that failed is a change like any other.
+    assert "error" in report.compare([answered], [ungraded])[1]
+
+
+def test_a_regrade_says_whose_answers_it_holds() -> None:
+    """Without the line, a re-grade reads as a run that asked the questions again."""
+    source = dataclasses.replace(
+        _run("baseline", [_row()]), config={"git": {"revision": "aaa1111", "dirty": False}}
+    )
+    regrade = dataclasses.replace(
+        _run("baseline-sol", [_row()]),
+        config={
+            "git": {"revision": "aaa1111", "dirty": False},
+            "rejudged_from": "baseline",
+            "rejudged_git": {"revision": "bbb2222", "dirty": False},
+        },
+    )
+
+    assert "  answers     baseline's, graded again and not asked again" in report.describe(regrade)
+    assert report.describe(regrade)[-1] == "  code        aaa1111, graded again at bbb2222"
+    assert not [line for line in report.describe(source) if "graded again" in line]
+    assert report.describe(source)[-1] == "  code        aaa1111"
+
+
+def test_one_judge_still_compares_everything() -> None:
+    before = [_row(violations={"declined_answerable": True})]
+    after = [_row(judge_scores={"faithfulness": 2, "completeness": 5, "style": 5})]
+
+    table = report.headline([_run("baseline", before), _run("effort-low", after)])
+    changes = report.compare(before, after)
+
+    assert any(line.startswith("faithfulness, 1-5") for line in table)
+    assert any(line.startswith("rule: declined_answerable") for line in table)
+    assert "faithfulness 5 -> 2" in changes[1]
+    assert "-declined_answerable" in changes[1]
+
+
+def test_the_markdown_comparison_of_two_judges_opens_with_the_notice() -> None:
+    old = _graded_by(_run("baseline", [_row()]), "gpt-5", "judge@1")
+    new = _graded_by(_run("baseline-sol", [_row()]), "gpt-6.1-sol", "judge@2")
+
+    text = report.markdown(
+        [old, new], [], judged=False, notice=[*report.different_judges(old, new), ""]
+    )
+
+    assert text.startswith("baseline was graded by gpt-5 judge@1")
+    assert "| classification | 1.000 | 1.000 | +0.000 |" in text
+    assert "faithfulness" not in text
