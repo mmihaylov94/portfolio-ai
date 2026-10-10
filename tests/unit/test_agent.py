@@ -289,6 +289,27 @@ async def test_a_fallback_answer_is_flagged_and_cites_nothing(fake: FakeOpenAI) 
     assert result.top_score == pytest.approx(0.62), "the score is still recorded"
 
 
+async def test_a_decline_that_goes_on_to_give_something_else_loses_its_sources_too(
+    fake: FakeOpenAI,
+) -> None:
+    """The one place a visitor sees `fallback_used`. The chat shows "Sources:" only
+    when an answer has citations, and the fallback is decided by a pattern on the
+    answer's words, which cannot tell this reply from a plain decline. So it is
+    recorded as a question the knowledge base could not answer, which is wanted, and
+    shown without sources, which is the price. Pinned so that it is a decision."""
+    fake.classify("mihail_related")
+    fake.search("Threadline project page")
+    fake.say(
+        "I don't have that specific projects-page URL in my knowledge base, but the live "
+        "demo is on https://mihaylov.io/#projects."
+    )
+
+    _, result = await _run("Can you link me to Threadline's project page?")
+
+    assert result.fallback_used
+    assert result.citations == []
+
+
 async def test_citations_are_the_best_documents_named_once_each(fake: FakeOpenAI) -> None:
     fake.classify("mihail_related")
     fake.search("Laravel PHP experience")

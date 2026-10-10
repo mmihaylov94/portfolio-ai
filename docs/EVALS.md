@@ -231,8 +231,10 @@ answer for that:
 
 The rules use the judge's reading where there is one. Across a run, **`phrase_match_agrees`** is
 the share of knowledge-base answers where the two agree. That is the measurement
-`postprocess.py` says the evals exist to make: every disagreement is an answer the analytics
-would misfile.
+`postprocess.py` says the evals exist to make. A disagreement is an answer the analytics would
+file differently from the judge: a decline the match missed, or a reply that says the knowledge
+base lacks something and then goes on to give something else, which the match counts on
+purpose ("gpt-6-luna" in Results).
 
 ### The judge
 
@@ -293,8 +295,8 @@ every run. A run graded by one cannot be compared with a run graded by another, 
 changes, the run to compare against is graded again first, under a label of its own:
 
 ```bash
-uv run python -m portfolio_ai.evals rejudge luna-v3 --label luna-v3-regraded --dry-run
-uv run python -m portfolio_ai.evals rejudge luna-v3 --label luna-v3-regraded
+uv run python -m portfolio_ai.evals rejudge luna-mini --label luna-mini-regraded --dry-run
+uv run python -m portfolio_ai.evals rejudge luna-mini --label luna-mini-regraded
 ```
 
 That is how `v2-baseline-sol` was made from `v2-baseline` when the judge became `gpt-6.1-sol`.
@@ -351,8 +353,7 @@ belongs in production.
 
 ```bash
 uv run python -m portfolio_ai.evals check datasets/golden_v2.yaml
-uv run python -m portfolio_ai.evals run --label luna-mini --dry-run
-uv run python -m portfolio_ai.evals run --label luna-mini
+uv run python -m portfolio_ai.evals run --label top-k-8 --top-k 8 --dry-run
 uv run python -m portfolio_ai.evals run --label top-k-8 --top-k 8
 uv run python -m portfolio_ai.evals list
 uv run python -m portfolio_ai.evals show top-k-8 --failures
@@ -360,12 +361,17 @@ uv run python -m portfolio_ai.evals compare luna-mini top-k-8 --markdown ../comp
 uv run python -m portfolio_ai.evals rejudge luna-mini --label luna-mini-regraded --dry-run
 ```
 
-A label is used once, and a comparison means something only when one setting differs. So the
-example runs the settings in use first, as `luna-mini`, and then one change against that,
-`top_k` 8. The first run is needed because no stored run has exactly those settings: `luna-v3`
-had `gpt-6-luna` routing, and the routing has since gone back to `gpt-5-mini`. Comparing
-`top-k-8` with `luna-v3` would measure two changes at once. Each of the two runs costs about
-$0.55.
+A label is used once, and a comparison means something only when one setting differs.
+`luna-mini` is the stored run of the settings in use: `gpt-6-luna` answering, `gpt-5-mini`
+routing, chat prompt version 2. So the example measures one change against it, `top_k` 8, under
+a label of its own. `luna-v3` is not that baseline: it had `gpt-6-luna` routing as well, and
+comparing `top-k-8` with it would measure two changes at once. A run costs about $0.55.
+
+One figure in the first comparison against `luna-mini` will move for a reason that is not the
+setting. `luna-mini` recorded `fallback_used` with the match as it was, and a new run records it
+with the match as widened afterwards ("gpt-6-luna" in Results). So "phrase match agrees" rises
+on answers that are no different. In a run with `--no-judge`, where the match stands in for the
+judge, a reply that declines and then offers something else now breaks `declined_answerable`.
 
 `run` uses golden_v2 unless `--dataset` names another, and golden_v1 is named only to add to the
 runs already made of it. `rejudge` is for the day the judge changes ("The judge", above).
@@ -705,8 +711,9 @@ The first run of golden_v2 (`v2-baseline`), at the settings production runs: cha
 at `gpt-5-mini` / `minimal`, classifier prompt version 2, `top_k` 20 and up to three searches,
 against the knowledge base as it reads after the cutover (11 documents, 122 chunks, fingerprint
 `ff5bf7fa2152`). It is not comparable with any run above, which were all of golden_v1. Since the
-judge changed on 2026-10-10, later runs are compared with `v2-baseline-sol`, which is these same
-answers graded by the new judge ("A new judge", below). The run records its code as
+judge changed on 2026-10-10, `v2-baseline-sol` holds these same answers graded by the new judge
+("A new judge", below), and `luna-mini` is the run later ones are compared with. The run records
+its code as
 `f034a6c485f7` with uncommitted changes: those were this dataset, the new default and their
 tests, none of which changes how a question is answered or graded.
 
@@ -917,23 +924,26 @@ never pointed the privacy answer at a note the site lacks. Effort `low` bought n
 slower. On the version 1 prompt, two of five `pretend-mihail` answers were a first-person draft
 in Mihail's voice, so Luna needs version 2 as much as `gpt-5-mini` did.
 
-**Three full runs**, all of golden_v2, all graded by `gpt-6.1-sol` with rubric 2:
+**Four full runs**, all of golden_v2, all graded by `gpt-6.1-sol` with rubric 2. The first
+three led to the decision below; `luna-mini` is the run of what was decided, made afterwards
+from the committed code.
 
-| | v2-baseline-sol | luna-v2 | luna-v3 |
-|---|---|---|---|
-| chat | `gpt-5-mini`, `minimal` | `gpt-6-luna`, `none` | `gpt-6-luna`, `none` |
-| classifier | `gpt-5-mini`, `minimal` | `gpt-5-mini`, `minimal` | `gpt-6-luna`, `none` |
-| chat prompt | version 1 | version 2 before the closing offer | version 2 |
-| classification | 1.000 | 1.000 | 1.000 |
-| retrieval hit rate / recall / MRR | 1.000 / 0.958 / 0.931 | 1.000 / 0.985 / 0.963 | 1.000 / 0.985 / 0.974 |
-| faithfulness | 4.82 | 4.85 | **4.92** |
-| completeness | 4.19 | 4.08 | 4.17 |
-| style | 4.39 | 3.57 | **4.82** |
-| answers closing with an offer | 33 of 52 | 1 of 51 | 37 of 52 |
-| first word, median / p95 | **2.8s** / 6.3s | 3.3s / 5.1s | 4.0s / 5.0s |
-| whole answer, median / p95 | 3.6s / 7.1s | 4.0s / 5.9s | 4.6s / 6.0s |
-| cost per answer | $0.0019 | $0.0006 | **$0.0004** |
-| run cost, answers + judge | $0.12 + $0.51 | $0.04 + $0.52 | $0.03 + $0.51 |
+| | v2-baseline-sol | luna-v2 | luna-v3 | luna-mini |
+|---|---|---|---|---|
+| chat | `gpt-5-mini`, `minimal` | `gpt-6-luna`, `none` | `gpt-6-luna`, `none` | `gpt-6-luna`, `none` |
+| classifier | `gpt-5-mini`, `minimal` | `gpt-5-mini`, `minimal` | `gpt-6-luna`, `none` | `gpt-5-mini`, `minimal` |
+| chat prompt | version 1 | version 2 before the closing offer | version 2 | version 2 |
+| classification | 1.000 | 1.000 | 1.000 | 1.000 |
+| retrieval hit rate / recall / MRR | 1.000 / 0.958 / 0.931 | 1.000 / 0.985 / 0.963 | 1.000 / 0.985 / 0.974 | 1.000 / 0.984 / 0.963 |
+| faithfulness | 4.82 | 4.85 | 4.92 | **4.94** |
+| completeness | **4.19** | 4.08 | 4.17 | 4.13 |
+| style | 4.39 | 3.57 | 4.82 | **4.89** |
+| answers closing with an offer | 33 of 52 | 1 of 51 | 37 of 52 | 43 of 51 |
+| phrase match agrees with the judge | 0.981 | 0.941 | 0.962 | 0.941 |
+| first word, median / p95 | **2.8s** / 6.3s | 3.3s / 5.1s | 4.0s / 5.0s | 3.2s / 5.8s |
+| whole answer, median / p95 | 3.6s / 7.1s | 4.0s / 5.9s | 4.6s / 6.0s | 4.0s / 6.6s |
+| cost per answer | $0.0019 | $0.0006 | **$0.0004** | $0.0006 |
+| run cost, answers + judge | $0.12 + $0.51 | $0.04 + $0.52 | $0.03 + $0.51 | $0.04 + $0.50 |
 
 - **luna-v2's style fell to 3.57 for one reason.** The judge names the missing offer of more
   detail in 35 of the 40 answers it scored 3. Eleven answers were also a single sentence. The
@@ -943,9 +953,9 @@ in Mihail's voice, so Luna needs version 2 as much as `gpt-5-mini` did.
 - **One answer is clearly worse.** Asked "Where did Mihail do his PhD?", Luna said the
   knowledge base "doesn't mention a PhD" and that it has no information on where he "may have
   completed one" (completeness 2). `gpt-5-mini` said he does not have one. One case, and in
-  both Luna runs: luna-v2 scored 3 on it.
+  every Luna run: luna-v2 and luna-mini scored 3 on it.
 - **One required phrase is missing, as formatting.** `assistant-models` wrote "**GPT-5 mini**"
-  where the case requires "gpt-5-mini", in both Luna runs. The judge gave the answer 5 on
+  where the case requires "gpt-5-mini", in every Luna run. The judge gave the answer 5 on
   everything.
 - **Luna writes Markdown**: bold in 8 of luna-v3's answers and links as `[text](address)`. The
   site's chat renders both.
@@ -961,17 +971,82 @@ luna-v2's first word and luna-v3's. Luna would save $0.00017 a message.
 **Decided:** `gpt-6-luna` at `none` writes the answers, with chat prompt version 2; `gpt-5-mini`
 at `minimal` routes; `gpt-6.1-sol` judges. Those are the code's defaults since this change.
 
-**Not measured:** no single run has exactly that pairing with the final prompt. luna-v3 has the
-final prompt and Luna classifying; luna-v2 has `gpt-5-mini` classifying and the prompt before
-the closing offer. The two runs routed 61 of the 62 cases alike. `who-are-you` went to small
-talk in luna-v2 and to the knowledge base in luna-v3, both of which the case accepts, and it is
-why luna-v2 has 51 knowledge-base answers and luna-v3 52. So the scores to expect are about
-luna-v3's and the first word about luna-v2's 3.3s. A run of the pairing itself, about $0.55,
-would be the baseline to measure the next change against.
+**luna-mini is the baseline** the next change is measured against. Neither run before it had
+exactly the pairing decided: luna-v3 had Luna classifying, and luna-v2 the prompt before the
+closing offer. Against `v2-baseline-sol`, which is `gpt-5-mini` under prompt version 1:
 
-Both Luna runs record the chat prompt as `rag_agent@2`, and they are two texts: the closing
-offer was added between them, while version 2 was still uncommitted, and the number was not
-raised. The "chat prompt" row above is what tells them apart; the recorded version does not.
+- **Faithfulness and style are higher**, 4.94 from 4.82 and 4.89 from 4.39. Fifteen cases are
+  better and eight worse. No answer has a bullet list, and 43 of 51 close with an offer. The
+  eight that do not are the three fallback sentences, two pointers to a contact address, and
+  `assistant-privacy`, `assistant-models` and `are-you-mihail`.
+- **Completeness is a little lower**, 4.13 from 4.19. Six answers lost two points. In five the
+  judge names a fact of the reference left out: `job-title` gives the title and the employer
+  and not the role before it, `team-leadership` the team of fifteen and not the two engineers
+  promoted, and `threadline-moderation`, `postgres-projects` and `followup-and-python`
+  likewise. This judge counts every fact a reference has. The sixth is `phd-false-premise`,
+  above: it stops short of saying he does not have a PhD.
+- **The first word comes about half a second later** at the median, 3.2s from 2.8s, and half
+  a second sooner at the 95th percentile. Against luna-v3 it is 0.7s sooner at the median,
+  which is what keeping the classifier on `gpt-5-mini` was for; the three scores are within
+  0.07 of luna-v3's.
+- **An answer costs a third of what it did**, $0.0006 from $0.0019.
+- `who-are-you` went to small talk, as it did in luna-v2 and as the case accepts. It went to
+  the knowledge base in luna-v3, which is why that run has 52 knowledge-base answers and the
+  other two Luna runs 51.
+
+**The fallback match missed declines, and was widened.** `fallback_used` is a pattern match
+on the reply (`postprocess.is_fallback`). The live chat records it with every answer for the
+analytics, and sends a reply it matches without its sources. It matched the sentence the
+prompt prescribes and nothing else. It disagreed
+with the judge on three of luna-mini's 51 knowledge-base answers, as it did in luna-v2, and on
+two in luna-v3, against one of 52 for `gpt-5-mini`. Every one is a decline it did not see. In
+luna-mini two are the salary and hourly-rate answers, which say the figure is not in the
+knowledge base and give a contact address. The third is the prescribed sentence with its
+subject filled in: "I don't have Mihail's age or date of birth in my knowledge base, but you
+can find more details on mihaylov.io or contact Mihail directly."
+
+Counted over every knowledge-base answer a judge has read, in both datasets and from both
+models, it was not Luna's doing alone. The stored runs hold 359 such answers, each counted
+once: the two re-grades hold `v2-baseline`'s answers a second time and are left out. 43 of the
+359 are declines, and the prompt's wording found 24. `gpt-5-mini` had reworded 9 of its 28 and
+`gpt-6-luna` 8 of its 15. The match now takes two more forms:
+- the prescribed sentence with its subject filled in, "I don't have (something) in my
+  knowledge base", which both models write;
+- the same thing turned round, "(something) isn't listed in the available information", which
+  only Luna wrote, four times.
+
+With them it finds 41 of the 43. The two it leaves are refusals to speak as Mihail, which the
+first judge read as declining and which are not about the knowledge base.
+
+It also flags 3 of the other 316, all `gpt-5-mini`'s. Two are answers to `projects-page-link`
+that open "I don't have that specific projects-page URL in my knowledge base, but" and go on
+to give the demo and the repository. The third is `effort-minimal`'s answer to
+`phd-false-premise`, which says it has no information that he has a PhD and then lists his
+degrees. They are kept on purpose. `fallback_used` is there to list the questions the knowledge
+base could not answer, and each of them is one; and no pattern separates them from a plain
+decline, whose own sentence has a "but" in the same place. **It has a cost a visitor sees:** a
+reply the match says yes to goes out with no "Sources:" line, so those three lose theirs. A
+unit test pins that, so that it stays a decision.
+
+What the pattern does not catch:
+- a missing thing written as a list with commas. The two halves have to be in one clause, so
+  that "I don't have a favourite, but everything in my knowledge base..." is not a decline;
+- "isn't listed in the knowledge base". The turned-round form is kept to "the available
+  information" and "the information I have", because "the knowledge base" is the phrase Rachel
+  uses when asked how she works ("if a detail isn't in the knowledge base, it says so");
+- any paraphrase it has not been given.
+
+Nothing was run again for this, and no prompt changed: the figures are the old and the new
+match applied to the stored answers. The "phrase match agrees" row above is what each run
+recorded when it ran, with the old match; the new one agrees with the judge on all 51 of
+luna-mini's. Production's rows from before the release that carries the change keep what the
+old match recorded. They can be worked out again from the stored answers while those are kept,
+which is 90 days.
+
+luna-v2 records the chat prompt as `rag_agent@2`, as luna-v3 and luna-mini do, and its text was
+different: the closing offer was added after it, while version 2 was still uncommitted, and the
+number was not raised. The "chat prompt" row above is what tells it apart; the recorded version
+does not.
 
 **More for golden_v3**, since the model changing makes two cases describe the past:
 - `assistant-models` requires "gpt-5-mini", which is what the knowledge base article says
@@ -980,10 +1055,11 @@ raised. The "chat prompt" row above is what tells them apart; the recorded versi
   model written as a name.
 - `assistant-quality`'s reference gives `gpt-5` as the judge and the 15.6s to 3.9s result,
   which is the article's account of the first runs.
-- `projects-page-link` scores 2 for faithfulness under rubric 2 in all three runs, including
+- `projects-page-link` scores 2 for faithfulness under rubric 2 in all four runs, including
   luna-v3's answer, which says what the reference says: Threadline is in the projects section,
   with the section's link. The judge reads "in the projects section" as a claim about the site
   that no passage makes. Either the knowledge base says where a project is shown or the
   reference stops saying it; as it stands the case cannot be passed.
 
-Total spend on 2026-10-10, across the prompt, the judge and the model: about $2.40.
+Total spend on 2026-10-10, across the prompt, the judge and the model: about $2.95, the
+baseline run's $0.54 included.

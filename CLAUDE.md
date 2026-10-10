@@ -214,9 +214,13 @@ migrations/      datasets/      tests/unit  tests/integration      docker/
   `gpt-5-mini`, and those are the code's defaults. The classifier counts as much as the chat:
   every message waits for it first, which is why it stayed on `gpt-5-mini` (about 0.8s a call)
   when the answers moved to `gpt-6-luna` (about 1.4s for the same call).
-- **Analytics signals are recorded at answer time and cannot be backfilled:** `top_score`
-  (best cosine similarity), `fallback_used` (the "I do not have that information" answer) and
-  `classification` go on every `chat_messages` row. Build these in with the API, not later.
+- **Analytics signals are recorded at answer time:** `top_score` (best cosine similarity),
+  `fallback_used` (the "I do not have that information" answer, in the prompt's words or a
+  rewording `postprocess.is_fallback` has been given) and `classification` go on every
+  `chat_messages` row. The first and the last cannot be backfilled; `fallback_used` can be
+  worked out again only while the answer's text is kept. Build these in with the API, not
+  later. A reply marked as a fallback is also sent without its sources, which is the one
+  place a visitor sees the signal.
 - **The feedback loop has a point:** low-score and fallback questions cluster into
   `content_gaps` rows, which become knowledge base articles, and the original question becomes
   an eval case via `analytics promote-case`. Failures turn into permanent regression tests.
@@ -284,10 +288,9 @@ uv run python -m portfolio_ai.api                     # the API as production ru
 uv run python -m portfolio_ai.analytics purge --dry-run   # retention sweep, counting only
 
 uv run python -m portfolio_ai.evals check datasets/golden_v2.yaml     # no DB, no network
-uv run python -m portfolio_ai.evals run --label luna-mini --dry-run    # the plan; spends nothing
-uv run python -m portfolio_ai.evals run --label luna-mini              # the settings in use
-uv run python -m portfolio_ai.evals run --label top-k-8 --top-k 8      # one setting changed from it
-uv run python -m portfolio_ai.evals show top-k-8 --failures
+uv run python -m portfolio_ai.evals run --label top-k-8 --top-k 8 --dry-run   # the plan; spends nothing
+uv run python -m portfolio_ai.evals run --label top-k-8 --top-k 8             # one setting changed
+uv run python -m portfolio_ai.evals show luna-mini --failures                 # the baseline
 uv run python -m portfolio_ai.evals compare luna-mini top-k-8
 uv run python -m portfolio_ai.evals rejudge luna-mini --label luna-mini-regraded --dry-run   # a new judge
 
@@ -404,17 +407,17 @@ ARCHITECTURE.md §13).
 
   golden_v2 (62 cases, from the articles after the cutover) is the current dataset and is frozen
   too. `v2-baseline` is `gpt-5-mini` at production's settings of 2026-10-09, and
-  `v2-baseline-sol` is the same answers graded by the current judge, which is what a new run is
-  compared with.
+  `v2-baseline-sol` is the same answers graded by the current judge.
 
   2026-10-10 changed three things, each measured (docs/EVALS.md): the chat prompt went to
   version 2, the judge to `gpt-6.1-sol` with rubric version 2, and the answers to `gpt-6-luna`.
-  `luna-v3` is the run of the new chat: every route right, and faithfulness 4.92, completeness
-  4.17 and style 4.82 against the baseline's 4.82 / 4.19 / 4.39, at a fifth of the cost per
-  answer. It had `gpt-6-luna` routing as well. The settings adopted route with `gpt-5-mini`,
-  which costs about a third of the baseline per answer and has no run of its own yet: a
-  comparison of one setting needs that run first (`luna-mini` in the commands above).
-  **None of it is deployed.** Production still runs `gpt-5-mini` with chat prompt version 1.
+  **`luna-mini` is the run of the settings adopted, and the baseline a new run is compared
+  with**: `gpt-6-luna` answering, `gpt-5-mini` routing, the final prompt. Every route right, and
+  faithfulness 4.94, completeness 4.13 and style 4.89 against `v2-baseline-sol`'s 4.82 / 4.19 /
+  4.39, at a third of the cost per answer and with the median first word at 3.2s against 2.8s.
+  `luna-v3`, the run the decision was made on, had `gpt-6-luna` routing as well and is not that
+  baseline. **None of it is deployed.** Production still runs `gpt-5-mini` with chat prompt
+  version 1.
   Deploying it means changing the server's `.env` first, and changing it back before any
   rollback of the image (docs/DEPLOYMENT.md §9), and the knowledge base article that names
   the model along with it.
@@ -431,8 +434,6 @@ ARCHITECTURE.md §13).
 
 After the week of watching, analytics reporting (7). Still open from the evals:
 - "tell me everything" runs long on every model and wording tried;
-- no run has exactly the adopted pairing (`gpt-6-luna` answering, `gpt-5-mini` routing, the
-  final prompt). That run, about $0.55, is the baseline the next change is measured against;
 - golden_v3, whose list is in docs/EVALS.md.
 
 Analytics reporting is last on purpose — it needs real traffic to be worth writing. The

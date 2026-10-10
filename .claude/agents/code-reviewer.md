@@ -228,6 +228,15 @@ Look for these first; each one has cost real time here.
   drops. Compare what was read with what was written.
 - A check made by `prepare` and again per case is two checks: a refusal that can only happen
   after the run is created uses the label and leaves a failed run behind a dry run that passed.
+- A boolean has every reader it has: `fallback_used` is the analytics signal and also what
+  takes the sources off a reply. Grep each reader before widening what sets it.
+- A re-grade holds another run's answers. Counting "answers" across runs counts those twice:
+  count each once, or say "readings".
+- Folding white space removes the line breaks a "not across sentences" character class leans
+  on, and a full stop inside a word (Node.js) is not the end of a sentence.
+- A limit tested from one side is not pinned. Test the value at the limit and the one past it.
+- A claim about how often ("more often than not", "both models") is a count. Make the count
+  before writing the sentence.
 
 When a finding is a new kind of mistake, suggest a one-line entry for this list.
 

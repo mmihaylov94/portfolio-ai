@@ -154,6 +154,26 @@ it, the route, each search, the chunk ids, the best score, whether the reply was
 that information" fallback, up to three citations, the usage of every call, and the timings — and
 yields `Done(result)`.
 
+**The fallback is recognised by pattern** (`postprocess.is_fallback`), because the models do not
+always copy the prompt's sentence: in the stored eval runs `gpt-5-mini` reworded 9 of its 28
+declines and `gpt-6-luna` 8 of its 15. Three forms count:
+- the prompt's own two wordings;
+- its sentence with the subject filled in ("I don't have Mihail's age in my knowledge base"),
+  where the two halves have to be in one clause;
+- the same thing turned round ("his hourly rate isn't listed in the available information").
+  This form does not take "the knowledge base". That is the phrase Rachel uses when asked how
+  she works ("if a detail isn't in the knowledge base, it says so"), which describes a decline
+  and is not one.
+
+The prompt's wording alone found 24 of the 43 declines in those runs, and the three forms find
+41 (docs/EVALS.md, "gpt-6-luna").
+
+Two things read the result. It is stored as `fallback_used`, for the analytics. And a reply it
+matches is sent with no citations, because sources under "I don't have that information" read as
+a contradiction. A reply that says it and then gives something else counts too, on purpose: it
+is a question the knowledge base could not answer. It loses its sources as well, which is the
+one part of this a visitor sees, and a unit test pins it.
+
 **Storage.** `chat()` catches that `Done`, writes the question and the answer as two rows in one
 transaction (`db.chat.insert_turn`), and yields a copy of the `Done` whose result carries the new
 row's `message_id`, which is what the browser will need to attach a thumbs-up to the answer.
@@ -293,7 +313,7 @@ analytics in step 7, which can only use what was recorded when the answer was gi
 | `classification` | both | the route |
 | `reply_to_id` | answer | the question's row, so feedback on an answer can find what was asked |
 | `top_score` | answer | the best similarity of any search; empty if nothing was searched |
-| `fallback_used` | answer | whether the reply was "I don't have that information" |
+| `fallback_used` | answer | whether the reply said the knowledge base does not have what was asked |
 | `retrieved_chunk_ids` | answer | every chunk shown to the model |
 | `tool_calls` | answer | each search: query, hits, best score, duration |
 | `model` | answer | the model that wrote the answer, as the API names it (`gpt-5-mini-2025-08-07`) |

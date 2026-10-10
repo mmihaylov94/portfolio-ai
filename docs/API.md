@@ -200,6 +200,10 @@ records where it started.
 }
 ```
 
+`citations` is an empty list when nothing was searched, and when the reply says the knowledge base
+does not have what was asked: sources under "I don't have that information" read as a
+contradiction.
+
 Cost is deliberately absent; what an answer costs is not the visitor's business. When the daily
 spending limit has been reached, the reply is the fixed text from `prompts/daily_limit_reply.md` and
 `message_id`, `classification` and `usage` are `null`. Nothing was stored, so there is nothing to

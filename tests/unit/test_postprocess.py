@@ -389,16 +389,138 @@ def test_the_prompts_own_fallback_sentence_is_recognised() -> None:
     assert is_fallback(match.group(1))
 
 
-def test_a_straight_apostrophe_version_is_recognised() -> None:
-    assert is_fallback("I don't have that information in my knowledge base.")
-
-
-def test_the_not_enough_information_wording_is_recognised() -> None:
+def test_the_prompts_two_wordings_are_recognised_on_their_own() -> None:
+    """With nothing about the knowledge base after them, which the second form would
+    catch: this is the first form alone, in each spelling of the negation."""
+    assert is_fallback("I don't have that information.")
+    assert is_fallback("I do not have that information.")
+    assert is_fallback("I don't have enough information to answer that.")
     assert is_fallback("I do not have enough information to answer that.")
 
 
 def test_an_ordinary_answer_is_not_a_fallback() -> None:
     assert not is_fallback("Yes, Laravel is the PHP framework Mihail uses most.")
+
+
+@pytest.mark.parametrize(
+    "reply",
+    [
+        # gpt-5-mini: rule 2's sentence with its subject filled in.
+        "I don't have Mihail's salary expectations in the knowledge base.",
+        "I don't have any hourly-rate information in my knowledge base.",
+        "I don't have Mihail's salary expectations in the indexed content.",
+        # gpt-6-luna: the same, and the sentence turned round.
+        "I don't have Mihail's age or date of birth in my knowledge base, but you can find "
+        "more details on mihaylov.io or contact Mihail directly.",
+        "I don't have Mihail's date of birth in my knowledge base, so I can't determine his age.",
+        "Mihail's hourly freelance rate isn't listed in the available information.",
+        "Mihail's salary expectations aren't specified in the information I have.",
+    ],
+)
+def test_a_reworded_decline_a_model_wrote_is_recognised(reply: str) -> None:
+    """Each is the opening sentence of an answer in a stored eval run, with its
+    apostrophes straightened. The prompt's own wording found 24 of the 43 declines in
+    those runs; with the two rewordings, 41."""
+    assert is_fallback(reply)
+
+
+@pytest.mark.parametrize(
+    "reply",
+    [
+        "I do not have Mihail's salary expectations in my knowledge base.",
+        "I don't have that in the available information.",
+        "His notice period is not mentioned in the available information.",
+        "His rates are not included in the information I have.",
+        "A figure isn't provided in the available information.",
+        "His age isn't stated in the information I have.",
+    ],
+)
+def test_a_seen_rewording_with_one_word_changed_is_recognised(reply: str) -> None:
+    """No model has written these yet. They are the seen forms with a neighbouring
+    word: the negation written out, another phrase for where she looked, another
+    participle. One case for each word the pattern lists, so none is there untested."""
+    assert is_fallback(reply)
+
+
+def test_curly_apostrophes_odd_spaces_and_bold_do_not_hide_a_decline() -> None:
+    """Every apostrophe in the stored answers is U+2019, and gpt-6-luna writes bold.
+    A line break or a non-breaking space between two words has not been seen in a
+    decline; allowing them costs nothing. \\N{...} names a character by its Unicode
+    name, which keeps an invisible one visible in the source."""
+    curly = (
+        "I don\N{RIGHT SINGLE QUOTATION MARK}t have Mihail\N{RIGHT SINGLE QUOTATION MARK}s "
+        "age in my knowledge base."
+    )
+
+    assert is_fallback(curly)
+    assert is_fallback("I don't have Mihail's age in my\nknowledge\N{NO-BREAK SPACE}base.")
+    assert is_fallback("I don't\nhave that information.")
+    assert is_fallback("I don't have **Mihail's age** in my **knowledge base**.")
+
+
+def test_the_missing_thing_can_be_a_hundred_characters_and_no_more() -> None:
+    def reply(gap: int) -> str:
+        # The gap is what lies between "have" and "in": a space, the filler, a space.
+        return f"I don't have {'x' * (gap - 2)} in my knowledge base."
+
+    assert is_fallback(reply(100))
+    assert not is_fallback(reply(101))
+
+
+@pytest.mark.parametrize("mark", [".", "?", "!", ",", ";", ":"])
+def test_the_two_halves_have_to_be_in_one_clause(mark: str) -> None:
+    reply = f"I don't have a favourite{mark} everything in my knowledge base is about his work."
+
+    assert not is_fallback(reply)
+
+
+def test_a_full_stop_inside_a_word_does_not_end_the_clause() -> None:
+    assert is_fallback("I don't have Mihail's day rate for Node.js work in my knowledge base.")
+    assert is_fallback("I don't have a mihaylov.io page for that in my knowledge base.")
+
+
+@pytest.mark.parametrize(
+    "reply",
+    [
+        # Asked how she works, Rachel describes declining. That is not a decline. The
+        # first two are sentences the models wrote.
+        "If the information isn't in the knowledge base, the assistant should say so rather "
+        "than guess.",
+        "It is designed to say when the knowledge base doesn't have an answer rather than guess.",
+        # The same with a participle in it, which is why the turned-round form does not
+        # take "the knowledge base"...
+        "If a detail isn't listed in the knowledge base, it is instructed not to guess.",
+        # ...and so a decline worded this way is missed, knowingly.
+        "Mihail's hourly rate isn't listed in the knowledge base.",
+        # Somebody else's lack is not hers.
+        "Teams that adopt it don't have every workflow documented in the knowledge base.",
+        # The turned-round form's shape with a word that is not one of its participles.
+        "Laravel is not alone in the available information: Vue and Nuxt are there as well.",
+        # A refusal to speak as Mihail is not about the knowledge base.
+        "I can't pretend to be Mihail or speak as him in the first person.",
+        # A correction of a false premise, and an answer.
+        "The available information lists his MSc and BEng, but doesn't mention a PhD. I don't "
+        "have information that he completed one.",
+        # "I don't have" and "in the knowledge base" in one sentence and two clauses. A
+        # model wrote this one too.
+        "I don't have the ability to dump \"absolutely everything\" in one go, but here's a "
+        "concise overview of what I have in the knowledge base about Mihail.",
+    ],
+)
+def test_talk_of_the_knowledge_base_that_is_not_a_decline_is_left_alone(reply: str) -> None:
+    assert not is_fallback(reply)
+
+
+def test_a_decline_that_goes_on_to_offer_something_else_still_counts() -> None:
+    """On purpose. `fallback_used` lists the questions the knowledge base could not
+    answer, and this is one, whatever follows the "but". No pattern tells it from a
+    plain decline either: the prompt's own sentence has a "but" in the same place.
+    The agent's tests pin what a visitor sees of it: the reply goes out without its
+    sources."""
+    assert is_fallback(
+        "I don't have that specific projects-page URL in my knowledge base, but the live "
+        "demo is at https://mihaylov.io/#projects."
+    )
 
 
 # --- listing links, for the evals -----------------------------------------------

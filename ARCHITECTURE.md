@@ -305,7 +305,8 @@ Existing `@n8n/chat` conversations are **not** migrated — a clean break was ac
 
 The three extra columns exist purely for §10: `top_score` is the best cosine similarity from
 retrieval (the content-gap signal), `fallback_used` flags the "I do not have that information"
-answer, and `classification` lets us spot mis-routed questions.
+answer, in the prompt's wording or the model's own, and `classification` lets us spot mis-routed
+questions.
 
 ### Feedback (new — deliverable 4)
 
@@ -810,7 +811,8 @@ to the model reduced to their documents in first-seen order. It reports:
 - the fallback expected against the one given
 
 The judge's `declined` is compared with the `fallback_used` phrase match, which measures how
-often the stored analytics signal is wrong.
+often the stored analytics signal differs from the judge's reading: a decline the match missed,
+or a reply that declines and then offers something else, which the match counts on purpose.
 
 **Operational:** p50/p95 whole-answer and first-word time, tokens (reasoning tokens apart: they
 are what a lower effort saves), and cost per answer, with the judge's cost kept apart.
@@ -818,10 +820,9 @@ are what a lower effort saves), and cost per answer, with the judge's cost kept 
 ### Usage
 
 ```bash
-uv run python -m portfolio_ai.evals run --label luna-mini --dry-run   # the plan; spends nothing
-uv run python -m portfolio_ai.evals run --label luna-mini             # the settings in use
-uv run python -m portfolio_ai.evals run --label top-k-8 --top-k 8     # one setting changed from it
-uv run python -m portfolio_ai.evals compare luna-mini top-k-8   # totals, and every case that moved
+uv run python -m portfolio_ai.evals run --label top-k-8 --top-k 8 --dry-run   # the plan; spends nothing
+uv run python -m portfolio_ai.evals run --label top-k-8 --top-k 8             # one setting changed
+uv run python -m portfolio_ai.evals compare luna-mini top-k-8   # against the baseline, case by case
 uv run python -m portfolio_ai.evals rejudge luna-mini --label luna-mini-regraded   # after a new judge
 ```
 

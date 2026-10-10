@@ -459,7 +459,10 @@ async def respond(
         reply=answer,
         classification=classified.label,
         # No citations on an answer that says it has none: "I don't have that
-        # information" with three sources under it reads as a contradiction.
+        # information" with three sources under it reads as a contradiction. The
+        # match is on the answer's words, so a reply that says it and then goes on to
+        # give something else loses its sources as well: 3 such in the 359 answers
+        # the evals had stored when the match was widened (postprocess.is_fallback).
         citations=[] if fallback else _citations(turn.chunks),
         searches=turn.searches,
         retrieved_chunk_ids=[chunk.chunk_id for chunk in turn.chunks],

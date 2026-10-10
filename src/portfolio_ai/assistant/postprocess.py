@@ -79,14 +79,38 @@ HOME_PAGE = "https://mihaylov.io/"
 _SITE_HOSTS = frozenset({"mihaylov.io", "www.mihaylov.io"})
 
 # The fallback wording rag_agent.md dictates -- rule 2's sentence, and rule 7's
-# "do not have enough information" -- in the forms the model produces them.
-# Lower-case with straight apostrophes; see is_fallback. A unit test checks the
-# prompt's own sentence still matches, so the two cannot drift apart unnoticed.
-_FALLBACK_PHRASES = (
-    "don't have that information",
-    "do not have that information",
-    "don't have enough information",
-    "do not have enough information",
+# "do not have enough information" -- and the two ways the models reword it. Matched
+# against lower-case text with straight apostrophes and single spaces; see
+# is_fallback. A unit test checks the prompt's own sentence still matches, so the two
+# cannot drift apart unnoticed.
+#
+# re.VERBOSE is what lets a pattern be laid out and commented like this: white space
+# and "#" comments inside it are ignored. The price is that a space that has to be
+# matched is written "\ ", and one left bare silently matches nothing.
+_FALLBACK = re.compile(
+    r"""
+    # The prompt's own two wordings, word for word.
+    (?:don't|do\ not)\ have\ (?:that|enough)\ information
+
+    # Rule 2's sentence with its subject filled in: "I don't have Mihail's age in my
+    # knowledge base". Between "have" and "in" is whatever she does not have: at most
+    # 100 characters, and none that ends a clause, so "I don't have a favourite, but
+    # everything in my knowledge base..." is not one. A line break does not end one:
+    # white space has been folded by the time this runs. Nor does a full stop inside
+    # a word, as in "Node.js": (?=\w) looks at the next character without taking it.
+    | \bi\ (?:don't|do\ not)\ have\b (?: [^.?!,;:] | \.(?=\w) ){0,100}?
+      \bin\ (?:my|the)\ (?:knowledge\ base|indexed\ content|available\ information)
+
+    # Turned round, the missing thing as the subject: "His hourly rate isn't listed in
+    # the available information". Kept to the two phrases it has been seen with, and
+    # not "the knowledge base": that is the phrase Rachel uses when asked how she
+    # works ("if a detail isn't in the knowledge base, it says so"), and a sentence
+    # of that kind with "listed" in it would describe a decline without being one.
+    | (?:isn't|is\ not|aren't|are\ not)
+      \ (?:listed|specified|mentioned|included|provided|stated)
+      \ in\ the\ (?:available\ information|information\ i\ have)
+    """,
+    re.VERBOSE,
 )
 
 
@@ -341,15 +365,39 @@ class LinkFilter:
 
 
 def is_fallback(reply: str) -> bool:
-    """Whether ``reply`` is the "I don't have that information" answer.
+    """Whether ``reply`` says the knowledge base does not hold what was asked.
 
-    A phrase match, and knowingly a heuristic: it recognises the wording the prompt
-    tells the model to use, and a model that paraphrases it will be missed. Curly
-    apostrophes (U+2019) are straightened first -- the prompt itself spells "don't"
-    with one, and the model copies whichever it saw. The evals measure how often
-    this is wrong.
+    A pattern match, and knowingly a heuristic. It recognises the wording the prompt
+    tells the model to use, the two rewordings the models have been seen to make of
+    it, and those rewordings with a neighbouring word ("do not" for "don't",
+    "mentioned" for "listed"). A new paraphrase will be missed. Curly apostrophes
+    (U+2019) are straightened first -- the prompt itself spells "don't" with one, and
+    the model copies whichever it saw.
+
+    The evals measure how often this is wrong, against the judge's reading of each
+    answer. The runs stored by 2026-10-10 hold 359 judged knowledge-base answers, 43
+    of them declines. The prompt's wording alone found 24: gpt-5-mini had reworded 9
+    of its 28 and gpt-6-luna 8 of its 15, mostly by putting the subject into the
+    sentence ("I don't have Mihail's salary expectations in my knowledge base"). With
+    the rewordings it finds 41. The two it leaves are refusals to speak as Mihail,
+    which are not about the knowledge base.
+
+    It also says yes to 3 of the other 316: replies that say the same words and then
+    go on to give something else ("I don't have that specific URL in my knowledge
+    base, but the live demo is at..."). No pattern tells those from a decline, and
+    they are kept on purpose. ``fallback_used`` exists to list the questions the
+    knowledge base could not answer, and each of them is one.
+
+    Two things read the answer, and a visitor sees the second: it is stored as
+    ``fallback_used``, and a reply it says yes to is sent without its sources
+    (``agent.respond``). So a reply of that last kind loses its sources too.
     """
     # Written as an escape rather than the character itself, which is
     # indistinguishable from a straight apostrophe in most editors.
     normalised = reply.lower().replace("\u2019", "'")
-    return any(phrase in normalised for phrase in _FALLBACK_PHRASES)
+    # Markdown's emphasis marks go too: gpt-6-luna writes bold, and "in my **knowledge
+    # base**" is the same decline. Then str.split() with no argument splits on every
+    # kind of white space, a line break or a non-breaking space included, so one plain
+    # space in the pattern covers them all.
+    plain = " ".join(normalised.replace("*", "").split())
+    return _FALLBACK.search(plain) is not None
