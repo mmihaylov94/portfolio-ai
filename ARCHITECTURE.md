@@ -7,9 +7,11 @@ analytics/feedback loop.
 **Status:** build steps 1-5 done (foundations, ingestion, assistant core, API, evals). Step 6: the
 cutover happened on 2026-10-09, and the site's chat runs on this service. golden_v2 and its
 baseline followed the same day. On 2026-10-10 the chat prompt, the eval judge and the model that
-writes the answers changed, each measured and none deployed yet (docs/EVALS.md). n8n's workflows
-are retired after a week of watching; then step 7.
-**Last updated:** 2026-10-10
+writes the answers changed, each measured (docs/EVALS.md), and the model change was deployed.
+On 2026-10-13 the knowledge base stopped naming its models and golden_v3 replaced golden_v2, so
+that a change of model needs no new dataset; its baseline is still to run. n8n's workflows are
+retired after a week of watching; then step 7.
+**Last updated:** 2026-10-13
 
 ---
 
@@ -465,7 +467,8 @@ ai_assistant/
 │       └── cli.py                # python -m portfolio_ai.evals: check | run | list | show | compare
 ├── datasets/
 │   ├── golden_v1.yaml            # the first eval cases: frozen, kept for the runs made of it
-│   └── golden_v2.yaml            # the current ones, and the default of `evals run`
+│   ├── golden_v2.yaml            # after the cutover: frozen too; it named the answer model
+│   └── golden_v3.yaml            # the current ones, and the default of `evals run`
 └── tests/
     ├── unit/
     └── integration/              # real Postgres, throwaway schema
@@ -532,6 +535,8 @@ automates, and keeping one curated source is what makes it work.
 `chunk_document` against local files — no database, no network, no configuration. The portfolio
 repository calls it from the published image on every commit touching `knowledgebase/**`, so a
 malformed article fails in review rather than silently dropping out of the index days later.
+It also warns when an article names a model: the eval cases are written from the articles, and
+neither may pin what the evals compare (§9).
 
 Keeping the rules in one place is the point: a separate checker in the other repository would
 drift, and one that is more lenient than the real parser gives false confidence. Conventions the
@@ -759,9 +764,16 @@ and what does it cost?
 
 ### Dataset
 
-`datasets/golden_v2.yaml`, version controlled: 62 cases written from the eleven articles as they
-read after the cutover. golden_v1, the 54 cases it grew from, is frozen beside it, and
-docs/EVALS.md lists what changed between them.
+`datasets/golden_v3.yaml`, version controlled: 62 cases written from the eleven articles as they
+read on 2026-10-13. golden_v1 (54 cases, before the cutover) and golden_v2 (62, after it) are
+frozen beside it, and docs/EVALS.md lists what changed from each to the next.
+
+**A case does not pin what the evals exist to change**, and the knowledge base does not state
+it: a model, a reasoning-effort setting, the judge, the dataset's size. golden_v2 required an
+answer to name the model that wrote it, because an article named it, so the first change of
+model made the article false and would have made the case false: comparing two models cost a
+dataset version and a baseline. golden_v3 names none, and a unit test and the article checker
+keep it so.
 - 39 answerable questions, including multi-document ones and three false premises, each with
   `expected_doc_ids` (every article with a section that answers it) and a `reference_answer`
 - 5 questions the knowledge base cannot answer, where the right answer is the fallback
@@ -820,10 +832,11 @@ are what a lower effort saves), and cost per answer, with the judge's cost kept 
 ### Usage
 
 ```bash
-uv run python -m portfolio_ai.evals run --label top-k-8 --top-k 8 --dry-run   # the plan; spends nothing
-uv run python -m portfolio_ai.evals run --label top-k-8 --top-k 8             # one setting changed
-uv run python -m portfolio_ai.evals compare luna-mini top-k-8   # against the baseline, case by case
-uv run python -m portfolio_ai.evals rejudge luna-mini --label luna-mini-regraded   # after a new judge
+uv run python -m portfolio_ai.evals run --label v3-baseline --dry-run   # the plan; spends nothing
+uv run python -m portfolio_ai.evals run --label v3-baseline             # the settings in use, once
+uv run python -m portfolio_ai.evals run --label mini-answers --chat-model gpt-5-mini --chat-effort minimal
+uv run python -m portfolio_ai.evals compare v3-baseline mini-answers    # a change of model, case by case
+uv run python -m portfolio_ai.evals rejudge v3-baseline --label v3-baseline-regraded   # after a new judge
 ```
 
 Every run stores its full config (models, efforts, `top_k`, search rounds, every prompt version,
@@ -1206,6 +1219,7 @@ Non-negotiable from the first commit, because git history is published too:
 | Retention purge | Built with the API (step 4), before any visitor data exists | §10 |
 | Eval parity | By construction: the new assistant at n8n's settings is the baseline; the live n8n bot is not scored | §9 |
 | Eval datasets | Frozen by content hash once a run of them completes (a failed run doesn't count); changes go into a new version | §9 |
+| What a case and an article may name | Not a model, a reasoning-effort setting, the judge or the dataset's size: the evals exist to change those. golden_v2 pinned the answer model and needed a successor at the first change of model; golden_v3 (2026-10-13) names none | §9 |
 | Where evals run | Locally, against the development database; refused in production | §9 |
 | Eval retrieval score | Documents, not chunks, in first-seen order; any expected document is a hit | §9 |
 | Eval judge | `gpt-6.1-sol` with rubric version 2 since 2026-10-10 (`gpt-5` before), pinned apart from the chat model; a change of judge re-grades the stored baseline | §9 |

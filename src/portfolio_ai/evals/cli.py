@@ -2,8 +2,8 @@
 
 ::
 
-    check datasets/golden_v2.yaml           validate a dataset file; no database, no network
-    run --dataset golden_v2 --label baseline [--dry-run] [knobs]
+    check datasets/golden_v3.yaml           validate a dataset file; no database, no network
+    run --dataset golden_v3 --label baseline [--dry-run] [knobs]
     rejudge baseline --label baseline-2     a stored run's answers, graded by the judge again
     list                                    every run so far
     show baseline [--failures]              one run, case by case
@@ -13,10 +13,12 @@ Local only. A run spends money and writes to the eval tables, and none of that
 belongs in production: the evals measure the code and the knowledge base, which are
 the same on the development machine, against the development database.
 
-Run it from the repository root, which is where ``--dataset golden_v2`` finds
-``datasets/golden_v2.yaml``. That is the default: the newest dataset, written from
-the knowledge base as it reads now. golden_v1 describes the knowledge base before
-the cutover from n8n, and is kept for the runs already made of it.
+Run it from the repository root, which is where ``--dataset golden_v3`` finds
+``datasets/golden_v3.yaml``. That is the default: the newest dataset, written from
+the knowledge base as it reads now, and the first that names no model, so that a
+change of model needs no new one. golden_v1 describes the knowledge base before the
+cutover from n8n and golden_v2 the one that named its models; both are kept for the
+runs already made of them.
 """
 
 import asyncio
@@ -195,7 +197,7 @@ def run(  # ruff: ignore[too-many-arguments] -- one per knob, and every one is n
     label: Annotated[str, typer.Option("--label", help="A name for this run, unique.")],
     dataset: Annotated[
         str, typer.Option("--dataset", help="A name in datasets/, or a path.")
-    ] = "golden_v2",
+    ] = "golden_v3",
     chat_model: Annotated[str | None, typer.Option(help="Default: CHAT_MODEL.")] = None,
     classifier_model: Annotated[str | None, typer.Option(help="Default: CLASSIFIER_MODEL.")] = None,
     chat_effort: Annotated[

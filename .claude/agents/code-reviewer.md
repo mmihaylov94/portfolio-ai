@@ -237,6 +237,11 @@ Look for these first; each one has cost real time here.
 - A limit tested from one side is not pinned. Test the value at the limit and the one past it.
 - A claim about how often ("more often than not", "both models") is a count. Make the count
   before writing the sentence.
+- An article or an eval case that names the model pins the evals to it. The first change of
+  model makes the article false, and correcting the article makes the case false. Neither
+  names a model, a reasoning-effort setting, the judge or the dataset's size.
+- A field's definition in the docs and the rule applied in the data can part company. Read the
+  definition before changing how a field is filled, and change the two together.
 
 When a finding is a new kind of mistake, suggest a one-line entry for this list.
 

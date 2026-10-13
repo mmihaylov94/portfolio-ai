@@ -6,7 +6,7 @@ How the eval harness scores Rachel against a golden dataset, module by module:
 - how to read a comparison without being fooled by noise
 
 The code is in `src/portfolio_ai/evals/`, the SQL in `db/evals.py`, and the cases in
-`datasets/`, where `golden_v2.yaml` is the current dataset. ARCHITECTURE.md §9 has the design
+`datasets/`, where `golden_v3.yaml` is the current dataset. ARCHITECTURE.md §9 has the design
 this implements.
 
 ## The idea it rests on
@@ -98,8 +98,8 @@ key or a bug. Ctrl-C stops it too. Either way the run is marked `failed`, never 
 
 ## The dataset
 
-`datasets/golden_v2.yaml` is the current dataset: 62 cases, written from the eleven
-knowledge-base articles as they stood on 2026-10-09.
+`datasets/golden_v3.yaml` is the current dataset: 62 cases, written from the eleven
+knowledge-base articles as they stood on 2026-10-13.
 
 | Kind | Cases | What it checks |
 |---|---|---|
@@ -131,14 +131,32 @@ articles, and golden_v2 is golden_v1 with what that changed:
 `compare` refuses a run of one against a run of the other, because 14 of their cases differ. So
 golden_v2 has a baseline of its own, and nothing measured on golden_v1 carries over as a number.
 
+**golden_v3 is golden_v2 with the model taken out**, and it exists because of a mistake in
+golden_v2. One case required an answer to name the model that wrote it, because an article
+named it. The first change of model made the article false, and correcting the article would
+have made the case false, so comparing two models needed a new dataset and a new baseline. That
+is the one comparison the harness is for. Nine cases changed and 53 did not ("golden_v3" in
+Results has the list).
+
+**A case does not pin what the evals exist to change**, and the knowledge base does not state
+it: a model, a reasoning-effort setting, the judge, the dataset's size. Two checks hold the
+line. `portfolio-ai-validate` warns about a model's name in an article, and a unit test fails
+on one anywhere in a case, in every dataset from golden_v3 on and in a draft. Both use one
+pattern, `llm/pricing.MODEL_NAME`: every name in the price table, and anything shaped like one
+that is not in it yet.
+
 A case can carry these fields:
-- **`expected_doc_ids`** lists every article with a section that answers the question on its
-  own, even briefly. For a question whose answer is a list, an article giving one item counts
-  too. A passing mention in a section about something else doesn't count. Topics repeat
-  across the knowledge base (contact details alone are in five articles), so any one found
-  counts as a hit, and recall shows how many were found. Applied unevenly, this skews the
-  retrieval scores: an article that answers but isn't listed counts against precision and
-  MRR whenever it is retrieved.
+- **`expected_doc_ids`** lists every article that gives the reference answer's main point in
+  a statement of its own, however briefly. For a question whose answer is a list, an article
+  giving one item counts too. An article that only names the thing asked about, or gives a
+  neighbouring fact the answer could be guessed from, doesn't count. `faq.md` says the
+  assistant is built in Python: that answers "does he know Python?", and does not answer "is
+  the chat built with n8n?". Topics repeat across the knowledge base (contact details alone
+  are in five articles), so any one found counts as a hit, and recall shows how many were
+  found. Applied unevenly, this skews the retrieval scores: an article that answers but isn't
+  listed counts against precision and MRR whenever it is retrieved. golden_v2 applied it
+  unevenly, under an earlier wording of this rule whose two halves disagreed about exactly
+  that sentence, and golden_v3 corrects four cases for it.
 - **`also_accept`** names another route that is also right. "Are you Mihail?" is answered
   properly by small talk and by the knowledge-base route alike, so neither counts as a misroute.
 - **`must_include` and `must_not_include`** are case-insensitive substrings, and hard rules: a
@@ -156,7 +174,7 @@ for hiring; whether it does that properly is the judge's to read. No other email
 in a dataset, and a unit test over every YAML file in `datasets/` fails if one appears. That matters
 most for questions promoted from real traffic, which can carry a visitor's address.
 
-`python -m portfolio_ai.evals check datasets/golden_v2.yaml` validates the file without a
+`python -m portfolio_ai.evals check datasets/golden_v3.yaml` validates the file without a
 database or network, and a unit test runs the same check in CI on every golden file. Validation
 is pydantic, with `extra="forbid"`: a misspelt field such as `expected_docs` is an error rather
 than a case that tests nothing and passes. Rules that span fields are checked in a
@@ -170,15 +188,16 @@ YAML keeps the second of two equal keys without a word, so a case with `expected
 written twice would be scored on the second, and `extra="forbid"` would never see the first.
 
 **To change a dataset after its first complete run**, copy it to the next version
-(`golden_v3.yaml` after golden_v2), rename it inside, and edit the copy. Then make it the default
+(`golden_v4.yaml` after golden_v3), rename it inside, and edit the copy. Then make it the default
 of `run --dataset` in `evals/cli.py`: a unit test fails while the default is not the newest file,
 because a run that forgets the flag would grade today's answers against an older knowledge base.
-Write the copy under another name, `draft_v3.yaml` say, and rename it once it has been reviewed:
-from the moment a file called `golden_v3.yaml` exists, that test wants it as the default, and a
+Write the copy under another name, `draft_v4.yaml` say, and rename it once it has been reviewed:
+from the moment a file called `golden_v4.yaml` exists, that test wants it as the default, and a
 default is what a run without `--dataset` uses, so one forgotten flag would run an unreviewed
-file and freeze it. Until a run completes, edits replace the stored cases freely. That includes
-after a run that failed part-way: it has no scores worth protecting, and its partial results
-are deleted with the old cases.
+file and freeze it. A draft's name inside has to match its file, so that changes at the rename
+too. golden_v3 was made this way. Until a run completes, edits replace the stored cases freely.
+That includes after a run that failed part-way: it has no scores worth protecting, and its
+partial results are deleted with the old cases.
 
 ## What is measured
 
@@ -234,7 +253,8 @@ the share of knowledge-base answers where the two agree. That is the measurement
 `postprocess.py` says the evals exist to make. A disagreement is an answer the analytics would
 file differently from the judge: a decline the match missed, or a reply that says the knowledge
 base lacks something and then goes on to give something else, which the match counts on
-purpose ("gpt-6-luna" in Results).
+purpose ("gpt-6-luna" in Results). In a run with `--no-judge` the match stands in for the judge,
+so a reply of that second kind breaks `declined_answerable`.
 
 ### The judge
 
@@ -352,29 +372,25 @@ All run from the repository root, locally. `run` and `rejudge` refuse
 belongs in production.
 
 ```bash
-uv run python -m portfolio_ai.evals check datasets/golden_v2.yaml
-uv run python -m portfolio_ai.evals run --label top-k-8 --top-k 8 --dry-run
-uv run python -m portfolio_ai.evals run --label top-k-8 --top-k 8
+uv run python -m portfolio_ai.evals check datasets/golden_v3.yaml
+uv run python -m portfolio_ai.evals run --label v3-baseline --dry-run
+uv run python -m portfolio_ai.evals run --label v3-baseline
+uv run python -m portfolio_ai.evals run --label mini-answers --chat-model gpt-5-mini --chat-effort minimal
 uv run python -m portfolio_ai.evals list
-uv run python -m portfolio_ai.evals show top-k-8 --failures
-uv run python -m portfolio_ai.evals compare luna-mini top-k-8 --markdown ../compare.md
-uv run python -m portfolio_ai.evals rejudge luna-mini --label luna-mini-regraded --dry-run
+uv run python -m portfolio_ai.evals show mini-answers --failures
+uv run python -m portfolio_ai.evals compare v3-baseline mini-answers --markdown ../compare.md
+uv run python -m portfolio_ai.evals rejudge v3-baseline --label v3-baseline-regraded --dry-run
 ```
 
 A label is used once, and a comparison means something only when one setting differs.
-`luna-mini` is the stored run of the settings in use: `gpt-6-luna` answering, `gpt-5-mini`
-routing, chat prompt version 2. So the example measures one change against it, `top_k` 8, under
-a label of its own. `luna-v3` is not that baseline: it had `gpt-6-luna` routing as well, and
-comparing `top-k-8` with it would measure two changes at once. A run costs about $0.55.
+`v3-baseline` is the run of the settings in use on golden_v3. It is made once, and it has not
+been made yet ("golden_v3" in Results says what it waits for). After it, a change of model is
+the fourth line and the seventh: one run, with the effort that model takes, and one comparison.
+No article, case or baseline changes, which is what golden_v3 is for. A run costs about $0.55.
 
-One figure in the first comparison against `luna-mini` will move for a reason that is not the
-setting. `luna-mini` recorded `fallback_used` with the match as it was, and a new run records it
-with the match as widened afterwards ("gpt-6-luna" in Results). So "phrase match agrees" rises
-on answers that are no different. In a run with `--no-judge`, where the match stands in for the
-judge, a reply that declines and then offers something else now breaks `declined_answerable`.
-
-`run` uses golden_v2 unless `--dataset` names another, and golden_v1 is named only to add to the
-runs already made of it. `rejudge` is for the day the judge changes ("The judge", above).
+`run` uses golden_v3 unless `--dataset` names another; golden_v1 and golden_v2 are named only
+to add to the runs already made of them. `rejudge` is for the day the judge changes ("The
+judge", above).
 
 `compare` refuses two runs of different datasets, because their cases differ. `--markdown`
 writes the comparison as a table, ready to paste into the Results section below. The path above
@@ -404,7 +420,7 @@ check when the process starts, for the same pair set in `.env`.
 
 **Cost.** Grading costs about 0.9¢ an answer at `gpt-6.1-sol`; it was 1.4¢ to 1.6¢ at `gpt-5`.
 An answer from `gpt-6-luna` costs about 0.05¢, where `gpt-5-mini` cost 0.2¢ at `minimal`. A full
-golden_v2 run is about $0.55, $0.51 of it the judge. `--no-judge` keeps every deterministic
+run of the 62 cases is about $0.55, $0.51 of it the judge. `--no-judge` keeps every deterministic
 measurement and costs only the answers, about 3¢.
 
 ## Which piece does what
@@ -484,7 +500,9 @@ on Windows the protection is weaker.
   change it, and a case does. It also checks every real golden file, the frozen golden_v1
   included: that it is valid, and that its prompt-injection case would catch either answering
   prompt leaking. Every YAML file in `datasets/` is checked for email addresses other than
-  Mihail's two published ones.
+  Mihail's two published ones. And no case of golden_v3, of a later dataset or of a draft may
+  name a model; a second test runs the same search over golden_v2, which is frozen with the
+  two cases that did, so that a search that found nothing anywhere could not pass unnoticed.
 - **`tests/unit/test_eval_metrics.py`** covers the retrieval arithmetic, and every rule both
   firing and not firing. For links that means allowed links from the prompt, a document's URL, a
   passage, a relative link resolved against the site, and the same page written with `www.`,
@@ -712,8 +730,8 @@ at `gpt-5-mini` / `minimal`, classifier prompt version 2, `top_k` 20 and up to t
 against the knowledge base as it reads after the cutover (11 documents, 122 chunks, fingerprint
 `ff5bf7fa2152`). It is not comparable with any run above, which were all of golden_v1. Since the
 judge changed on 2026-10-10, `v2-baseline-sol` holds these same answers graded by the new judge
-("A new judge", below), and `luna-mini` is the run later ones are compared with. The run records
-its code as
+("A new judge", below), and `luna-mini` is the run later golden_v2 runs were compared with.
+golden_v3 has replaced this dataset since ("golden_v3", below). The run records its code as
 `f034a6c485f7` with uncommitted changes: those were this dataset, the new default and their
 tests, none of which changes how a question is answered or graded.
 
@@ -784,7 +802,8 @@ the strength of a single clause. Precision of 0.418 is `top_k` 20 on a corpus of
 most of what is retrieved is not needed, which is the case for trying a smaller `top_k` against
 this baseline. Expect that run to lower recall on exactly these borderline listings.
 
-**For golden_v3**, since golden_v2 is frozen. The review after the run found these in the cases:
+**For golden_v3**, since golden_v2 is frozen. The review after the run found these in the
+cases, and golden_v3 fixes each ("golden_v3" below):
 - **One rule for one sentence.** Three articles say only that the assistant is built in Python
   (`faq.md`, `services.md`, the assistant's own). `python-projects` lists all three, `python` and
   `followup-and-python` list one, `assistant-n8n` lists them for a question about n8n, and
@@ -971,8 +990,9 @@ luna-v2's first word and luna-v3's. Luna would save $0.00017 a message.
 **Decided:** `gpt-6-luna` at `none` writes the answers, with chat prompt version 2; `gpt-5-mini`
 at `minimal` routes; `gpt-6.1-sol` judges. Those are the code's defaults since this change.
 
-**luna-mini is the baseline** the next change is measured against. Neither run before it had
-exactly the pairing decided: luna-v3 had Luna classifying, and luna-v2 the prompt before the
+**luna-mini is the baseline** the next change was to be measured against, until golden_v3
+replaced the dataset three days later ("golden_v3", below). Neither run before it had exactly
+the pairing decided: luna-v3 had Luna classifying, and luna-v2 the prompt before the
 closing offer. Against `v2-baseline-sol`, which is `gpt-5-mini` under prompt version 1:
 
 - **Faithfulness and style are higher**, 4.94 from 4.82 and 4.89 from 4.39. Fifteen cases are
@@ -1048,7 +1068,8 @@ different: the closing offer was added after it, while version 2 was still uncom
 number was not raised. The "chat prompt" row above is what tells it apart; the recorded version
 does not.
 
-**More for golden_v3**, since the model changing makes two cases describe the past:
+**More for golden_v3**, since the model changing makes two cases describe the past. All three
+are fixed there, and the first two are why it could not wait:
 - `assistant-models` requires "gpt-5-mini", which is what the knowledge base article says
   writes the answers. When production moves to `gpt-6-luna` the article changes, and this case
   with it. A required phrase with a hyphen in it also fails "GPT-5 mini", which is the same
@@ -1063,3 +1084,59 @@ does not.
 
 Total spend on 2026-10-10, across the prompt, the judge and the model: about $2.95, the
 baseline run's $0.54 included.
+
+### golden_v3, 2026-10-13: the model taken out of what is graded
+
+The change of model on 2026-10-10 broke the thing the evals are for, through two links:
+
+- `knowledgebase/projects/portfolio-ai-assistant.md` named the model that wrote the answers,
+  the judge, the embedding model and the dataset's size.
+- golden_v2's `assistant-models` required an answer to contain "gpt-5-mini", and
+  `assistant-quality`'s reference named the judge and the effort setting.
+
+With `gpt-6-luna` writing the answers the article was false. Correcting it would have made the
+two cases false, and golden_v2 is frozen. So the first comparison of two models ended in a new
+dataset and a new baseline, where it should have ended in one run and one `compare`.
+
+**The rule since: a case does not pin what the evals exist to change, and the knowledge base
+does not state it.** That covers a model, a reasoning-effort setting, the judge and the
+dataset's size.
+
+- **The article** says that OpenAI's language models classify each message and write the
+  answers, that an embedding model powers the search, and that the exact models are not fixed
+  because the harness compares them. "Which AI model does the assistant use?" has a section of
+  its own, which points to this repository for the models in use. The measurements stay (15.6
+  seconds to 3.9, 28 misroutes in 270): they have happened, and do not go stale.
+- **golden_v3** is golden_v2 with nine cases corrected, below.
+- **Two checks** keep it so, described under "The dataset": a warning from
+  `portfolio-ai-validate` on an article, and a failing unit test on a case.
+
+| Case | Changed in golden_v3 |
+|---|---|
+| `assistant-models` | The reference says it runs on OpenAI's models, unnamed because the harness changes them. Requires "OpenAI" where it required "gpt-5-mini". |
+| `assistant-quality` | The reference names neither the judge nor the setting. |
+| `projects-page-link` | `faq.md` now says where the projects are shown, and the reference follows it. Under golden_v2 no answer could pass. |
+| `python`, `followup-and-python` | Expected documents gain `faq` and `services`. |
+| `assistant-n8n` | Expected documents lose `faq`, `services` and `tech-stack`. |
+| `n8n-work` | Expected documents gain `services`; its note is corrected. |
+| `assistant-privacy` | The reference says the conversation "can be resumed for 24 hours". "90 days" is no longer a required phrase. |
+| `assistant-how` | The reference says "the knowledge base articles its searches found most relevant". |
+
+**Expected documents follow one rule**: an article is listed when it gives the reference
+answer's main point in a statement of its own, and not when it only names the thing or gives a
+neighbouring fact. The four cases above are where golden_v2 departed from it. `faq.md` and
+`services.md` say the assistant is built in Python. That answers "does he know Python?", where
+golden_v2 left them out, and does not answer "is this chat built with n8n?", where it listed
+them. `python-projects` and `assistant-quality` already followed the rule and are unchanged.
+
+**No run of golden_v3 has been made.** Its baseline, `v3-baseline`, is the settings in use
+(`gpt-6-luna` answering, `gpt-5-mini` routing) and waits for one thing: the edited articles
+pushed, and ingested into the development database. A dataset written against edited articles
+has to be run against them, and the prepare step can check only that each expected article is
+indexed, not that it is current. golden_v2's six runs stay as they are. A run of golden_v3
+cannot be compared with them.
+
+From here a change of model is `run --label x --chat-model … --chat-effort …` and `compare
+v3-baseline x`. golden_v3 will still need a successor when the knowledge base's own facts
+change, as golden_v1 did at the cutover. That is the knowledge base moving, which a dataset
+written from it has to follow, and not this mistake again.

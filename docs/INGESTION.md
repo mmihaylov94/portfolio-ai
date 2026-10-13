@@ -272,8 +272,16 @@ It treats as errors anything that would be rejected, a duplicate `doc_id`, a `ur
 content. It warns, without failing, about a missing `url` or `last_verified`, an article with no
 `##` headings, a section big enough to be split, and a `page_type: project` article whose title
 the classifier prompt doesn't name. The classifier sees one message, not the knowledge base, so
-an unnamed project's questions can be refused as off-topic. `--strict` makes the warnings fail
-too.
+an unnamed project's questions can be refused as off-topic.
+
+It also warns about an article that names a model: any name in `llm/pricing.py`'s price table,
+and anything shaped like one (`gpt-7`, a dated `gpt-6-luna-2026-09-15`). The eval cases are
+written from the articles, so a model named in an article ends up required by a case, and the
+first change of model then makes both false. That is how golden_v2 came to need a successor
+(docs/EVALS.md). An article says what a model does and how it is chosen, and leaves its name to
+this repository.
+
+`--strict` makes the warnings fail too.
 
 ```bash
 uv run portfolio-ai-validate ../my-portfolio/knowledgebase

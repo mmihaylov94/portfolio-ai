@@ -65,6 +65,25 @@ PRICES: dict[str, ModelPrice] = {
     "gpt-6.1-sol": ModelPrice(Decimal("2.00"), Decimal("0.10"), Decimal("10.00")),
 }
 
+# A model's name as it appears in running text: every name in the table above, and
+# anything shaped like one that is not in it yet ("gpt-7", a dated
+# "gpt-6-luna-2026-09-15"). Two things look for one, and for the same reason: the
+# article checker (ingestion/validate.py) and the test that keeps model names out of
+# the eval cases. Neither the knowledge base nor a case may name what the evals exist
+# to compare, or the first change of model makes both false (docs/EVALS.md).
+#
+# After "gpt-" and a number, each further piece is a dot or a hyphen followed by word
+# characters, so the full stop that ends a sentence is not taken for part of the name.
+# The lookarounds keep it to whole names: not the "gpt-5" inside "chatgpt-5", and not
+# "gpt-5" a second time from inside "gpt-5-mini". The table's own names are tried
+# longest first for that last reason.
+MODEL_NAME = re.compile(
+    r"(?<![\w-])(?:gpt-\d+(?:[.-]\w+)*|"
+    + "|".join(re.escape(name) for name in sorted(PRICES, key=len, reverse=True))
+    + r")(?![\w-])",
+    re.IGNORECASE,
+)
+
 _PER_MILLION = Decimal(1_000_000)
 
 

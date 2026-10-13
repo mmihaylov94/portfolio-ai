@@ -85,7 +85,7 @@ uv run python -m portfolio_ai.assistant -m "..."    # ask one question and exit
 uv run uvicorn portfolio_ai.api.main:app --reload   # the API, reloading on changes; /docs for the schema
 uv run python -m portfolio_ai.analytics purge --dry-run   # what the retention sweep would delete
 
-uv run python -m portfolio_ai.evals check datasets/golden_v2.yaml    # validate the golden set
+uv run python -m portfolio_ai.evals check datasets/golden_v3.yaml    # validate the golden set
 uv run python -m portfolio_ai.evals run --label my-run --dry-run     # plan an eval run; no spend
 uv run python -m portfolio_ai.evals compare v2-baseline-sol luna-mini # two stored runs, case by case
 ```

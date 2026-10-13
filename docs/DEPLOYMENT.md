@@ -969,10 +969,11 @@ starts. So the `.env` changes first:
 3. **Deploy** with `deploy-portfolio-ai`. There is no migration.
 4. **Check it** with the terminal chat and `--no-save` (§11), which stores nothing: one question
    about Mihail's work should answer in a few sentences and close with an offer of more.
-5. **The same day, the knowledge base.** `knowledgebase/projects/portfolio-ai-assistant.md` in
-   the portfolio repository says `gpt-5-mini` writes the answers. Change it to `gpt-6-luna`; the
-   hourly ingestion picks it up. The project card's image carries the old model's name in its
-   text as well.
+5. **The knowledge base needs nothing.** When this release was made,
+   `knowledgebase/projects/portfolio-ai-assistant.md` in the portfolio repository said
+   `gpt-5-mini` wrote the answers. It names no model since 2026-10-13, so a change of model is
+   no longer a change to the knowledge base (docs/EVALS.md, "golden_v3"). The project card's
+   image carried the name too, and is to be replaced by one without it.
 
 To go back to the old model alone, set `CHAT_MODEL=gpt-5-mini` and
 `CHAT_REASONING_EFFORT=minimal` in `.env` and run `docker compose up -d`. No rollback of the

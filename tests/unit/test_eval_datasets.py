@@ -15,6 +15,7 @@ from portfolio_ai.assistant.prompts.loader import RAG_AGENT, SMALL_TALK
 from portfolio_ai.evals import datasets
 from portfolio_ai.evals.datasets import Dataset, EvalCase
 from portfolio_ai.exceptions import EvalError
+from portfolio_ai.llm.pricing import MODEL_NAME
 
 DATASETS = Path(__file__).resolve().parents[2] / "datasets"
 # Every golden dataset. An older one is frozen and kept for the runs made of it, and it
@@ -44,7 +45,7 @@ def _dataset(*cases: dict[str, Any], **overrides: Any) -> dict[str, Any]:
 def test_the_golden_datasets_are_found() -> None:
     """pytest skips a test parametrised over an empty list; it does not fail it. So if the
     glob above ever matched nothing, the tests below would go quiet and the build pass."""
-    assert {"golden_v1", "golden_v2"} <= {path.stem for path in GOLDEN}
+    assert {"golden_v1", "golden_v2", "golden_v3"} <= {path.stem for path in GOLDEN}
 
 
 @pytest.mark.parametrize("path", GOLDEN, ids=lambda path: path.stem)
@@ -77,6 +78,49 @@ def test_no_dataset_holds_an_email_address_but_mihails_published_ones(path: Path
     found = set(re.findall(r"[\w.+-]+@[\w-]+(?:\.[\w-]+)+", path.read_text(encoding="utf-8")))
 
     assert found <= PUBLISHED_ADDRESSES, sorted(found - PUBLISHED_ADDRESSES)
+
+
+def _cases_naming_a_model(path: Path) -> dict[str, list[str]]:
+    """Each case in the file that names a model anywhere in it, with the names.
+
+    ``model_dump_json`` writes the whole case as one string, its notes included, which
+    is the simplest way to search every field at once."""
+    named: dict[str, list[str]] = {}
+    for case in datasets.load(path).cases:
+        found = {match.group(0).lower() for match in MODEL_NAME.finditer(case.model_dump_json())}
+        if found:
+            named[case.key] = sorted(found)
+    return named
+
+
+def test_no_case_names_a_model_from_golden_v3_on() -> None:
+    """A case does not pin what the evals exist to change.
+
+    golden_v2 required an answer to name the model that wrote it, because the article
+    it was written from named it. The first change of model made the article false,
+    and correcting the article would have made the case false: comparing two models
+    needed a new dataset and a new baseline, which is the one comparison the harness
+    is for. A draft counts too, so that the name is caught before a review, not after
+    a run has frozen it."""
+    checked = [
+        path
+        for path in sorted(DATASETS.glob("*.yaml"))
+        if path not in {DATASETS / "golden_v1.yaml", DATASETS / "golden_v2.yaml"}
+    ]
+
+    assert DATASETS / "golden_v3.yaml" in checked
+    assert {path.name: _cases_naming_a_model(path) for path in checked} == {
+        path.name: {} for path in checked
+    }
+
+
+def test_the_search_for_a_models_name_finds_the_cases_that_had_one() -> None:
+    """golden_v2 is frozen, so it still holds them. This is what shows the test above
+    can fail: a search that found nothing anywhere would pass it just as well."""
+    assert _cases_naming_a_model(DATASETS / "golden_v2.yaml") == {
+        "assistant-models": ["gpt-5-mini", "text-embedding-3-small"],
+        "assistant-quality": ["gpt-5"],
+    }
 
 
 @pytest.mark.parametrize(

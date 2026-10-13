@@ -25,7 +25,7 @@ from portfolio_ai.db import evals as evals_db
 from portfolio_ai.db.evals import Corpus, ResultRow, RunRecord
 from portfolio_ai.evals import cli, datasets, runner
 
-GOLDEN = Path(__file__).resolve().parents[2] / "datasets" / "golden_v2.yaml"
+GOLDEN = Path(__file__).resolve().parents[2] / "datasets" / "golden_v3.yaml"
 
 
 @pytest.fixture(autouse=True)
@@ -59,7 +59,7 @@ def test_check_summarises_a_valid_dataset() -> None:
     result = CliRunner().invoke(cli.app, ["check", str(GOLDEN)])
 
     assert result.exit_code == 0, result.output
-    assert "golden_v2: " in result.output
+    assert "golden_v3: " in result.output
     assert "valid" in result.output
 
 

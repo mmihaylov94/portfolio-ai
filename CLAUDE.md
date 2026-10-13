@@ -193,7 +193,8 @@ migrations/      datasets/      tests/unit  tests/integration      docker/
   `minimal` routes each message, and `gpt-6.1-sol` judges the evals. Until then `gpt-5-mini`,
   n8n's model, did the first two and `gpt-5` judged. A model and its effort go together:
   `gpt-6-luna`'s lowest is `none`, `gpt-5-mini`'s is `minimal`, OpenAI refuses each for the
-  other, and so do the settings at startup.
+  other, and so do the settings at startup. The knowledge base and the eval cases name none of
+  these models, on purpose (Guardrails).
 - **Carried over from n8n, unchanged:** embeddings `text-embedding-3-small` at 1536 dimensions,
   `top_k = 20`, memory window 25 **exchanges** (50 messages -- n8n's setting counts exchanges,
   and earlier drafts of these notes misread it as messages).
@@ -287,12 +288,13 @@ uv run python -m portfolio_ai.api                     # the API as production ru
 
 uv run python -m portfolio_ai.analytics purge --dry-run   # retention sweep, counting only
 
-uv run python -m portfolio_ai.evals check datasets/golden_v2.yaml     # no DB, no network
-uv run python -m portfolio_ai.evals run --label top-k-8 --top-k 8 --dry-run   # the plan; spends nothing
-uv run python -m portfolio_ai.evals run --label top-k-8 --top-k 8             # one setting changed
-uv run python -m portfolio_ai.evals show luna-mini --failures                 # the baseline
-uv run python -m portfolio_ai.evals compare luna-mini top-k-8
-uv run python -m portfolio_ai.evals rejudge luna-mini --label luna-mini-regraded --dry-run   # a new judge
+uv run python -m portfolio_ai.evals check datasets/golden_v3.yaml     # no DB, no network
+uv run python -m portfolio_ai.evals run --label v3-baseline --dry-run         # the plan; spends nothing
+uv run python -m portfolio_ai.evals run --label v3-baseline                   # the settings in use, once
+uv run python -m portfolio_ai.evals run --label mini-answers --chat-model gpt-5-mini --chat-effort minimal
+uv run python -m portfolio_ai.evals show mini-answers --failures
+uv run python -m portfolio_ai.evals compare v3-baseline mini-answers          # a change of model
+uv run python -m portfolio_ai.evals rejudge v3-baseline --label v3-baseline-regraded --dry-run   # a new judge
 
 uv run analytics report --since 7d                    # digest to stdout
 uv run analytics digest                               # build + email it (Gmail SMTP)
@@ -349,8 +351,9 @@ it compares git blob SHAs and stops.
   feedback 404) and check OpenAI with the terminal chat's `--no-save`.
 - **Embedding dimension changes are migrations.** Changing `EMBEDDING_DIMENSIONS` or the
   embedding model invalidates every stored vector and requires a full re-embed.
-- **Evals cost money.** A full golden_v2 run is about $0.55, nearly all of it the `gpt-6.1-sol`
-  judge (`--no-judge` about 3 cents). Say what a run or a sweep will cost before starting it.
+- **Evals cost money.** A full run of the golden dataset is about $0.55, nearly all of it the
+  `gpt-6.1-sol` judge (`--no-judge` about 3 cents). Say what a run or a sweep will cost before
+  starting it.
 - **Evals run locally, against the dev database.** `run` and `rejudge` refuse
   `ENVIRONMENT=production`. A run inherits whatever the dev `.env` sets, so read the dry run's
   configuration first, and give a model and its effort together.
@@ -361,12 +364,19 @@ it compares git blob SHAs and stops.
 - **Measure a prompt wording with repetitions before a full run**, and change one line at a
   time. At the lowest effort a rule aimed at one case leaks into others, and naming a phrase to
   avoid can bring it out (docs/EVALS.md, "The chat prompt, version 2").
-- **golden_v2 is the current dataset, and the default.** golden_v1 describes the knowledge base
-  before the cutover and is kept for its runs; the two cannot be compared with each other.
+- **golden_v3 is the current dataset, and the default.** golden_v1 describes the knowledge base
+  before the cutover, and golden_v2 the one that named its models. Both are kept for their
+  runs, and runs of different datasets cannot be compared.
+- **Nothing an answer is graded against names what the evals exist to change**: a model, a
+  reasoning-effort setting, the judge, the dataset's size. Not in a knowledge base article and
+  not in a case. golden_v2 pinned the answer model through one line of one article and one
+  required phrase, and the first change of model cost a dataset version and a baseline.
+  `portfolio-ai-validate` warns about a model's name in an article, and a unit test fails on
+  one in a case. A model change is then one `run` and one `compare`, and nothing else.
 - **A dataset freezes once a run of it completes.** Scores are only comparable on identical
-  cases, so a changed golden_v2.yaml is refused after its first complete run -- copy it to
-  golden_v3 instead, and make that the default in `evals/cli.py`. Keep a draft under another
-  name (`draft_v3.yaml`) until it is reviewed: a file called `golden_v3.yaml` is what a unit
+  cases, so a changed golden_v3.yaml is refused after its first complete run -- copy it to
+  golden_v4 instead, and make that the default in `evals/cli.py`. Keep a draft under another
+  name (`draft_v4.yaml`) until it is reviewed: a file called `golden_v4.yaml` is what a unit
   test then demands as the default, and the default is what a run without `--dataset` uses.
   Never run a dataset still under review, even one case of it: a complete `--only` run freezes
   it too. Smoke-test the harness on a throwaway dataset file.
@@ -405,22 +415,28 @@ ARCHITECTURE.md §13).
   Those results put production at `minimal`. Classifier prompt version 2 fixed the misroutes
   the runs found (`classifier-v2`).
 
-  golden_v2 (62 cases, from the articles after the cutover) is the current dataset and is frozen
-  too. `v2-baseline` is `gpt-5-mini` at production's settings of 2026-10-09, and
-  `v2-baseline-sol` is the same answers graded by the current judge.
+  golden_v2 (62 cases, from the articles after the cutover) is frozen too. `v2-baseline` is
+  `gpt-5-mini` at production's settings of 2026-10-09, and `v2-baseline-sol` is the same
+  answers graded by the current judge.
 
   2026-10-10 changed three things, each measured (docs/EVALS.md): the chat prompt went to
   version 2, the judge to `gpt-6.1-sol` with rubric version 2, and the answers to `gpt-6-luna`.
-  **`luna-mini` is the run of the settings adopted, and the baseline a new run is compared
-  with**: `gpt-6-luna` answering, `gpt-5-mini` routing, the final prompt. Every route right, and
-  faithfulness 4.94, completeness 4.13 and style 4.89 against `v2-baseline-sol`'s 4.82 / 4.19 /
-  4.39, at a third of the cost per answer and with the median first word at 3.2s against 2.8s.
-  `luna-v3`, the run the decision was made on, had `gpt-6-luna` routing as well and is not that
-  baseline. **None of it is deployed.** Production still runs `gpt-5-mini` with chat prompt
-  version 1.
-  Deploying it means changing the server's `.env` first, and changing it back before any
-  rollback of the image (docs/DEPLOYMENT.md §9), and the knowledge base article that names
-  the model along with it.
+  `luna-mini` is the run of the settings adopted, on golden_v2: `gpt-6-luna` answering,
+  `gpt-5-mini` routing, the final prompt. Every route right, and faithfulness 4.94,
+  completeness 4.13 and style 4.89 against `v2-baseline-sol`'s 4.82 / 4.19 / 4.39, at a third
+  of the cost per answer and with the median first word at 3.2s against 2.8s. `luna-v3`, the
+  run the decision was made on, had `gpt-6-luna` routing as well. The owner deployed the model
+  change on 2026-10-10 (docs/DEPLOYMENT.md §9, which also says what an image rollback needs
+  first). The wider fallback match was committed after that deploy and reaches production
+  with the next one.
+
+  **golden_v3 (2026-10-13) is the current dataset, and the first that names no model.**
+  golden_v2 required an answer to name the model that wrote it, because the assistant's
+  article named it. The change of model made the article false, and correcting it would have
+  made the case false. The knowledge base now names no model, effort setting, judge or dataset
+  size, and golden_v3 is golden_v2 with nine cases corrected (docs/EVALS.md). **Its baseline,
+  `v3-baseline`, has not been run**: it waits for the edited articles to be pushed and
+  ingested into the dev database.
 
 **Step 6**, the front end and cutover, is in phases:
 1. the Express proxy in the portfolio repo: built, with tests, and switched on at cutover;
@@ -434,7 +450,8 @@ ARCHITECTURE.md §13).
 
 After the week of watching, analytics reporting (7). Still open from the evals:
 - "tell me everything" runs long on every model and wording tried;
-- golden_v3, whose list is in docs/EVALS.md.
+- golden_v3's baseline, `v3-baseline` (about $0.55), once the edited articles are pushed and
+  ingested locally. Nothing can be compared on golden_v3 until it exists.
 
 Analytics reporting is last on purpose — it needs real traffic to be worth writing. The
 *capture* (feedback, `top_score`, `fallback_used`, where a conversation came from) shipped with

@@ -30,7 +30,7 @@ from portfolio_ai.assistant.prompts.loader import CLASSIFIER
 from portfolio_ai.exceptions import DocumentRejectedError
 from portfolio_ai.ingestion.chunking import MAX_TOKENS_PER_CHUNK, chunk_document
 from portfolio_ai.ingestion.frontmatter import DocumentMeta, parse_document
-from portfolio_ai.llm.pricing import estimate_tokens
+from portfolio_ai.llm.pricing import MODEL_NAME, estimate_tokens
 
 app = typer.Typer(
     add_completion=False,
@@ -90,6 +90,7 @@ def _check_one(path: Path, root: Path, seen_doc_ids: dict[str, str]) -> list[Fin
     findings.extend(_check_dates(relative, meta))
     findings.extend(_check_structure(relative, body))
     findings.extend(_check_classifier_knows(relative, meta))
+    findings.extend(_check_names_no_model(relative, body))
 
     return findings
 
@@ -165,6 +166,33 @@ def _check_classifier_knows(relative: str, meta: DocumentMeta) -> list[Finding]:
             relative,
             f"project {meta.title!r} is not named in the classifier prompt (classifier.md) "
             "-- questions about it that do not mention Mihail may be refused as off-topic",
+            fatal=False,
+        )
+    ]
+
+
+def _check_names_no_model(relative: str, body: str) -> list[Finding]:
+    """An article that names a model goes stale with the next one, and takes a test with it.
+
+    The eval cases are written from these articles. While the assistant's own article
+    named the model that writes the answers, a case required an answer to name it too.
+    The first change of model made the article false, and correcting the article
+    would have made the case false: comparing two models, which is what the evals
+    are for, needed a new dataset and a new baseline. The article now says what the
+    models do and how they are chosen, and this is what notices a name coming back.
+
+    A warning, not an error. The article indexes fine, and a name can be right to
+    write, in an article about work done with one particular model. The author decides.
+    """
+    named = sorted({match.group(0).lower() for match in MODEL_NAME.finditer(body)})
+    if not named:
+        return []
+
+    return [
+        Finding(
+            relative,
+            f"names a model ({', '.join(named)}) -- it goes stale when the model changes, "
+            "and an eval case written from it has to change too; say what the model does",
             fatal=False,
         )
     ]

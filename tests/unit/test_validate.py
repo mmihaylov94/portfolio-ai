@@ -212,6 +212,73 @@ def test_every_real_project_is_named(corpus: Path, title: str) -> None:
     assert "0 warning(s)" in result.output
 
 
+def _saying(sentence: str) -> str:
+    """A valid article whose second answer is ``sentence``."""
+    return GOOD.format(doc_id="models", title="Models").replace("A second answer.", sentence)
+
+
+@pytest.mark.parametrize(
+    ("sentence", "named"),
+    [
+        # In the price table.
+        ("OpenAI's gpt-5-mini writes the answers.", "gpt-5-mini"),
+        ("The judge is gpt-6.1-sol.", "gpt-6.1-sol"),
+        (
+            "Embeddings come from text-embedding-3-small, at 1,536 dimensions.",
+            "text-embedding-3-small",
+        ),
+        # Not in it: a model that does not exist yet, and a dated name.
+        ("It moved to gpt-7-nova.", "gpt-7-nova"),
+        ("Pinned to gpt-6-luna-2026-09-15.", "gpt-6-luna-2026-09-15"),
+        # As a model writes a name when it is not copying one.
+        ("It uses GPT-5 mini for answers.", "gpt-5"),
+    ],
+    ids=["answers", "judge", "embeddings", "unpriced", "dated", "as-a-name"],
+)
+def test_an_article_that_names_a_model_warns_but_passes(
+    corpus: Path, sentence: str, named: str
+) -> None:
+    """The assistant's own article named the model that writes the answers, an eval case
+    required answers to name it too, and the first change of model made both false. The
+    evals exist to compare models, so neither may pin one."""
+    write(corpus, "models.md", _saying(sentence))
+
+    result = runner.invoke(app, [str(corpus)])
+
+    assert result.exit_code == 0
+    assert f"names a model ({named})" in result.output
+    assert "1 warning(s)" in result.output
+
+
+def test_two_models_named_in_one_article_are_one_warning_naming_both(corpus: Path) -> None:
+    """And the shorter name is not reported a second time from inside the longer one."""
+    write(corpus, "models.md", _saying("gpt-5-mini answers and gpt-5 judges; gpt-5-mini routes."))
+
+    result = runner.invoke(app, [str(corpus)])
+
+    assert "names a model (gpt-5, gpt-5-mini)" in result.output
+    assert "1 warning(s)" in result.output
+
+
+@pytest.mark.parametrize(
+    "sentence",
+    [
+        "OpenAI's language models write the answers, and an embedding model powers the search.",
+        "It is not ChatGPT, and it is not chatgpt-5 either.",
+        "The exact models are deliberately not named here.",
+        "PostgreSQL with pgvector, queried through psycopg 3.",
+    ],
+    ids=["provider-only", "a-product-name", "says-so", "other-names-with-digits"],
+)
+def test_an_article_that_names_no_model_is_not_warned_about(corpus: Path, sentence: str) -> None:
+    write(corpus, "models.md", _saying(sentence))
+
+    result = runner.invoke(app, [str(corpus)])
+
+    assert result.exit_code == 0
+    assert "0 warning(s)" in result.output
+
+
 def test_an_empty_directory_fails_rather_than_passing_vacuously(tmp_path: Path) -> None:
     """A checker that reports success when it found nothing to check is worse than
     no checker: a wrong path in CI would look green forever."""
