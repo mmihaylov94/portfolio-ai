@@ -16,16 +16,18 @@ from pathlib import Path
 
 import click
 import pytest
-from turns import turn
+from turns import gap, turn
 from typer.testing import CliRunner
 
 from portfolio_ai.analytics import cli, seed
+from portfolio_ai.analytics import gaps as gap_refresh
 from portfolio_ai.analytics import report as reports
 from portfolio_ai.analytics.cli import app
 from portfolio_ai.analytics.report import Report
 from portfolio_ai.analytics.seed import InventedMessage, InventedTraffic, Played, SeedReport
 from portfolio_ai.assistant.agent import TurnResult
-from portfolio_ai.db.analytics import ArticleUsage, Volume
+from portfolio_ai.db import analytics as analytics_db
+from portfolio_ai.db.analytics import ArticleUsage, FailedQuestion, Gap, GapCounts, Volume
 from portfolio_ai.exceptions import AnalyticsError
 
 INVENTED = Path(__file__).resolve().parents[2] / seed.DEFAULT_PATH
@@ -55,6 +57,7 @@ def built(monkeypatch: pytest.MonkeyPatch) -> list[tuple[dt.datetime, dt.datetim
             pairs=[],
             refused=[],
             usage=ArticleUsage(searched=1, counted=1, articles=[]),
+            gaps=[],
             low_score_threshold=0.35,
             rephrase_similarity=0.60,
             embedded=1,
@@ -139,9 +142,9 @@ def seeding(monkeypatch: pytest.MonkeyPatch) -> dict[str, list[object]]:
         calls["stored"].append(None)
         return 28
 
-    async def clear() -> int:  # ruff: ignore[unused-async]
+    async def clear() -> seed.Cleared:  # ruff: ignore[unused-async]
         calls["clear"].append(None)
-        return 28
+        return seed.Cleared(conversations=28, gaps=13)
 
     async def run(traffic: InventedTraffic, *, on_played: object = None) -> SeedReport:  # ruff: ignore[unused-async]
         calls["seed"].append(traffic)
@@ -196,7 +199,7 @@ def test_clear_deletes_and_seeds_nothing(seeding: dict[str, list[object]]) -> No
     code, output = _invoke("seed", "--clear")
 
     assert code == 0, output
-    assert "28 invented conversation(s) removed." in output
+    assert "28 invented conversation(s) and 13 content gap(s) removed." in output
     assert len(seeding["clear"]) == 1
     assert seeding["seed"] == []
 
@@ -205,7 +208,7 @@ def test_a_dry_run_of_clear_only_counts(seeding: dict[str, list[object]]) -> Non
     code, output = _invoke("seed", "--clear", "--dry-run")
 
     assert code == 0, output
-    assert "28 invented conversation(s) would be removed." in output
+    assert "28 invented conversation(s) would be removed, and every content gap." in output
     assert seeding["clear"] == []
 
 
@@ -288,3 +291,330 @@ def test_a_console_that_cannot_encode_a_character_prints_a_placeholder(
     console.flush()
 
     assert raw.getvalue() == b"an API?led integration" + os.linesep.encode()
+
+
+# --- refresh-gaps -------------------------------------------------------------------
+
+DAY_RATE = "What does Mihail charge for a day of consulting?"
+
+
+def _group(label: str | None, *, gap_id: int | None, questions: int = 2) -> gap_refresh.Group:
+    asked = dt.datetime(2026, 10, 12, 9, 0, tzinfo=dt.UTC)
+    failed = [
+        FailedQuestion(
+            question_id=number,
+            question=DAY_RATE,
+            query="consulting day rate",
+            asked_at=asked,
+            top_score=0.3,
+            fallback_used=True,
+            rating=None,
+        )
+        for number in range(questions)
+    ]
+    counts = GapCounts(
+        centre=[1.0],
+        question_count=questions,
+        fallback_count=questions,
+        avg_top_score=0.3,
+        negative_rate=0.0,
+        first_seen_at=asked,
+        last_seen_at=asked,
+        example_message_ids=[],
+    )
+    return gap_refresh.Group(failed, counts, gap_id=gap_id, label=label)
+
+
+@pytest.fixture
+def refreshing(monkeypatch: pytest.MonkeyPatch) -> list[bool]:
+    """Stand in for the refresh; record whether each call was a dry run."""
+    calls: list[bool] = []
+
+    async def refresh(*, dry_run: bool = False) -> gap_refresh.Refresh:  # ruff: ignore[unused-async]
+        calls.append(dry_run)
+        groups = [
+            _group("Consulting day rates", gap_id=7, questions=4),
+            _group(None if dry_run else "Salary expectations", gap_id=None, questions=3),
+        ]
+        return gap_refresh.Refresh(
+            failed=7,
+            groups=groups,
+            emptied=1,
+            embedded=6,
+            cost=Decimal("0.000412"),
+            dry_run=dry_run,
+        )
+
+    monkeypatch.setattr(gap_refresh, "refresh", refresh)
+    return calls
+
+
+def test_refresh_gaps_prints_labels_and_counts_and_never_a_question(
+    refreshing: list[bool],
+) -> None:
+    """`digest` runs the same refresh on a Monday, where output is the log. So this
+    command's own output is held to the same rule, and `gaps` is the one that quotes."""
+    code, output = _invoke("refresh-gaps")
+
+    assert code == 0, output
+    assert refreshing == [False]
+    assert "GAPS REFRESHED" in output
+    assert "failed questions  7" in output
+    assert "new             1" in output
+    assert "known           1" in output
+    assert "emptied           1" in output
+    assert "cost              $0.000412" in output
+    assert "     4  known  Consulting day rates" in output
+    assert "     3  new    Salary expectations" in output
+    assert DAY_RATE not in output
+    assert "consulting day rate" not in output, "nor the search, which is a rewording of it"
+
+
+def test_a_dry_run_of_the_refresh_names_nothing(refreshing: list[bool]) -> None:
+    code, output = _invoke("refresh-gaps", "--dry-run")
+
+    assert code == 0, output
+    assert refreshing == [True]
+    assert "PLAN (nothing was named or written)" in output
+    assert "     3  new    (not named yet)" in output
+    assert "would empty       1" in output, "a plan says what would happen, not what did"
+    assert "emptied  " not in output
+
+
+def test_a_refresh_says_when_it_left_questions_out_and_gaps_unnamed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def refresh(*, dry_run: bool = False) -> gap_refresh.Refresh:  # ruff: ignore[unused-async]
+        return gap_refresh.Refresh(
+            failed=gap_refresh.MAX_QUESTIONS,
+            groups=[
+                _group("Consulting day rates", gap_id=None, questions=4),
+                _group(gap_refresh.UNNAMED, gap_id=None, questions=1),
+            ],
+            emptied=0,
+            embedded=5,
+            cost=Decimal("0.000150"),
+            dry_run=dry_run,
+            capped=True,
+        )
+
+    monkeypatch.setattr(gap_refresh, "refresh", refresh)
+
+    code, output = _invoke("refresh-gaps")
+
+    assert code == 0, output
+    assert "more are stored: the newest 500 were grouped" in output
+    assert "not named yet   1: the next refresh asks again" in output
+    assert "     1  new    Unnamed gap" in output
+
+
+def test_a_refresh_that_left_nothing_out_says_nothing_about_it(refreshing: list[bool]) -> None:
+    _, output = _invoke("refresh-gaps")
+
+    assert refreshing == [False]
+    assert "more are stored" not in output
+    assert "not named yet" not in output
+
+
+def test_a_refresh_that_fails_prints_no_summary(monkeypatch: pytest.MonkeyPatch) -> None:
+    async def refresh(*, dry_run: bool = False) -> gap_refresh.Refresh:  # ruff: ignore[unused-async]
+        raise AnalyticsError(f"no refresh (dry_run={dry_run})")
+
+    monkeypatch.setattr(gap_refresh, "refresh", refresh)
+
+    code, output = _invoke("refresh-gaps")
+
+    assert code == 1
+    assert "GAPS REFRESHED" not in output
+
+
+# --- gaps ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def looked_up() -> list[list[int]]:
+    """The ids each lookup of example questions asked for."""
+    return []
+
+
+@pytest.fixture
+def stored_gaps(monkeypatch: pytest.MonkeyPatch, looked_up: list[list[int]]) -> list[str | None]:
+    """Three gaps in the table, and all but two of their example questions still
+    stored. Records the status each listing asked for."""
+    asked_for: list[str | None] = []
+    table = [
+        gap(7, "Consulting day rates", questions=5, fallbacks=3, examples=(11, 13, 15, 17, 19)),
+        gap(2, "Salary expectations", status="wont_fix", resolved_days_ago=9, examples=(21,)),
+        gap(
+            4,
+            "Client references",
+            status="written",
+            doc_id="services",
+            resolved_days_ago=3,
+            last_seen_days_ago=1,
+            examples=(31,),
+        ),
+    ]
+
+    async def list_gaps(*, status: str | None = None) -> list[Gap]:  # ruff: ignore[unused-async]
+        asked_for.append(status)
+        return [item for item in table if status in {None, item.status}]
+
+    async def questions_by_id(question_ids: list[int]) -> dict[int, str]:  # ruff: ignore[unused-async]
+        looked_up.append(list(question_ids))
+        # 13 and 21 went with the purge.
+        kept = {
+            11: DAY_RATE,
+            15: "How much per day?",
+            17: "Is there a price list?",
+            19: "What would a week cost?",
+            31: "Any references?",
+        }
+        return {number: kept[number] for number in question_ids if number in kept}
+
+    monkeypatch.setattr(analytics_db, "list_gaps", list_gaps)
+    monkeypatch.setattr(analytics_db, "questions_by_id", questions_by_id)
+    return asked_for
+
+
+def test_gaps_lists_the_open_ones_with_the_questions_still_stored(
+    stored_gaps: list[str | None],
+) -> None:
+    code, output = _invoke("gaps")
+
+    assert code == 0, output
+    assert stored_gaps == ["open"], "open unless told otherwise"
+    assert "#7  Consulting day rates  [open]" in output
+    assert "5 question(s), 3 said the information was not there, average best score 0.310" in output
+    assert "first asked 2026-09-22, last 2026-10-11" in output
+    # Three examples at most, in the gap's own order, skipping the one that is gone.
+    # Four of this gap's five are still stored, and the fourth is not printed.
+    examples = [line.strip() for line in output.splitlines() if line.startswith("      - ")]
+    assert examples == [f"- {DAY_RATE}", "- How much per day?", "- Is there a price list?"]
+    assert "What would a week cost?" not in output
+    assert "Salary expectations" not in output
+
+
+def test_all_lists_every_gap_and_says_what_was_decided_about_each(
+    stored_gaps: list[str | None], looked_up: list[list[int]]
+) -> None:
+    code, output = _invoke("gaps", "--status", "all")
+
+    assert code == 0, output
+    assert stored_gaps == [None]
+    assert looked_up == [[11, 13, 15, 17, 19, 21, 31]], (
+        "one lookup for every gap's examples, and not one for each gap"
+    )
+    assert "#2  Salary expectations  [wont_fix]" in output
+    assert "    marked wont_fix on 2026-10-03" in output
+    assert "#4  Client references  [written]" in output
+    assert "    marked written on 2026-10-09, closed by services" in output
+    assert "    asked again, and unanswered, since then" in output
+    assert output.count("asked again, and unanswered") == 1, (
+        "only the one asked after it was marked"
+    )
+
+
+def test_a_status_filters_the_list(stored_gaps: list[str | None]) -> None:
+    code, output = _invoke("gaps", "--status", "wont_fix")
+
+    assert code == 0, output
+    assert stored_gaps == ["wont_fix"]
+    assert "Salary expectations" in output
+    assert "Consulting day rates" not in output
+
+
+def test_no_gaps_says_how_they_are_made(monkeypatch: pytest.MonkeyPatch) -> None:
+    async def list_gaps(*, status: str | None = None) -> list[Gap]:  # ruff: ignore[unused-async]
+        assert status == "open"
+        return []
+
+    monkeypatch.setattr(analytics_db, "list_gaps", list_gaps)
+
+    code, output = _invoke("gaps")
+
+    assert code == 0
+    assert "No gaps to list. `refresh-gaps` works them out" in output
+
+
+# --- gap-status ---------------------------------------------------------------------
+
+
+@pytest.fixture
+def marking(monkeypatch: pytest.MonkeyPatch) -> list[tuple[int, str, str | None]]:
+    """Gap 7 exists and the article `services` is indexed. Records each change made."""
+    made: list[tuple[int, str, str | None]] = []
+
+    async def set_gap_status(gap_id: int, status: str, *, doc_id: str | None) -> bool:  # ruff: ignore[unused-async]
+        if gap_id != 7:
+            return False
+        made.append((gap_id, status, doc_id))
+        return True
+
+    async def document_exists(doc_id: str) -> bool:  # ruff: ignore[unused-async]
+        return doc_id == "services"
+
+    monkeypatch.setattr(analytics_db, "set_gap_status", set_gap_status)
+    monkeypatch.setattr(analytics_db, "document_exists", document_exists)
+    return made
+
+
+def test_a_gap_is_marked_written_with_the_article_that_closes_it(
+    marking: list[tuple[int, str, str | None]],
+) -> None:
+    code, output = _invoke("gap-status", "7", "written", "--doc", "services")
+
+    assert code == 0, output
+    assert marking == [(7, "written", "services")]
+    assert "Gap 7 is now written, closed by services." in output
+
+
+@pytest.mark.parametrize("status", ["wont_fix", "open"])
+def test_a_gap_is_decided_against_or_opened_again_with_no_article(
+    marking: list[tuple[int, str, str | None]], status: str
+) -> None:
+    code, output = _invoke("gap-status", "7", status)
+
+    assert code == 0, output
+    assert marking == [(7, status, None)]
+    assert f"Gap 7 is now {status}." in output
+
+
+@pytest.mark.parametrize(
+    ("arguments", "says"),
+    [
+        (["7", "written"], "`written` needs --doc"),
+        (
+            ["7", "written", "--doc", "not-indexed"],
+            "No indexed article has the doc_id 'not-indexed'",
+        ),
+        (["7", "wont_fix", "--doc", "services"], "--doc goes with `written` only"),
+        (["7", "open", "--doc", "services"], "--doc goes with `written` only"),
+        (["99", "wont_fix"], "There is no gap 99"),
+    ],
+    ids=[
+        "written-without-doc",
+        "an-article-not-indexed",
+        "doc-with-wont-fix",
+        "doc-with-open",
+        "no-such-gap",
+    ],
+)
+def test_a_change_that_makes_no_sense_is_refused_and_changes_nothing(
+    marking: list[tuple[int, str, str | None]], arguments: list[str], says: str
+) -> None:
+    code, output = _invoke("gap-status", *arguments)
+
+    assert code == 1
+    assert says in output
+    assert marking == []
+    assert "is now" not in output
+
+
+def test_a_status_that_does_not_exist_is_a_usage_error(
+    marking: list[tuple[int, str, str | None]],
+) -> None:
+    code, _ = _invoke("gap-status", "7", "done")
+
+    assert code == 2, "Typer's own refusal, before the command runs"
+    assert marking == []

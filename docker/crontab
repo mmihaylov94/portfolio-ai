@@ -35,17 +35,19 @@
 
 # The weekly digest, by email: how much was asked in the last seven days, and how
 # much of it the assistant could not answer. Monday morning, before the week
-# starts. It carries counts and nothing a visitor typed.
+# starts. It works the content gaps out again first, and carries counts and the
+# gaps' names: nothing a visitor typed.
 #
-# Two quiet outcomes, both exit code 0, both one log line. With the mail settings
-# missing from .env it logs `digest_not_configured` and does nothing: the email is
-# optional, and a job that failed every Monday for want of it would be the noise
-# the note at the top of this file is about. And in a week when nobody asked
-# anything it logs `digest_skipped` and sends nothing.
+# Two quiet outcomes, both exit code 0. With the mail settings missing from .env
+# it logs `digest_not_configured` and does nothing: the email is optional, and a
+# job that failed every Monday for want of it would be the noise the note at the
+# top of this file is about. And in a week when nobody asked anything it still
+# works the gaps out again, so that their counts follow the purge down, then logs
+# `digest_skipped` and sends nothing.
 30 5 * * 1   python -m portfolio_ai.analytics digest
 
-# Never schedule `python -m portfolio_ai.analytics report`. It prints what visitors
-# typed, and everything a job here prints becomes this container's log.
+# Never schedule `python -m portfolio_ai.analytics report`, or `gaps`. They print
+# what visitors typed, and everything a job here prints becomes this container's log.
 
 # Retention sweep. Chat messages and feedback older than CHAT_RETENTION_DAYS are
 # deleted, and so are sessions nobody has come back to; content gaps, aggregates

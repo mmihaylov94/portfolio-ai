@@ -14,16 +14,17 @@ from decimal import Decimal
 import click
 import pytest
 from smtp_fake import FakeServer, install_fake_smtp
-from turns import START, turn
+from turns import START, gap, turn
 from typer.testing import CliRunner
 
 from portfolio_ai.analytics import digest as digests
+from portfolio_ai.analytics import gaps as gap_refresh
 from portfolio_ai.analytics import report as reports
 from portfolio_ai.analytics.cli import app
 from portfolio_ai.analytics.report import Report
 from portfolio_ai.config import get_settings
 from portfolio_ai.db.analytics import ArticleUsage, ArticleUse, Turn, Volume
-from portfolio_ai.exceptions import AnalyticsError
+from portfolio_ai.exceptions import AnalyticsError, AssistantError
 
 SENDER = "sender@example.com"
 OWNER = "owner@example.com"
@@ -36,6 +37,7 @@ RATE = "What does Mihail charge for a day of consulting?"
 LARAVEL = "Has Mihail shipped anything with Laravel?"
 DECLINE = "His day rate is not listed in the information I have."
 COMMENT = "That is not what I asked."
+GAP = "Consulting day rates"
 
 
 def _report(turns: list[Turn], *, days: int = 7) -> Report:
@@ -53,6 +55,7 @@ def _report(turns: list[Turn], *, days: int = 7) -> Report:
                 ArticleUse(doc_id="services", title="Services", sections=6, unused=[], answers=2)
             ],
         ),
+        gaps=[gap(7, GAP, questions=4, fallbacks=3)],
         low_score_threshold=0.35,
         rephrase_similarity=0.60,
         embedded=2,
@@ -94,10 +97,22 @@ def test_the_body_is_the_counts_and_how_to_read_the_rest() -> None:
     assert "- 1 of 2 knowledge-base answers said the information was not there (50%)" in body
     assert "- 0 thumbs up, 1 thumbs down" in body
     assert "Services (services)" in body
+    assert f"-    4  {GAP} (gap 7; 3 said the information was not there" in body
     assert (
         "    docker compose exec worker python -m portfolio_ai.analytics report --since 8d\n"
         in body
     )
+    assert "    docker compose exec worker python -m portfolio_ai.analytics gaps\n" in body
+
+
+def test_the_email_says_which_of_its_lines_a_model_wrote_from_visitors_questions() -> None:
+    """A gap's name is not what a visitor typed, and it is derived from it. The
+    email's last paragraph used to say only that it held counts, above a list of
+    names that were not counts."""
+    body = digests.compose(_week()).body
+
+    assert "holds counts and none of what visitors typed" in body
+    assert "gaps' names were written by a model from their questions" in body
 
 
 def test_the_command_in_the_email_looks_back_a_day_further_than_the_email_does() -> None:
@@ -142,6 +157,25 @@ def server(monkeypatch: pytest.MonkeyPatch) -> FakeServer:
     return install_fake_smtp(monkeypatch)
 
 
+@pytest.fixture(autouse=True)
+def ran(monkeypatch: pytest.MonkeyPatch) -> list[str]:
+    """Stand in for the gap refresh, in every test here, and record what ran.
+
+    ``autouse`` because the alternative is a unit test that opens a connection: the
+    first run of these after the digest learnt to refresh the gaps spent two and a
+    half minutes waiting for a database that is not there. The two stand-ins for
+    ``report.build`` below write to the same list, so a test can say what ran and
+    in which order.
+    """
+    calls: list[str] = []
+
+    async def refresh(*, dry_run: bool = False) -> None:  # ruff: ignore[unused-async]
+        calls.append("dry refresh" if dry_run else "refresh")
+
+    monkeypatch.setattr(gap_refresh, "refresh", refresh)
+    return calls
+
+
 @pytest.fixture
 def mail_settings(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("SMTP_USER", SENDER)
@@ -151,12 +185,13 @@ def mail_settings(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 @pytest.fixture
-def built(monkeypatch: pytest.MonkeyPatch) -> list[dt.timedelta]:
+def built(monkeypatch: pytest.MonkeyPatch, ran: list[str]) -> list[dt.timedelta]:
     """Stand in for the database and OpenAI: a week with two questions in it. Records
     the length of each window asked for, so a test can tell whether it was built."""
     windows: list[dt.timedelta] = []
 
     async def build(*, since: dt.datetime, until: dt.datetime) -> Report:  # ruff: ignore[unused-async]
+        ran.append("build")
         windows.append(until - since)
         return _week()
 
@@ -165,8 +200,9 @@ def built(monkeypatch: pytest.MonkeyPatch) -> list[dt.timedelta]:
 
 
 @pytest.fixture
-def quiet_week(monkeypatch: pytest.MonkeyPatch) -> None:
+def quiet_week(monkeypatch: pytest.MonkeyPatch, ran: list[str]) -> None:
     async def build(*, since: dt.datetime, until: dt.datetime) -> Report:  # ruff: ignore[unused-async]
+        ran.append("build")
         # The window it was asked for, with nothing in it.
         return dataclasses.replace(_report([]), since=since, until=until)
 
@@ -203,21 +239,71 @@ def test_a_week_with_questions_is_sent_once_and_logged_as_counts(
 
 
 @pytest.mark.usefixtures("mail_settings", "built")
-def test_nothing_a_scheduled_run_prints_holds_a_question_or_an_address(
+def test_the_gaps_are_worked_out_again_before_the_report_reads_them(
+    server: FakeServer, ran: list[str]
+) -> None:
+    """Refresh, then build: in that order. The report reads the gaps from the table
+    as it builds, and built first it would name them as the last refresh left them."""
+    code, output = _invoke()
+
+    assert code == 0, output
+    assert ran == ["refresh", "build"]
+    body = server.sent[0].get_content()
+    assert "## Content gaps" in body
+    assert f"-    4  {GAP} (gap 7; 3 said the information was not there" in body
+
+
+@pytest.mark.usefixtures("built")
+def test_a_dry_run_refreshes_nothing_and_shows_the_gaps_as_they_stood(
+    server: FakeServer, ran: list[str]
+) -> None:
+    """A refresh writes to the table and pays a model to name what is new. A dry run
+    does neither."""
+    code, output = _invoke("--dry-run")
+
+    assert code == 0, output
+    assert ran == ["build"]
+    assert f"-    4  {GAP} (gap 7;" in output
+    assert server.steps == []
+
+
+@pytest.mark.usefixtures("mail_settings", "built")
+def test_gaps_that_cannot_be_refreshed_stop_the_email(
+    server: FakeServer, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Exit code 1 and nothing sent, like a report that could not be built. Run again,
+    it sends: nothing was lost."""
+
+    async def refresh(*, dry_run: bool = False) -> None:  # ruff: ignore[unused-async]
+        raise AssistantError(f"OpenAI could not be reached (dry_run={dry_run})")
+
+    monkeypatch.setattr(gap_refresh, "refresh", refresh)
+
+    code, output = _invoke()
+
+    assert code == 1
+    assert "command_failed" in output
+    assert server.steps == []
+
+
+@pytest.mark.usefixtures("mail_settings", "built")
+def test_nothing_a_scheduled_run_prints_holds_a_question_an_address_or_a_gaps_name(
     server: FakeServer,
 ) -> None:
     """Under supercronic the output is the container's log. Not the questions, which
     the email leaves out too, and not who it was sent to: an address is personal data
-    as much as a question is."""
+    as much as a question is. Nor a gap's name, which the email does carry: it was
+    written from visitors' questions, and the log is not the place for it."""
     _, output = _invoke()
 
     assert server.sent, "it was sent; this is about what was printed while sending"
-    for private in (RATE, LARAVEL, DECLINE, COMMENT, OWNER, SENDER, PASSWORD):
+    assert GAP in server.sent[0].get_content(), "the name is in the email"
+    for private in (RATE, LARAVEL, DECLINE, COMMENT, OWNER, SENDER, PASSWORD, GAP):
         assert private not in output
 
 
 def test_without_mail_settings_it_warns_names_them_and_does_nothing_else(
-    server: FakeServer, built: list[dt.timedelta]
+    server: FakeServer, built: list[dt.timedelta], ran: list[str]
 ) -> None:
     """Exit code 0, on purpose. The email is optional, and a job that failed every
     Monday for want of it would teach whoever reads the logs to skip past failures."""
@@ -229,15 +315,22 @@ def test_without_mail_settings_it_warns_names_them_and_does_nothing_else(
     assert warning["level"] == "warning"
     assert warning["missing"] == ["SMTP_USER", "SMTP_APP_PASSWORD", "DIGEST_TO_EMAIL"]
     assert built == [], "no report is built that could not be sent: nothing is spent"
+    assert ran == [], "and no gap is refreshed"
     assert server.steps == []
 
 
 @pytest.mark.usefixtures("mail_settings", "quiet_week")
-def test_a_week_in_which_nobody_asked_anything_sends_nothing(server: FakeServer) -> None:
+def test_a_week_in_which_nobody_asked_anything_sends_nothing_and_still_refreshes(
+    server: FakeServer, ran: list[str]
+) -> None:
+    """Nothing new can have failed in a week without questions. But the purge takes
+    old ones every night, and a gap whose questions are gone should say so: skipped
+    in quiet weeks, the refresh left counts standing for questions long deleted."""
     code, output = _invoke()
 
     assert code == 0
     assert server.steps == [], "months without a visitor are months without an email"
+    assert ran == ["refresh", "build"]
     [skipped] = [event for event in _events(output) if event["event"] == "digest_skipped"]
     assert skipped["days"] == 7
 
@@ -302,12 +395,15 @@ def test_a_dry_run_sends_nothing_even_when_it_could(server: FakeServer) -> None:
 
 
 @pytest.mark.usefixtures("quiet_week")
-def test_a_dry_run_of_a_quiet_week_says_there_is_nothing_to_send(server: FakeServer) -> None:
+def test_a_dry_run_of_a_quiet_week_says_there_is_nothing_to_send(
+    server: FakeServer, ran: list[str]
+) -> None:
     code, output = _invoke("--dry-run")
 
     assert code == 0
     assert "Nothing to send: nobody asked anything in the last 7 day(s)." in output
     assert "Subject:" not in output
+    assert ran == ["build"], "a dry run refreshes nothing, in a quiet week as in any other"
     assert server.steps == []
 
 
@@ -347,12 +443,13 @@ def test_a_report_that_could_not_be_built_sends_nothing(
 
 @pytest.mark.usefixtures("mail_settings")
 def test_the_test_flag_sends_one_line_and_builds_no_report(
-    server: FakeServer, built: list[dt.timedelta]
+    server: FakeServer, built: list[dt.timedelta], ran: list[str]
 ) -> None:
     code, output = _invoke("--test")
 
     assert code == 0, output
     assert built == [], "no database, no OpenAI: this proves the mail settings and nothing else"
+    assert ran == []
     [message] = server.sent
     assert message["Subject"] == "mihaylov.io chat: test message"
     assert message["To"] == OWNER

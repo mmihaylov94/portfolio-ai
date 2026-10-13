@@ -261,6 +261,12 @@ class Settings(BaseSettings):
     # written to be that, four reached it; of 56 other pairs, none did. It errs the
     # other way: a pair wrongly called a rephrase says an answer failed when it had not.
     rephrase_similarity: float = Field(default=0.60, ge=0.0, le=1.0)
+    # A failed question joins a content gap when its search is at least this like the
+    # gap's centre. Provisional like the two above. On the invented conversations'
+    # 23 failed questions, 0.40, 0.45 and 0.50 give the same 13 groups, none of them
+    # mixing two subjects but one; 0.35 gives 6, merging unrelated ones, and 0.55
+    # gives 14, splitting a pair.
+    gap_similarity: float = Field(default=0.45, ge=0.0, le=1.0)
 
     # --- The weekly email -----------------------------------------------------
     # Where `analytics digest` sends from and to. Only that command reads these, so

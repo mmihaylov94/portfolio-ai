@@ -6,18 +6,23 @@
     digest [--since 7d]          email the week's counts; Mondays, by cron
            [--dry-run | --test]  print the email and send nothing | send a one-line test
     report [--since 7d]          what was asked and where answers fell short; for a terminal
+    refresh-gaps [--dry-run]     work the content gaps out again; prints no question
+    gaps [--status open]         the writing queue, with example questions; for a terminal
+    gap-status 7 written --doc faq    mark a gap written, wont_fix or open again
     seed [--clear] [--dry-run]   invented conversations, into the development database only
 
-``report`` quotes what visitors typed. It is for a person at a terminal and must
-never be put in the crontab: under supercronic a command's output is the
-container's log, and nothing a visitor types goes into a log. ``digest`` is the
-one that is scheduled, and it carries the counts without the words.
+``report`` and ``gaps`` quote what visitors typed. They are for a person at a
+terminal and must never be put in the crontab: under supercronic a command's output
+is the container's log, and nothing a visitor types goes into a log. ``digest`` is
+the one that is scheduled; it refreshes the gaps and carries the counts and the
+gaps' names, without the words.
 
-The content gaps and ``promote-case`` are the rest of build step 7.
+``promote-case`` is the rest of build step 7.
 """
 
 import io
 import sys
+from enum import StrEnum
 from pathlib import Path
 from typing import Annotated
 
@@ -25,18 +30,28 @@ import structlog
 import typer
 
 from portfolio_ai.analytics import digest as digests
+from portfolio_ai.analytics import gaps as gap_refresh
 from portfolio_ai.analytics import mail, retention, seed
 from portfolio_ai.analytics import report as reports
 from portfolio_ai.analytics.retention import RetentionReport
 from portfolio_ai.analytics.seed import InventedTraffic, Played, SeedReport
 from portfolio_ai.cli import run_async
+from portfolio_ai.db import analytics as analytics_db
 from portfolio_ai.db.pool import close_pool
-from portfolio_ai.exceptions import ConfigError, PortfolioAIError
+from portfolio_ai.exceptions import AnalyticsError, ConfigError, PortfolioAIError
 from portfolio_ai.llm.client import close_client
 
 log = structlog.get_logger(__name__)
 
-app = typer.Typer(add_completion=False, help="Analytics over the chat history.")
+app = typer.Typer(
+    add_completion=False,
+    # Typer prints a crash with rich, which can list every local variable of every
+    # frame beside the traceback. The frames here hold visitors' questions, and a
+    # scheduled command's output is the container's log. Off is the default in the
+    # version this was written against; saying so here keeps it off in the next.
+    pretty_exceptions_show_locals=False,
+    help="Analytics over the chat history.",
+)
 
 
 @app.callback()
@@ -146,7 +161,7 @@ def send_digest(
         bool, typer.Option("--test", help="Send a one-line test, to prove the mail settings.")
     ] = False,
 ) -> None:
-    """Email the window's counts. Nothing a visitor typed is in it."""
+    """Email the window's counts and the content gaps' names. Nothing a visitor typed is in it."""
     outbox: list[digests.Message] = []
     counts: dict[str, int] = {}
     quiet: list[int] = []
@@ -171,6 +186,14 @@ def send_digest(
                 log.warning("digest_not_configured", missing=missing)
                 return
 
+            if not dry_run:
+                # The gaps are worked out again before the report reads them, so that
+                # the email names them as they stand. In a week nobody asked anything
+                # too: the purge goes on taking questions, and a gap's count should
+                # follow them down. Not in a dry run: a refresh writes to the table
+                # and pays a model to name what is new, and a dry run does neither.
+                # It shows the gaps as they stood.
+                await gap_refresh.refresh()
             report = await reports.build(since=start, until=end)
             if not report.turns:
                 # Months without a visitor are months without an email.
@@ -213,6 +236,148 @@ def send_digest(
             # Counts, as always. Not the recipient: an address is personal data too.
             log.info("digest_sent", test=test, **counts)
 
+    raise typer.Exit(code=code)
+
+
+# --- content gaps ---------------------------------------------------------------
+
+
+@app.command("refresh-gaps")
+def refresh_gaps(
+    dry_run: Annotated[
+        bool,
+        typer.Option("--dry-run", help="Group and match, name nothing, write nothing."),
+    ] = False,
+) -> None:
+    """Work the content gaps out again from the questions that failed."""
+    done: list[gap_refresh.Refresh] = []
+
+    async def _run() -> None:
+        try:
+            done.append(await gap_refresh.refresh(dry_run=dry_run))
+        finally:
+            await _shutdown()
+
+    code = run_async(_run, log_level="WARNING")
+    for result in done:
+        heading = "PLAN (nothing was named or written)" if result.dry_run else "GAPS REFRESHED"
+        typer.echo(f"\n{heading}")
+        typer.echo(f"  failed questions  {result.failed}")
+        if result.capped:
+            typer.echo(
+                f"                    more are stored: the newest {gap_refresh.MAX_QUESTIONS} "
+                "were grouped"
+            )
+        typer.echo(f"  gaps              {len(result.groups)}")
+        typer.echo(f"    new             {len(result.created)}")
+        typer.echo(f"    known           {len(result.updated)}")
+        if result.unnamed and not result.dry_run:
+            typer.echo(f"    not named yet   {result.unnamed}: the next refresh asks again")
+        typer.echo(f"  {'would empty' if result.dry_run else 'emptied':<18}{result.emptied}")
+        typer.echo(f"  cost              ${result.cost:.6f}\n")
+        # Labels and counts. Never a question: this is also what `digest` does on a
+        # Monday, and its output there would be the container's log.
+        for group in result.groups:
+            known = "known" if group.gap_id is not None else "new  "
+            typer.echo(f"  {len(group.questions):>4}  {known}  {group.label or '(not named yet)'}")
+        typer.echo("\nThe questions behind each: python -m portfolio_ai.analytics gaps\n")
+    raise typer.Exit(code=code)
+
+
+class GapFilter(StrEnum):
+    OPEN = "open"
+    WRITTEN = "written"
+    WONT_FIX = "wont_fix"
+    ALL = "all"
+
+
+@app.command("gaps")
+def show_gaps(
+    status: Annotated[
+        GapFilter, typer.Option("--status", help="Which gaps to list.")
+    ] = GapFilter.OPEN,
+) -> None:
+    """The writing queue, most asked first. Quotes visitors: terminal only."""
+    found: list[tuple[analytics_db.Gap, list[str]]] = []
+
+    async def _run() -> None:
+        try:
+            wanted = None if status is GapFilter.ALL else status.value
+            listed = await analytics_db.list_gaps(status=wanted)
+            # The examples are ids. Only the questions still stored come back; the
+            # rest went with the purge, which is the point of keeping ids. One query
+            # for every gap's examples together, and not one for each gap.
+            kept = await analytics_db.questions_by_id(
+                [i for gap in listed for i in gap.example_message_ids]
+            )
+            for gap in listed:
+                found.append((gap, [kept[i] for i in gap.example_message_ids if i in kept][:3]))
+        finally:
+            await _shutdown()
+
+    code = run_async(_run, log_level="WARNING")
+    if code == 0 and not found:
+        typer.echo("No gaps to list. `refresh-gaps` works them out from the questions that failed.")
+    for gap, examples in found:
+        score = f"{gap.avg_top_score:.3f}" if gap.avg_top_score is not None else "  -- "
+        typer.echo(
+            f"\n#{gap.id}  {gap.label}  [{gap.status}]\n"
+            f"    {gap.question_count} question(s), {gap.fallback_count} said the information "
+            f"was not there, average best score {score}\n"
+            f"    first asked {gap.first_seen_at:%Y-%m-%d}, last {gap.last_seen_at:%Y-%m-%d}"
+        )
+        if gap.resolved_at is not None:
+            closed_by = f", closed by {gap.resolved_doc_id}" if gap.resolved_doc_id else ""
+            typer.echo(f"    marked {gap.status} on {gap.resolved_at:%Y-%m-%d}{closed_by}")
+        # For a gap marked written, and no other: there an article was meant to have
+        # closed it. A gap decided against is expected to go on being asked.
+        if gap.status == "written" and gap.failed_since_resolved:
+            typer.echo("    asked again, and unanswered, since then")
+        for example in examples:
+            typer.echo(f"      - {' '.join(example.split())[:160]}")
+    raise typer.Exit(code=code)
+
+
+class GapStatus(StrEnum):
+    OPEN = "open"
+    WRITTEN = "written"
+    WONT_FIX = "wont_fix"
+
+
+@app.command("gap-status")
+def set_gap_status(
+    gap_id: Annotated[int, typer.Argument(help="The gap's number, as `gaps` prints it.")],
+    status: Annotated[GapStatus, typer.Argument(help="open, written or wont_fix.")],
+    doc: Annotated[
+        str | None,
+        typer.Option("--doc", help="The doc_id of the article that closes it. With `written`."),
+    ] = None,
+) -> None:
+    """Mark a gap written, wont_fix, or open again."""
+
+    async def _run() -> None:
+        try:
+            if status is GapStatus.WRITTEN:
+                if doc is None:
+                    raise AnalyticsError(
+                        "`written` needs --doc: the doc_id of the article that closes the gap."
+                    )
+                if not await analytics_db.document_exists(doc):
+                    raise AnalyticsError(
+                        f"No indexed article has the doc_id {doc!r}. Write it, let the hourly "
+                        "ingest pick it up, and mark the gap then."
+                    )
+            elif doc is not None:
+                raise AnalyticsError("--doc goes with `written` only.")
+
+            if not await analytics_db.set_gap_status(gap_id, status.value, doc_id=doc):
+                raise AnalyticsError(f"There is no gap {gap_id}. `gaps --status all` lists them.")
+        finally:
+            await _shutdown()
+
+    code = run_async(_run, log_level="WARNING")
+    if code == 0:
+        typer.echo(f"Gap {gap_id} is now {status.value}" + (f", closed by {doc}." if doc else "."))
     raise typer.Exit(code=code)
 
 
@@ -277,12 +442,16 @@ def seed_invented(
     """Play invented conversations through the assistant. Development database only."""
     planned: list[tuple[InventedTraffic, int]] = []
     seeded: list[SeedReport] = []
-    removed: list[int] = []
+    counted: list[int] = []
+    removed: list[seed.Cleared] = []
 
     async def _run() -> None:
         try:
             if clear:
-                removed.append(await seed.stored() if dry_run else await seed.clear())
+                if dry_run:
+                    counted.append(await seed.stored())
+                else:
+                    removed.append(await seed.clear())
                 return
             # Before the file is read. The image has no datasets/ folder, so on the
             # server a missing file would be reported first, and the answer there
@@ -297,9 +466,13 @@ def seed_invented(
             await _shutdown()
 
     code = run_async(_run, log_level="WARNING")
-    if removed:
-        verb = "would be removed" if dry_run else "removed"
-        typer.echo(f"{removed[0]} invented conversation(s) {verb}.")
+    for count in counted:
+        typer.echo(f"{count} invented conversation(s) would be removed, and every content gap.")
+    for cleared in removed:
+        typer.echo(
+            f"{cleared.conversations} invented conversation(s) and "
+            f"{cleared.gaps} content gap(s) removed."
+        )
     if planned:
         _print_plan(*planned[0])
     if seeded:

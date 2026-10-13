@@ -157,6 +157,10 @@ class FakeOpenAI:
         }
         self._replies.append(_Reply("structured", text=json.dumps(verdict)))
 
+    def label(self, text: str) -> None:
+        """A structured reply in the shape of a content gap's label."""
+        self._replies.append(_Reply("structured", text=json.dumps({"label": text})))
+
     def say(self, text: str, *, usage: Usage | None = None) -> None:
         self._replies.append(_Reply("text", text=text, usage=usage or Usage()))
 

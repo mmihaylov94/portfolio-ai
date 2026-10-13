@@ -12,6 +12,11 @@ it gives the same counts and not one word a visitor wrote, and that is the only
 form allowed to leave the database's side of things, by email or into a log.
 The chat tells visitors their conversations are kept for 90 days; a copy quoted
 into a mailbox would outlive that.
+
+Both forms name the content gaps. A gap's label is the one piece of text in the
+emailed form that was derived from what visitors typed: a model wrote it from their
+questions, told to name the topic and nobody who asked, and it was checked before
+it was stored (``analytics/gaps.py``).
 """
 
 import datetime as dt
@@ -28,7 +33,7 @@ from portfolio_ai.analytics.signals import Pair
 from portfolio_ai.config import get_settings
 from portfolio_ai.db import analytics as analytics_db
 from portfolio_ai.db import documents as docs_db
-from portfolio_ai.db.analytics import ArticleUsage, Turn, Volume
+from portfolio_ai.db.analytics import ArticleUsage, Gap, Turn, Volume
 from portfolio_ai.exceptions import AnalyticsError
 from portfolio_ai.llm.embeddings import embed_texts
 from portfolio_ai.llm.responses import domain_error
@@ -43,6 +48,10 @@ BEST_PASSAGES = 5
 # Below this many counted answers, which sections were never used says more about
 # how little was asked than about the sections.
 MIN_ANSWERS_FOR_UNUSED = 50
+
+# How many open gaps a report lists, the most asked. `analytics gaps` lists them
+# all; an email of two hundred lines is one nobody reads.
+GAPS_LISTED = 10
 
 ROUTE_NAMES = {
     "mihail_related": "about Mihail",
@@ -85,6 +94,9 @@ class Report:
     pairs: list[Pair]
     refused: list[Refused]
     usage: ArticleUsage
+    # The content gaps as the table holds them, most asked first. As of the last
+    # refresh: building a report does not work them out again.
+    gaps: list[Gap]
     # The two thresholds the lists below were drawn with, so that a report says
     # what it was measured against.
     low_score_threshold: float
@@ -201,6 +213,7 @@ async def build(*, since: dt.datetime, until: dt.datetime) -> Report:
         pairs=signals.consecutive_pairs(turns, vectors),
         refused=refused,
         usage=usage,
+        gaps=await analytics_db.list_gaps(),
         low_score_threshold=settings.low_score_threshold,
         rephrase_similarity=settings.rephrase_similarity,
         embedded=len(texts),
@@ -397,6 +410,68 @@ def _articles(report: Report, *, verbatim: bool) -> list[str]:
     return lines
 
 
+def _utc(moment: dt.datetime) -> dt.datetime:
+    """``moment`` on UTC's clock.
+
+    A ``timestamptz`` read from Postgres is the right instant, told on the clock of
+    the connection's time zone, which is the database server's setting and not this
+    project's. ``astimezone`` keeps the instant and changes the clock. Without it a
+    time printed with "UTC" after it is only UTC where the server happens to be.
+    """
+    return moment.astimezone(dt.UTC)
+
+
+def _gaps(report: Report) -> list[str]:
+    """The content gaps: what the knowledge base is asked for and does not have.
+
+    In both forms of the report. A gap's label is not something a visitor typed: a
+    model wrote it, under an instruction to name the topic and nobody who asked.
+    The questions behind a gap are shown by ``analytics gaps``, in a terminal.
+
+    The counts are not this report's window's. A gap counts every failed question
+    still stored, which is up to the days chat is kept for, and the section says so.
+    """
+    lines = ["## Content gaps", ""]
+    if not report.gaps:
+        lines.append("None recorded yet. `analytics refresh-gaps` works them out.")
+        return lines
+
+    refreshed = max((gap.refreshed_at for gap in report.gaps if gap.refreshed_at), default=None)
+    asked = [gap for gap in report.gaps if gap.question_count]
+    queue = [gap for gap in asked if gap.status == "open"]
+    lines.append(
+        "What the knowledge base is asked for and does not have, most asked first"
+        + (f", as of {_utc(refreshed):%Y-%m-%d %H:%M} UTC" if refreshed else "")
+        + ". Counted over every question still stored, not over these "
+        f"{_plural(report.days, 'day')} alone."
+    )
+    lines.append("")
+    for gap in queue[:GAPS_LISTED]:
+        lines.append(
+            f"- {gap.question_count:>4}  {gap.label} (gap {gap.id}; "
+            f"{gap.fallback_count} said the information was not there; "
+            f"last asked {_utc(gap.last_seen_at):%Y-%m-%d})"
+        )
+    if len(queue) > GAPS_LISTED:
+        lines.append(f"- and {len(queue) - GAPS_LISTED} more: `analytics gaps` lists them all")
+    if not queue:
+        lines.append("- no open gap has been asked about lately")
+
+    # The alarm this section exists for as much as the queue: an article was written
+    # to close a gap, and the question went unanswered again afterwards.
+    reopened = [gap for gap in asked if gap.status == "written" and gap.failed_since_resolved]
+    if reopened:
+        lines.extend(["", "Marked written, and unanswered again since:", ""])
+        for gap in reopened:
+            written = _utc(gap.resolved_at) if gap.resolved_at else None
+            lines.append(
+                f"- {gap.question_count:>4}  {gap.label} (gap {gap.id}; written as "
+                f"{gap.resolved_doc_id} on {written:%Y-%m-%d}; "
+                f"last asked {_utc(gap.last_seen_at):%Y-%m-%d})"
+            )
+    return lines
+
+
 def _cost_and_speed(report: Report) -> list[str]:
     answers = len(report.turns)
     each = report.cost / answers if answers else Decimal(0)
@@ -463,9 +538,9 @@ def render(report: Report, *, verbatim: bool) -> str:
     """The report as Markdown.
 
     ``verbatim=False`` is the form that may be emailed or logged: counts, article
-    titles, costs and timings, and nothing a visitor typed. Keep it that way. A
-    test asserts it by rendering a report and looking for every question, answer
-    and comment in the result.
+    titles, the content gaps' labels, costs and timings, and nothing a visitor
+    typed. Keep it that way. A test asserts it by rendering a report and looking
+    for every question, answer and comment in the result.
     """
     title = (
         f"# Chat report: {report.since:%Y-%m-%d} to {report.until:%Y-%m-%d} "
@@ -488,6 +563,7 @@ def render(report: Report, *, verbatim: bool) -> str:
         _volume(report),
         _shortfalls(report, verbatim=verbatim),
         _articles(report, verbatim=verbatim),
+        _gaps(report),
         _cost_and_speed(report),
     ]
     if verbatim:

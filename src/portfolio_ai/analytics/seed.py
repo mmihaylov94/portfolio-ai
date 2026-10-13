@@ -272,9 +272,23 @@ async def seed(
     return report
 
 
-async def clear() -> int:
-    """Delete every invented conversation. Returns how many there were."""
+@dataclass(frozen=True)
+class Cleared:
+    conversations: int
+    gaps: int
+
+
+async def clear() -> Cleared:
+    """Delete every invented conversation, and the content gaps made from them.
+
+    All the gaps, and not only some: in development every gap came from an invented
+    question, and one left behind would be recognised by the next seeding's refresh
+    as an old acquaintance, with a label and a status nobody chose this time.
+    """
     _local_only()
-    removed = await analytics_db.delete_conversations(SESSION_PREFIX)
-    log.info("invented_traffic_cleared", conversations=removed)
+    removed = Cleared(
+        conversations=await analytics_db.delete_conversations(SESSION_PREFIX),
+        gaps=await analytics_db.delete_gaps(),
+    )
+    log.info("invented_traffic_cleared", conversations=removed.conversations, gaps=removed.gaps)
     return removed

@@ -18,13 +18,25 @@ question row carries the visitor's words and when they were sent.
 windows that share an edge then never count one question twice, which is what lets
 "this week against the week before" be two calls with one timestamp in common.
 
-The last three functions belong to ``analytics seed``, which puts invented
-conversations into the development database and takes them out again.
+**A score is read to six decimal places.** ``top_score`` is a ``real``, which holds
+about seven significant digits: 0.35 goes in and 0.3499999940395355 comes out. Left
+alone, a score of exactly the threshold would count as under it, in a list headed
+"under 0.35" that printed it as 0.350. Rounded on the way out, in both queries that
+read it, 0.35 is 0.35 again, and "under" means what it says.
+
+After those come the content gaps: reading the questions that failed, and every
+statement that reads or writes ``content_gaps``. The last functions belong to
+``analytics seed``, which puts invented conversations into the development database
+and takes them out again.
 """
 
 import datetime as dt
+from collections.abc import Sequence
 from dataclasses import dataclass
 from decimal import Decimal
+from typing import Any
+
+from pgvector import Vector
 
 from portfolio_ai.db.pool import get_pool
 
@@ -108,7 +120,8 @@ async def turns_between(since: dt.datetime, until: dt.datetime) -> list[Turn]:
             """
             select q.id as question_id, a.id as answer_id, q.session_id as conversation,
                    q.created_at as asked_at, q.content as question, a.content as answer,
-                   a.classification, a.top_score, a.fallback_used,
+                   a.classification, round(a.top_score::numeric, 6)::float8 as top_score,
+                   a.fallback_used,
                    f.rating, f.comment,
                    coalesce(a.cost_usd, 0) as cost, a.latency_ms, a.first_token_ms
             from chat_messages a
@@ -291,6 +304,370 @@ async def article_usage(since: dt.datetime, until: dt.datetime, *, best: int) ->
             for row in rows
         ],
     )
+
+
+# --- content gaps -----------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class FailedQuestion:
+    """A question the knowledge base did not answer, as the gap refresh reads it."""
+
+    question_id: int
+    question: str
+    # The first search its answer ran: the model's own rewrite of the question into a
+    # few topical keywords. This is what gets clustered (analytics/gaps.py says why).
+    query: str
+    asked_at: dt.datetime
+    top_score: float | None
+    fallback_used: bool
+    rating: int | None
+
+
+@dataclass(frozen=True)
+class GapCounts:
+    """What one refresh worked out about one gap."""
+
+    centre: list[float]
+    question_count: int
+    fallback_count: int
+    avg_top_score: float | None
+    # The share of its questions whose answers got a thumbs down.
+    negative_rate: float
+    first_seen_at: dt.datetime
+    last_seen_at: dt.datetime
+    example_message_ids: list[int]
+
+
+@dataclass(frozen=True)
+class GapMatch:
+    """The stored gap nearest a centre, and how alike the two are."""
+
+    id: int
+    label: str
+    similarity: float
+
+
+@dataclass(frozen=True)
+class Gap:
+    """One row of ``content_gaps``."""
+
+    id: int
+    label: str
+    # open, written or wont_fix.
+    status: str
+    # As of the last refresh: zero when nobody has asked in the days chat is kept for.
+    question_count: int
+    fallback_count: int
+    avg_top_score: float | None
+    negative_rate: float | None
+    example_message_ids: list[int]
+    resolved_doc_id: str | None
+    resolved_at: dt.datetime | None
+    first_seen_at: dt.datetime
+    last_seen_at: dt.datetime
+    refreshed_at: dt.datetime | None
+
+    @property
+    def failed_since_resolved(self) -> bool:
+        """A question in it failed after it was marked written or wont_fix.
+
+        For a gap marked written that is the useful alarm: the article that was
+        meant to close it did not.
+        """
+        return (
+            self.resolved_at is not None
+            and self.question_count > 0
+            and self.last_seen_at > self.resolved_at
+        )
+
+
+async def failed_questions(*, low_score: float, limit: int) -> list[FailedQuestion]:
+    """The newest ``limit`` stored knowledge-base questions whose answers fell short,
+    oldest first.
+
+    Fell short: the answer was a fallback, or its best passage scored under
+    ``low_score``. "Stored" is at most the days chat is kept for, since the purge
+    has taken the rest.
+
+    The inner query takes the newest by reading from the highest id down and
+    stopping at ``limit``; the outer one puts those back in the order they were
+    asked, which is the order the clustering is always handed.
+
+    ``-> 0 ->> 'query'`` reads the first search's query out of the JSON on the answer
+    row: ``->`` steps into JSON and gives JSON back, ``->>`` takes the last step and
+    gives text. Every knowledge-base answer has a first search, because the agent
+    requires one; the ``coalesce`` is for a row that somehow does not.
+    """
+    pool = await get_pool()
+
+    async with pool.connection() as conn, conn.cursor() as cur:
+        await cur.execute(
+            """
+            select * from (
+                select q.id as question_id, q.content as question,
+                       coalesce(a.tool_calls -> 0 ->> 'query', q.content) as query,
+                       q.created_at as asked_at,
+                       round(a.top_score::numeric, 6)::float8 as top_score,
+                       a.fallback_used, f.rating
+                from chat_messages a
+                join chat_messages q on q.id = a.reply_to_id
+                left join message_feedback f on f.message_id = a.id
+                where a.role = 'assistant'
+                  and a.classification = 'mihail_related'
+                  and (a.fallback_used or round(a.top_score::numeric, 6) < %(low_score)s)
+                order by q.id desc
+                limit %(limit)s
+            ) newest
+            order by question_id
+            """,
+            {"low_score": low_score, "limit": limit},
+        )
+        rows = await cur.fetchall()
+
+    return [
+        FailedQuestion(
+            question_id=row["question_id"],
+            question=row["question"],
+            query=row["query"],
+            asked_at=row["asked_at"],
+            top_score=row["top_score"],
+            fallback_used=row["fallback_used"],
+            rating=row["rating"],
+        )
+        for row in rows
+    ]
+
+
+async def nearest_gap(centre: Sequence[float], *, excluding: Sequence[int]) -> GapMatch | None:
+    """The stored gap whose centre is most like ``centre``, leaving out some ids.
+
+    The same operator retrieval uses, ``<=>``, on a different table: here it compares
+    a group's centre with each stored gap's. There are a handful of gaps, so no index
+    is needed, and Postgres reads them all.
+
+    The cast on the empty-able list is for psycopg: an empty Python list arrives with
+    no element type, and ``!= all`` of an array of unknown type does not parse.
+    """
+    pool = await get_pool()
+
+    async with pool.connection() as conn, conn.cursor() as cur:
+        await cur.execute(
+            """
+            select id, cluster_label, 1 - (centroid <=> %(centre)s) as similarity
+            from content_gaps
+            where id != all(%(excluding)s::bigint[])
+            order by centroid <=> %(centre)s
+            limit 1
+            """,
+            {"centre": Vector(list(centre)), "excluding": list(excluding)},
+        )
+        row = await cur.fetchone()
+
+    if row is None:
+        return None
+    return GapMatch(id=row["id"], label=row["cluster_label"], similarity=float(row["similarity"]))
+
+
+async def apply_gap_refresh(
+    *,
+    updates: Sequence[tuple[int, GapCounts, str | None]],
+    creates: Sequence[tuple[str, GapCounts]],
+    refreshed_at: dt.datetime,
+) -> int:
+    """Write one refresh, all of it or none. Returns how many stored gaps it emptied.
+
+    Three things in one transaction: the gaps that were recognised get this
+    refresh's counts, the new ones are inserted, and every other gap that still had
+    questions is set to none, because nobody asked about it in what is still stored.
+    An emptied gap keeps its label, its status and its dates. It is how a gap marked
+    ``wont_fix`` is still that when the question comes round again a year later.
+
+    An update never touches the status, and touches the label only when it is
+    handed one: the third item of an update is a label for a gap that had none
+    yet, and None for every other. ``coalesce`` gives its first argument that is
+    not null, so a None leaves the column as it was. ``least`` and ``greatest`` keep
+    the earliest first sighting and the latest failure the gap has ever had, which
+    outlive the questions themselves.
+    """
+    pool = await get_pool()
+    kept: list[int] = []
+
+    async with pool.connection() as conn, conn.transaction(), conn.cursor() as cur:
+        for gap_id, counts, label in updates:
+            await cur.execute(
+                """
+                update content_gaps
+                set cluster_label       = coalesce(%(label)s::text, cluster_label),
+                    centroid            = %(centre)s,
+                    question_count      = %(question_count)s,
+                    fallback_count      = %(fallback_count)s,
+                    avg_top_score       = %(avg_top_score)s,
+                    negative_rate       = %(negative_rate)s,
+                    example_message_ids = %(example_message_ids)s,
+                    first_seen_at       = least(first_seen_at, %(first_seen_at)s),
+                    last_seen_at        = greatest(last_seen_at, %(last_seen_at)s),
+                    refreshed_at        = %(refreshed_at)s
+                where id = %(id)s
+                """,
+                {
+                    **_gap_params(counts),
+                    "id": gap_id,
+                    "label": label,
+                    "refreshed_at": refreshed_at,
+                },
+            )
+            kept.append(gap_id)
+
+        for label, counts in creates:
+            await cur.execute(
+                """
+                insert into content_gaps (
+                    cluster_label, centroid, question_count, fallback_count, avg_top_score,
+                    negative_rate, example_message_ids, first_seen_at, last_seen_at, refreshed_at
+                )
+                values (
+                    %(label)s, %(centre)s, %(question_count)s, %(fallback_count)s,
+                    %(avg_top_score)s, %(negative_rate)s, %(example_message_ids)s,
+                    %(first_seen_at)s, %(last_seen_at)s, %(refreshed_at)s
+                )
+                returning id
+                """,
+                {**_gap_params(counts), "label": label, "refreshed_at": refreshed_at},
+            )
+            row = await cur.fetchone()
+            if row is None:  # pragma: no cover - insert ... returning always returns
+                raise RuntimeError("a gap was inserted but its id did not come back")
+            kept.append(int(row["id"]))
+
+        await cur.execute(
+            """
+            update content_gaps
+            set question_count = 0, fallback_count = 0, avg_top_score = null,
+                negative_rate = null, example_message_ids = '{}', refreshed_at = %(refreshed_at)s
+            where id != all(%(kept)s::bigint[]) and question_count > 0
+            """,
+            {"kept": kept, "refreshed_at": refreshed_at},
+        )
+        return cur.rowcount
+
+
+def _gap_params(counts: GapCounts) -> dict[str, object]:
+    return {
+        # Vector, for the reason search_chunks gives: a plain list is sent as
+        # float8[], which the vector column will not take in an update's `set`.
+        "centre": Vector(counts.centre),
+        "question_count": counts.question_count,
+        "fallback_count": counts.fallback_count,
+        "avg_top_score": counts.avg_top_score,
+        "negative_rate": counts.negative_rate,
+        "example_message_ids": counts.example_message_ids,
+        "first_seen_at": counts.first_seen_at,
+        "last_seen_at": counts.last_seen_at,
+    }
+
+
+_GAP_COLUMNS = """
+    select id, cluster_label, status, question_count, fallback_count, avg_top_score,
+           negative_rate, example_message_ids, resolved_doc_id, resolved_at,
+           first_seen_at, last_seen_at, refreshed_at
+    from content_gaps
+"""
+
+# The writing queue's order: what is asked most, then what was asked last.
+_GAP_ORDER = " order by question_count desc, last_seen_at desc, id"
+
+
+def _gap(row: dict[str, Any]) -> Gap:
+    return Gap(
+        id=row["id"],
+        label=row["cluster_label"],
+        status=row["status"],
+        question_count=row["question_count"],
+        fallback_count=row["fallback_count"],
+        avg_top_score=row["avg_top_score"],
+        negative_rate=row["negative_rate"],
+        example_message_ids=list(row["example_message_ids"]),
+        resolved_doc_id=row["resolved_doc_id"],
+        resolved_at=row["resolved_at"],
+        first_seen_at=row["first_seen_at"],
+        last_seen_at=row["last_seen_at"],
+        refreshed_at=row["refreshed_at"],
+    )
+
+
+async def list_gaps(*, status: str | None = None) -> list[Gap]:
+    """The stored gaps, most asked first. All of them, or the ones with ``status``."""
+    pool = await get_pool()
+
+    async with pool.connection() as conn, conn.cursor() as cur:
+        if status is None:
+            await cur.execute(_GAP_COLUMNS + _GAP_ORDER)
+        else:
+            await cur.execute(_GAP_COLUMNS + " where status = %s" + _GAP_ORDER, (status,))
+        return [_gap(row) for row in await cur.fetchall()]
+
+
+async def set_gap_status(gap_id: int, status: str, *, doc_id: str | None) -> bool:
+    """Mark a gap open, written or wont_fix. False when there is no such gap.
+
+    ``written`` and ``wont_fix`` stamp ``resolved_at`` with the moment it was done;
+    ``open`` clears it, with the document. The stamp is what a later failure is
+    measured against: a question in a gap marked written that fails after this
+    moment says the article did not close it.
+    """
+    pool = await get_pool()
+
+    async with pool.connection() as conn, conn.cursor() as cur:
+        await cur.execute(
+            """
+            update content_gaps
+            set status = %(status)s,
+                resolved_doc_id = %(doc_id)s,
+                resolved_at = case when %(status)s = 'open' then null else now() end
+            where id = %(id)s
+            returning id
+            """,
+            {"id": gap_id, "status": status, "doc_id": doc_id},
+        )
+        return await cur.fetchone() is not None
+
+
+async def document_exists(doc_id: str) -> bool:
+    pool = await get_pool()
+
+    async with pool.connection() as conn, conn.cursor() as cur:
+        await cur.execute("select 1 as found from documents where doc_id = %s", (doc_id,))
+        return await cur.fetchone() is not None
+
+
+async def questions_by_id(question_ids: Sequence[int]) -> dict[int, str]:
+    """The text of the questions with these ids that are still stored.
+
+    For printing a gap's examples in a terminal. An id whose message the purge has
+    taken is simply not in the result, which is the point of keeping ids and not
+    text on the gap.
+    """
+    if not question_ids:
+        return {}
+
+    pool = await get_pool()
+    async with pool.connection() as conn, conn.cursor() as cur:
+        await cur.execute(
+            "select id, content from chat_messages where id = any(%s) and role = 'user'",
+            (list(question_ids),),
+        )
+        return {int(row["id"]): str(row["content"]) for row in await cur.fetchall()}
+
+
+async def delete_gaps() -> int:
+    """Delete every content gap. For ``seed --clear``, in development only: there the
+    gaps were made from invented questions, and go when the questions do."""
+    pool = await get_pool()
+
+    async with pool.connection() as conn, conn.cursor() as cur:
+        await cur.execute("delete from content_gaps")
+        return cur.rowcount
 
 
 # --- invented conversations (analytics seed) ------------------------------------

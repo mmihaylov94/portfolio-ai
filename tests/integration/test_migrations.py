@@ -5,9 +5,15 @@ ARCHITECTURE.md section 5 describes. The fixture in conftest.py has already run
 ``alembic upgrade head`` by the time any of this executes.
 """
 
+from pathlib import Path
+
+import psycopg
 import pytest
+from alembic import command
+from alembic.config import Config
 from psycopg.rows import DictRow
 
+from portfolio_ai.config import get_settings
 from portfolio_ai.db.pool import get_pool
 
 pytestmark = pytest.mark.integration
@@ -60,7 +66,7 @@ async def test_alembic_recorded_the_latest_revision() -> None:
     # should not contain the pattern.
     rows = await _fetch_all("select version_num from alembic_version")
 
-    assert [row["version_num"] for row in rows] == ["0005"]
+    assert [row["version_num"] for row in rows] == ["0006"]
 
 
 async def test_chunks_cascade_when_a_document_is_deleted() -> None:
@@ -131,3 +137,77 @@ async def test_vector_extension_and_index_exist(test_schema: str) -> None:
     assert any("hnsw" in d and "vector_cosine_ops" in d for d in definitions), (
         f"no HNSW cosine index on chunks.embedding; found: {definitions}"
     )
+
+
+# --- 0006: content gaps keep ids, not questions --------------------------------------
+
+
+def _gap_columns(schema: str) -> dict[str, str]:
+    """The columns of content_gaps and their types, read on a connection of its own.
+
+    Synchronous, like Alembic and like the fixture that built the schema: the test
+    that uses it runs migrations, and has no business inside an event loop.
+    """
+    with psycopg.connect(get_settings().database_url) as conn, conn.cursor() as cur:
+        cur.execute(
+            "select column_name, data_type from information_schema.columns "
+            "where table_schema = %s and table_name = 'content_gaps'",
+            (schema,),
+        )
+        return dict(cur.fetchall())
+
+
+def _gap_default(schema: str, column: str) -> str | None:
+    """What a column of content_gaps is given when an insert names no value for it."""
+    with psycopg.connect(get_settings().database_url) as conn, conn.cursor() as cur:
+        cur.execute(
+            "select column_default from information_schema.columns "
+            "where table_schema = %s and table_name = 'content_gaps' and column_name = %s",
+            (schema, column),
+        )
+        row = cur.fetchone()
+    assert row is not None, f"content_gaps has no column {column}"
+    default: str | None = row[0]
+    return default
+
+
+def test_content_gaps_holds_the_ids_of_questions_and_not_their_text(test_schema: str) -> None:
+    """The column that must not exist is the point of the migration. The table is kept
+    indefinitely, and a visitor's question copied into it would outlive the 90 days
+    chat is kept for."""
+    columns = _gap_columns(test_schema)
+
+    assert "example_questions" not in columns
+    assert columns["example_message_ids"] == "ARRAY"
+    assert columns["fallback_count"] == "integer"
+    assert columns["refreshed_at"] == "timestamp with time zone"
+    assert columns["resolved_at"] == "timestamp with time zone"
+
+
+def test_the_content_gaps_migration_goes_down_and_comes_back(test_schema: str) -> None:
+    """Down to 0005 and up again, on the throwaway schema, with the table empty as it
+    is everywhere this has run. A downgrade nobody has run is a downgrade nobody
+    knows works.
+
+    Not an async test, though every other one here is: Alembic is synchronous and
+    drives its own connection, as it did when the fixture built this schema.
+    """
+    root = Path(__file__).resolve().parents[2]
+    config = Config(root / "alembic.ini")
+    config.set_main_option("script_location", str(root / "migrations"))
+
+    command.downgrade(config, "0005")
+    try:
+        before = _gap_columns(test_schema)
+        assert before["example_questions"] == "ARRAY"
+        assert "example_message_ids" not in before
+        assert "resolved_at" not in before
+        # As migration 0002 declared it: with no default. The downgrade needs one
+        # to add the column to rows that exist, and has to take it off again.
+        assert _gap_default(test_schema, "example_questions") is None
+    finally:
+        # Whatever the assertions said: every test after this one needs the schema
+        # back at head.
+        command.upgrade(config, "head")
+
+    assert "example_message_ids" in _gap_columns(test_schema)

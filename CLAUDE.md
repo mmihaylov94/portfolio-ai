@@ -127,7 +127,7 @@ src/portfolio_ai/
                  postprocess (link filter, fallback), memory, cli, prompts/*.md + loader
   api/           main (app + lifespan), __main__ (the server), deps (admission), turns (answers in
                  flight), security, errors, schemas, middleware, routers/
-  analytics/     retention, signals, report, digest, mail, seed, cli; later clustering
+  analytics/     retention, signals, report, digest, mail, clustering, gaps, seed, cli
   evals/         datasets, runner, judge, metrics, report, cli
 migrations/      datasets/      tests/unit  tests/integration      docker/
 ```
@@ -307,10 +307,13 @@ uv run python -m portfolio_ai.analytics seed                # about $0.10; local
 uv run python -m portfolio_ai.analytics seed --clear        # take them out again
 uv run python -m portfolio_ai.analytics digest --dry-run    # the weekly email, printed
 uv run python -m portfolio_ai.analytics digest --test       # one line, to prove the mail settings
+uv run python -m portfolio_ai.analytics refresh-gaps --dry-run   # the content gaps: the plan
+uv run python -m portfolio_ai.analytics refresh-gaps        # names new gaps; a cent or less
+uv run python -m portfolio_ai.analytics gaps                # the writing queue; quotes visitors
+uv run python -m portfolio_ai.analytics gap-status 7 written --doc services
 ```
 
-Still to build in step 7, as commands of the same module: `refresh-gaps` and `gaps` (the
-content gaps), and `promote-case`.
+Still to build in step 7, as a command of the same module: `promote-case`.
 
 Production schedules live in `docker/crontab`, run by the `worker` container with
 `TZ=Europe/London`: ingest hourly on the hour, purge daily at 03:00, and the digest on Mondays
@@ -360,16 +363,30 @@ in a week when nobody asked anything and while the mail settings are not in `.en
 - **No test chats through the production API.** Every turn it answers is stored. Check a
   deployment with the non-writing calls in docs/DEPLOYMENT.md §8 (health, readiness, a 401, a
   feedback 404) and check OpenAI with the terminal chat's `--no-save`.
-- **`analytics report` prints what visitors typed.** Run it in a terminal and read it there.
-  Never put it in the crontab, where its output would be the worker's log, and never paste it
-  anywhere. On the server it is `docker compose exec`, whose output goes to the terminal and
-  not to the log. What may leave the database's side is the other form,
-  `report.render(verbatim=False)`: counts and article titles, with a unit test that searches it
-  for every question, answer and comment.
+- **`analytics report` and `analytics gaps` print what visitors typed.** Run them in a
+  terminal and read them there. Never put either in the crontab, where its output would be the
+  worker's log, and never paste it anywhere. On the server it is `docker compose exec`, whose
+  output goes to the terminal and not to the log. What may leave the database's side is the
+  other form, `report.render(verbatim=False)`: counts, article titles and the gaps' labels,
+  with a unit test that searches it for every question, answer and comment.
+- **A unit test of an analytics command replaces every database call the command makes.**
+  When `digest` learnt to refresh the gaps, its tests reached for a database that is not
+  there and the unit suite went from eleven seconds to two and a half minutes, passing or
+  failing on a timeout. Watch the suite's duration after adding a call to a command.
 - **The digest's log lines carry counts and never an address.** Who it is sent to is
   personal data like a question is, and under the crontab a log line is all the command
   prints. `mail.send` raises errors that give the kind of failure and not the server's words,
   which quote the addresses involved.
+- **A gap's label is a model's output, and is treated as input.** It is written from what
+  visitors typed, kept for good, and printed in a terminal and an email. `gaps._fault` refuses
+  one that is over 60 characters, is not plain text or holds a link or an address, and the
+  model is shown one clipped line of each question (`gaps.brief`). A label is in the email and
+  never in a log line. Anything else a model writes that is stored or printed gets the same
+  treatment.
+- **Test what is not logged with a recorder, not with structlog's `capture_logs()`.** A logger
+  is cached at its first use, and one cached before a later `configure_logging` is not
+  captured, so the test passes on an empty list. `tests/log_recorder.py` is patched onto the
+  module, and the test first asserts that the lines it expects were recorded at all.
 - **Invented conversations go into the development database only.** `analytics seed` refuses
   any other `ENVIRONMENT`, its dry run included. A stored turn does not say where it came
   from, so in production an invented one would be counted as a visitor for good. Locally they
@@ -500,7 +517,14 @@ shipped with the API, because none of it can be reconstructed after the fact.
 2. the weekly email, with counts and nothing a visitor typed: built (`analytics digest`,
    sent with `smtplib` after the event loop has finished). Not yet deployed with mail
    settings: that needs a Gmail app password in the server's `.env` (docs/DEPLOYMENT.md §11);
-3. content gaps, clustered from the questions that failed: not built;
+3. content gaps: built (`refresh-gaps`, `gaps`, `gap-status`, migration 0006). The failed
+   questions are clustered **by the search each answer ran, not by the question as typed**,
+   which grouped them by phrasing and by the word "Mihail". Each gap without a name is named
+   by the classifier's model from `prompts/gap_label.md`, and `digest` refreshes them before
+   it builds the report, in a quiet week too. `content_gaps` keeps the ids of example
+   questions, never their text. One refresh groups at most the newest 500 failed questions
+   and names at most twenty gaps. **A gap's count of fallbacks does not say whether it is a
+   real gap**: read its questions with `gaps` before marking it `wont_fix`;
 4. `promote-case`, which prints a YAML case for a holding file (`datasets/promoted.yaml`,
    checked and never run) until the next golden dataset: not built.
 
@@ -509,7 +533,7 @@ What the first seeding showed (2026-10-13):
   set on 11. The other 15 answers declined in words the phrase match does not know. The
   match's 41 of 43 on the eval answers was over the same handful of questions asked in every
   run.
-- **`LOW_SCORE_THRESHOLD` (0.35) and `REPHRASE_SIMILARITY` (0.60) are provisional**, set from
-  invented questions and eval cases. Every report ends with the two distributions to set them
-  again from. A low score is not a bad answer: "Who is Mihail anyway?" scores 0.23 and is
-  answered well.
+- **`LOW_SCORE_THRESHOLD` (0.35), `REPHRASE_SIMILARITY` (0.60) and `GAP_SIMILARITY` (0.45) are
+  provisional**, set from invented questions and eval cases. Every report ends with the
+  distributions to set the first two again from. A low score is not a bad answer: "Who is
+  Mihail anyway?" scores 0.23 and is answered well.

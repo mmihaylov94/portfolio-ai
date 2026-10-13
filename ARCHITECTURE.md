@@ -332,20 +332,29 @@ message_feedback (
 content_gaps (
   id              bigserial primary key,
   cluster_label   text not null,             -- human-readable topic, LLM-named
-  centroid        vector(1536) not null,
-  question_count  int not null,
-  example_questions text[] not null,
+  centroid        vector(1536) not null,     -- the centre of its questions' searches
+  question_count  int not null,              -- as of the last refresh; 0 when nobody asks now
+  fallback_count  int not null default 0,    -- how many of those were "I do not have that"
+  example_message_ids bigint[] not null default '{}',   -- ids, never the questions
   avg_top_score   real,
   negative_rate   real,
   status          text not null default 'open',  -- open | written | wont_fix
   resolved_doc_id text,                      -- the doc written to close it
+  resolved_at     timestamptz,               -- when it was marked written or wont_fix
   first_seen_at   timestamptz not null,
-  last_seen_at    timestamptz not null
+  last_seen_at    timestamptz not null,
+  refreshed_at    timestamptz
 )
 ```
 
 This is the table that turns analytics into action: each row is "people keep asking about X and
 we answer it badly", and closing it means writing a knowledge base article.
+
+Migration 0002 gave it `example_questions text[]`, and 0006 replaced that with ids before
+anything had written to it. The table is kept indefinitely and chat for 90 days, so a question
+copied into it would have outlived the retention the chat promises. An id resolves to words
+only while its message exists. The label is the one piece of text here derived from visitors'
+questions: a model writes it, told to name the topic and nobody who asked.
 
 ### Evals
 
@@ -403,7 +412,7 @@ ai_assistant/
 ├── migrations/                   # alembic
 │   ├── env.py                    # URL rewriting, schema creation, version_table_schema
 │   └── versions/                 # 0001 knowledge base, 0002 chat+analytics, 0003 evals,
-│                                 # 0004 turn details, 0005 eval harness
+│                                 # 0004 turn details, 0005 eval harness, 0006 content gaps
 ├── src/portfolio_ai/
 │   ├── config.py                 # Settings (pydantic-settings), single source of env truth
 │   ├── logging.py                # structlog JSON logging
@@ -444,7 +453,7 @@ ai_assistant/
 │   │       ├── out_of_scope_reply.md
 │   │       ├── daily_limit_reply.md  # what the API says once the day's spend cap is reached
 │   │       ├── judge.md          # the eval judge's rubric (step 5)
-│   │       └── gap_label.md      # names a content gap (step 7; not built yet)
+│   │       └── gap_label.md      # names a content gap; pinned, and in no eval run's record
 │   ├── api/
 │   │   ├── main.py               # app factory, lifespan (startup checks, shutdown order)
 │   │   ├── __main__.py           # python -m portfolio_ai.api: uvicorn, JSON logs, event loop
@@ -463,10 +472,12 @@ ai_assistant/
 │   │   ├── report.py             # the window, the report as data, and its two forms as text
 │   │   ├── digest.py             # the weekly email as a subject and a body, from a report
 │   │   ├── mail.py               # smtplib: STARTTLS, an app password, one plain-text message
+│   │   ├── clustering.py         # vectors grouped by their centres; no library
+│   │   ├── gaps.py               # the content-gap refresh: cluster, match, name, write
 │   │   ├── seed.py               # invented conversations, into the development database only
 │   │   ├── retention.py          # the 90-day purge
-│   │   └── cli.py                # purge | report | digest | seed; to come: refresh-gaps, gaps,
-│   │                             #   promote-case, with clustering.py
+│   │   └── cli.py                # purge | report | digest | refresh-gaps | gaps | gap-status |
+│   │                             #   seed; to come: promote-case
 │   └── evals/
 │       ├── datasets.py           # the YAML format, its validation, the hash that freezes it
 │       ├── runner.py             # prepare (every check) and execute (the run), a few cases at once
@@ -882,7 +893,7 @@ negative. The automatic signals carry far more information.
 | **Fallback** | `fallback_used = true` | Questions the docs should answer and do not. A floor: it is a phrase match, and misses a decline in other words |
 | **Low top score** | `chat_messages.top_score` below `LOW_SCORE_THRESHOLD`, with no fallback | Nothing came close, and an answer was written anyway |
 | **Asked again** | Two questions in a row in one conversation, within ten minutes, with cosine similarity of at least `REPHRASE_SIMILARITY` | Implicit "that answer was bad". Far more plentiful than thumbs-down |
-| **Content gaps** | The failed questions (a fallback, or a low score), embedded and clustered, each cluster named by an LLM | The ranked list of what to write next |
+| **Content gaps** | The failed questions (a fallback, or a low score), clustered by the search each answer ran, each cluster named by an LLM | The ranked list of what to write next |
 | **Articles** | For each article, the answers that had one of its sections among the five best passages of their first search, counted by `doc_id` and section slug | What answers are written from, and the content nobody reaches |
 | **Classification errors** | Questions routed `out_of_scope`, each with the score of its nearest passage | Lost conversations; a classifier prompt bug |
 | **Explicit feedback** | `message_feedback` | Low volume, but unambiguous when present |
@@ -890,10 +901,31 @@ negative. The automatic signals carry far more information.
 
 Questions are embedded when a report is built and the vectors are dropped afterwards. The cost
 is close to zero, and there is no second copy of visitors' words to keep in step with the purge.
-Naming a gap is one cheap LLM call per new gap.
+Naming a gap is one cheap LLM call per gap that has no name, at most twenty in one refresh.
 
 Only the failed questions are clustered. Clustering every question into topics was the first
 plan; "what people ask about" is answered by the article counts instead, with no model call.
+
+They are clustered by the search the answer ran, which is stored on it, and not by the question
+as typed. Typed questions grouped by their phrasing ("Does he have...") and by the name
+"Mihail". The search is the model's own rewrite into topical keywords, with the name and the
+filler removed and a follow-up's context restored, and grouped by it the same questions fell
+into subjects a person would recognise. The clustering is sixty lines with no library: each
+search joins the group whose centre it is nearest, if that is near enough (`GAP_SIMILARITY`),
+a second pass places every search again once the centres have settled, and the searches that
+pass leaves near no centre are grouped among themselves.
+
+A gap is recognised across refreshes by its centre. Each refresh clusters from scratch, so a
+group has no id of its own; one whose centre is at least 0.75 like a stored gap's is that gap,
+and keeps its label and status. A gap nobody asks about any more is emptied and kept, so that a
+subject decided against is still decided against when it comes round again.
+
+A gap's label is a model's output, written from what visitors typed and kept for good, so it is
+checked like input before it is stored: at most 60 characters, plain text, no link and no
+address. One that fails leaves the gap unnamed, and the next refresh asks again. The model is
+shown one clipped line of each question. One refresh groups at most the newest 500 failed
+questions and names at most twenty gaps, because neither is covered by the daily spending
+limit and grouping takes time that grows with the square of the questions.
 
 "Never retrieved" was the first plan for dead content, and finds nothing: a search returns
 twenty passages of about 120, so nearly every section is retrieved by something. The best five
@@ -929,14 +961,15 @@ changed enough to need one. A change of model still needs no change of dataset.
 ```bash
 python -m portfolio_ai.analytics report --since 7d    # built: quotes visitors; terminal only
 python -m portfolio_ai.analytics seed                 # built: invented conversations; local only
-python -m portfolio_ai.analytics digest               # built: the weekly email of the counts
-python -m portfolio_ai.analytics refresh-gaps         # recluster, update content_gaps
-python -m portfolio_ai.analytics gaps --status open   # the writing queue, ranked
+python -m portfolio_ai.analytics digest               # built: the weekly email
+python -m portfolio_ai.analytics refresh-gaps         # built: recluster, update content_gaps
+python -m portfolio_ai.analytics gaps --status open   # built: the writing queue; quotes visitors
+python -m portfolio_ai.analytics gap-status 7 written --doc services   # built
 python -m portfolio_ai.analytics promote-case 812 --expected-doc project-threadline
 ```
 
-As of 2026-10-13 the first three are built, with `purge`; the rest is decided and not built.
-docs/ANALYTICS.md walks through what exists.
+As of 2026-10-13 all but `promote-case` are built, with `purge`. docs/ANALYTICS.md walks
+through what exists.
 
 **One report, two forms.** `report` prints what visitors typed: unanswered questions, the pairs
 asked again, thumbs-down with their comments. It is for the owner at a terminal, and is never
@@ -967,7 +1000,9 @@ the email without sending it.
 
 The send happens after the event loop has finished. `smtplib` blocks, and the command's
 database and OpenAI work is async; done in that order, nothing is ever blocked and no thread is
-needed. The gaps' names join the email when the content gaps are built.
+needed. Before it builds the report, `digest` works the content gaps out again, so that the
+email names them as they stand. It does so in a week nobody asked anything too, when no email
+is sent: the purge goes on taking questions, and a gap's count has to follow them down.
 
 ### Built without visitors
 
@@ -1014,7 +1049,11 @@ This stores real visitors' typed input, and on a portfolio site people volunteer
   it does, the notice is the disclosure.
 - The digest is for the site owner only; it is not published. It carries nothing a visitor
   typed: an email outlives the 90 days, so the questions themselves are read from the database,
-  in a terminal.
+  in a terminal. The gaps' names in it are a model's, written from visitors' questions and
+  checked before they are stored, and the email says so.
+- A content gap is kept indefinitely with its name and its centre, an average of its
+  searches' embeddings. For a gap of one question that is the embedding of one search. It is
+  kept because it is how the gap is recognised when the subject comes round again.
 
 ---
 
@@ -1122,7 +1161,7 @@ services:
 ```cron
 0 * * * *   python -m portfolio_ai.ingestion          # hourly, on the hour
 0 3 * * *   python -m portfolio_ai.analytics purge    # retention sweep
-30 5 * * 1  python -m portfolio_ai.analytics digest   # weekly, Monday: the counts, by email
+30 5 * * 1  python -m portfolio_ai.analytics digest   # weekly, Monday: the email
 ```
 
 Set `TZ=Europe/London` on the worker so those times mean what they say.
@@ -1179,6 +1218,7 @@ config rather than failing on the first request.
 | `MEMORY_WINDOW_TURNS` | default `25`, counted in exchanges (50 messages), as n8n counts it |
 | `LOW_SCORE_THRESHOLD` | default `0.35`: a knowledge-base answer whose best passage scored under it "found nothing close". Provisional (§10) |
 | `REPHRASE_SIMILARITY` | default `0.60`: two questions in a row at least this alike are one question asked again. Provisional (§10) |
+| `GAP_SIMILARITY` | default `0.45`: a failed question joins a content gap when its search is at least this like the gap's centre. Provisional (§10) |
 | `SESSION_RATE_LIMIT` / `SESSION_RATE_WINDOW_MINUTES` | `20` / `15`; the per-IP limit (60 / 15 min) is Express's own setting |
 | `MAX_CONCURRENT_TURNS` | default `10`: answers being written at once, across all visitors |
 | `DAILY_SPEND_CAP_USD` | default `1.00`, over a rolling 24 hours; on breach the API returns a polite refusal, not an error; `0` turns the chat off |
@@ -1225,7 +1265,7 @@ the app's. `extra="forbid"` means a variable cannot be listed in `.env.example` 
    for after a few hundred real questions. The site had no traffic and expected none for
    months, so it is being built against invented conversations played through the real
    assistant (§10), in four stages: the report (built), the weekly email (built), the
-   content gaps, and `promote-case`. Its thresholds are provisional until there are visitors
+   content gaps (built), and `promote-case`. Its thresholds are provisional until there are visitors
    to set them from.
 
 Step 5 sits before cutover because the baseline is what proves parity. Step 7 sits after it
@@ -1303,6 +1343,10 @@ Non-negotiable from the first commit, because git history is published too:
 | A digest with nowhere to go | Without mail settings it warns once a week and exits cleanly; in a week nobody asked anything it sends nothing | §10 |
 | Analytics without traffic | Built against invented conversations played through the real assistant, on the development database only; thresholds provisional | §10 |
 | Which questions are clustered | The failed ones only (a fallback, or a low score). "What people ask about" is the article counts | §10 |
+| What is clustered | The search each answer ran, not the question as typed, which grouped by phrasing and by the name | §10 |
+| How a gap is recognised next time | By its centre: a new group at least 0.75 like a stored gap is that gap, and keeps its label and status | §10 |
+| What a content gap stores | The ids of example questions, never their text; a model-written label, checked like input; its centre | §5, §10 |
+| What bounds a gap refresh | The newest 500 failed questions and twenty names a run; the daily spending limit does not cover it | §10 |
 | Promoted eval cases | `promote-case` prints a YAML case; it waits in a holding file and joins the next golden dataset. Evals and visitors' messages are in different databases | §10 |
 | Vector arithmetic in Python | `math.sumprod`; no numpy for a few hundred comparisons | §10 |
 | Ingestion schedule | Hourly, on the hour | §11 |

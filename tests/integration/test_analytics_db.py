@@ -119,7 +119,9 @@ async def test_a_turn_comes_back_with_what_its_answer_recorded() -> None:
     assert turn.asked_at == NOON, "the question's time, not the answer's four seconds later"
     assert (turn.question, turn.answer) == ("What is his day rate?", "An answer.")
     assert turn.route == "mihail_related"
-    assert turn.top_score == pytest.approx(0.31)
+    # Exactly. The column is a `real`: unrounded, 0.31 would come back as
+    # 0.3100000023841858, and a score of exactly a threshold would read as under it.
+    assert turn.top_score == 0.31  # ruff: ignore[float-equality-comparison]
     assert turn.fallback_used is True
     assert (turn.rating, turn.comment) == (-1, "Not an answer.")
     assert turn.cost == Decimal("0.000650")

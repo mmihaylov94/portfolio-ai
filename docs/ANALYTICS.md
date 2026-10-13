@@ -9,9 +9,10 @@ The code is in `src/portfolio_ai/analytics/`, the SQL in `db/analytics.py`, and 
 conversations it was built against in `datasets/traffic/`. ARCHITECTURE.md §10 has the design.
 
 **Built so far:** the report (`analytics report`), the weekly email of its counts
-(`analytics digest`) and the invented conversations (`analytics seed`). The nightly retention
-sweep, `analytics purge`, is older and is described in docs/API.md, "Retention". **Not built
-yet:** the content gaps and `promote-case`. The last section says what is decided about each.
+(`analytics digest`), the content gaps (`analytics refresh-gaps`, `gaps`, `gap-status`) and the
+invented conversations (`analytics seed`). The nightly retention sweep, `analytics purge`, is
+older and is described in docs/API.md, "Retention". **Not built yet:** `promote-case`. The last
+section says what is decided about it.
 
 ## The idea it rests on
 
@@ -41,10 +42,12 @@ Three things follow from that sentence, and they explain most of the code.
   same counts and not one word a visitor wrote, and it is the only form that may be emailed or
   logged. The chat tells visitors their conversations are kept for 90 days; a question quoted
   into a mailbox would outlive that.
-- **What is derived is thrown away.** The one thing the report computes that was not recorded
-  is how alike two questions are, which needs their embeddings. They are made when the report is
-  built and dropped when it ends. A table of them would be one more copy of visitors' words to
-  keep in step with the purge, to save a fraction of a cent.
+- **What is derived is thrown away, with one exception kept on purpose.** The one thing the
+  report computes that was not recorded is how alike two questions are, which needs their
+  embeddings. They are made when the report is built and dropped when it ends. A table of them
+  would be one more thing made from visitors' words to keep in step with the purge, to save a
+  fraction of a cent. The exception is a content gap, which keeps a name and a centre for good.
+  "What the table keeps, and what it does not" says what those are and why.
 
 ## One report, start to finish
 
@@ -72,7 +75,9 @@ Three things follow from that sentence, and they explain most of the code.
 7. **Questions refused as off-topic** (`db/documents.search_chunks`, `top_k=1`). Each is looked
    up against the knowledge base with the embedding it already has. A refused question that sits
    close to a passage was probably about Mihail, and was turned away by the classifier.
-8. **The text** (`report.render`). `verbatim=True` for the terminal.
+8. **The content gaps** (`db/analytics.list_gaps`), read from the table as the last refresh
+   left them. Building a report does not work them out again.
+9. **The text** (`report.render`). `verbatim=True` for the terminal.
 
 `build` logs one line, `report_built`, with counts and the embedding cost. Never a question.
 The command runs at warning level, which drops that line, so the report's own last line under
@@ -128,29 +133,40 @@ section.
 
 `python -m portfolio_ai.analytics digest` is run by the crontab, as `purge` is: on Mondays at
 05:30, for the seven days before. It is the report's second form, the counts without the words,
-sent to one person.
+with the content gaps by name, sent to one person.
 
 What it does, in order:
 
-0. **`--since` is read**, before anything else. A mistyped one in the crontab line then fails
+1. **`--since` is read**, before anything else. A mistyped one in the crontab line then fails
    on its first Monday, and not only from the day the mail settings arrive.
-1. **Are the mail settings there?** (`mail.missing_settings`). Three have no default:
+2. **Are the mail settings there?** (`mail.missing_settings`). Three have no default:
    `SMTP_USER`, `SMTP_APP_PASSWORD` and `DIGEST_TO_EMAIL`. With any missing it logs
    `digest_not_configured` as a warning, naming them, and stops with exit code 0. Nothing is
    read or spent. It is the same choice the purge makes with retention switched off: the email
    is optional, and a job that failed every Monday for want of it would teach whoever reads the
    logs to skip past failures.
-2. **The report** (`report.build`), exactly as `report` builds it.
-3. **Did anybody ask anything?** If not it logs `digest_skipped` and stops. Months without a
+3. **The content gaps are worked out again** (`gaps.refresh`), before the report reads them.
+   In a week nobody asked anything too: the purge goes on taking questions every night, and a
+   gap's count has to follow them down. A dry run skips this: a refresh writes to the table and
+   pays a model for names, and a dry run shows the gaps as they stood.
+4. **The report** (`report.build`), exactly as `report` builds it. Its gaps are the table as
+   the refresh has just left it.
+5. **Did anybody ask anything?** If not it logs `digest_skipped` and stops. Months without a
    visitor are months without an email.
-4. **The message** (`digest.compose`). The subject is the week in a line, for an inbox that
+6. **The message** (`digest.compose`). The subject is the week in a line, for an inbox that
    shows only subjects: "mihaylov.io chat: 36 questions in the 7 days to 2026-10-13, 3 not
-   answered". The body is `render(report, verbatim=False)` and a last paragraph that says the
-   email holds none of what visitors typed, with the command that prints it. That command
-   looks back a day further than the email does (`--since 8d` for a week): `--since` counts
-   from the moment the command is run, which is hours after the email was sent, and the same
-   number of days would begin after the email's first questions.
-5. **The send** (`mail.send`), after the event loop has finished. See below for why.
+   answered". The body is `render(report, verbatim=False)` and a last paragraph. It says that
+   the email holds none of what visitors typed and that the gaps' names were written by a
+   model from their questions, and it gives the two commands that print the questions:
+   `report`, and `gaps`. The `report` command looks back a day further than the email does
+   (`--since 8d` for a week): `--since` counts from the moment the command is run, which is
+   hours after the email was sent, and the same number of days would begin after the email's
+   first questions.
+7. **The send** (`mail.send`), after the event loop has finished. See below for why.
+
+**The gaps' counts are not the week's.** Everything else in the email is counted over its
+seven days. A gap counts every failed question still stored, which is up to 90 days of them,
+and the section says so in its first line. It lists the ten most asked and counts the rest.
 
 It logs `digest_sent` with the counts and never with the address it went to.
 
@@ -158,9 +174,9 @@ It logs `digest_sent` with the counts and never with the address it went to.
 |---|---|---|
 | Sent | 0 | `digest_sent`, with counts |
 | Mail settings missing | 0 | `digest_not_configured` (warning), naming them |
-| Nobody asked anything | 0 | `digest_skipped` |
+| Nobody asked anything | 0 | `gaps_refreshed`, then `digest_skipped` |
 | The send failed, or the login was refused | 1 | `command_failed`, with the kind of failure |
-| The report could not be built, or `--since` is not a number of days | 1 | `command_failed` |
+| The report could not be built, the gaps could not be refreshed, or `--since` is not a number of days | 1 | `command_failed` |
 
 **A failed send loses nothing.** The questions are in the database for 90 days, so the command
 is run again, with `--since` set to reach back as far as is wanted. Nothing is written to disk.
@@ -205,7 +221,235 @@ loop finish, and then sends from ordinary code with nothing left to hold up.
 `asyncio.to_thread(send, ...)` would be the tool inside a server, where the loop has other work
 to do; one command does not need the machinery.
 
-The content gaps' names join the email when the gaps are built.
+## Content gaps
+
+A content gap is a group of questions the knowledge base could not answer that one article
+would close. `refresh-gaps` works the groups out from everything still stored and brings the
+`content_gaps` table up to date. The report and the weekly email read the table, and `gaps`
+prints it as a writing queue.
+
+### The idea: a group is its centre
+
+Each search is an arrow in the embedding space. A group is summed up by one arrow pointing
+where its members point on average, its centre, and a search belongs to the group whose centre
+it points most nearly along, if that is near enough. "Near enough" is `GAP_SIMILARITY`.
+`clustering.cluster` does it in rounds of two passes:
+
+1. **Make the groups.** Take the searches in order. Each joins the nearest group when its
+   centre is at least `GAP_SIMILARITY` alike, and the centre is moved to take it in. Otherwise
+   it starts a group of its own.
+2. **Settle them.** The centres moved as members arrived, so an early search may now sit nearer
+   a group that did not exist when it was placed. Every search is placed again.
+
+A search the second pass finds near no centre at all, because its own group drifted away from
+it, is a stray. **The strays get a round of their own**, and theirs another, until none are
+left. The first version set each stray aside as a group of one. The review of this stage showed
+what that does: two visitors who ran the very same search, both left behind by one drifting
+group, became two gaps, because neither was ever compared with the other.
+
+No library does this here. scikit-learn would be the largest dependency in the project, brought
+in to group two dozen sentences, and its k-means needs the number of groups in advance, which
+is the one thing not known. The price of doing it by hand is that the result depends on the
+order; the searches are always handed over in id order, so the same ones give the same groups.
+
+### One refresh, start to finish
+
+1. **The questions that failed** (`db/analytics.failed_questions`): the stored knowledge-base
+   answers that were a fallback, or whose best passage scored under `LOW_SCORE_THRESHOLD`. On
+   the invented conversations that is 20 of the 26 written to be unanswerable and 3 of the 58
+   written to be answerable. At most the newest 500 are read ("The limits of one refresh").
+2. **Their searches are embedded** (`gaps._embed`), each distinct one once.
+3. **They are clustered** (`clustering.cluster`).
+4. **Each group is matched to a stored gap** (`db/analytics.nearest_gap`), by centre: the
+   same `<=>` retrieval uses, on a different table. A group whose centre is at least 0.75 like a
+   stored gap's (`gaps.SAME_GAP`) is that gap. Two groups of one refresh cannot both claim one
+   gap.
+5. **The ones with no name are named** (`gaps._name`) by the classifier's model, one call
+   each, from `prompts/gap_label.md`: the new gaps, and any stored gap still called "Unnamed
+   gap". At most 20 in one refresh.
+6. **Everything is written in one transaction** (`db/analytics.apply_gap_refresh`). A known
+   gap gets this refresh's counts and keeps its label and status. A new one is inserted. Every
+   other gap that still had questions is emptied.
+
+**The order protects the table.** Everything that can fail on its own, the embeddings and the
+names, is done before anything is written. A refresh that dies at OpenAI on its third name has
+changed nothing, not even the first two.
+
+`refresh-gaps --dry-run` does steps 1 to 4 and stops. It says how many gaps the refresh would
+make, which stored gap each group is, and how many stored gaps it would empty.
+
+**Why 0.75 makes two groups one gap, and what it gets wrong.** Measured on the 24 failed
+questions in the development database:
+
+| | How alike the two centres were |
+|---|---|
+| Two different gaps | at most 0.47 |
+| One gap, before and after it gained or lost a question | at least 0.86 |
+| One gap, first seen as a single question and then as its whole group | at least 0.86 |
+| One gap, with every question replaced by others of the same group | as little as 0.47 |
+
+The last row is each group split into two parts that share no question, and the least alike
+split of each: from 0.47 for the loosest group to 0.84 for the tightest. A gap that changes a
+question at a time is recognised with room to spare. One whose questions were all replaced
+cannot be told from a different gap by any value, and here it becomes a new gap while the old
+one is emptied.
+
+The two mistakes do not cost the same, which is why the line sits nearer the top of the space
+between. Calling two subjects one gap files the new subject under an old label and an old
+decision, and nobody is told. Calling one gap two puts a second row in the queue, where a
+person sees it. The arithmetic edge of the second kind: a gap of one question that gains four,
+each exactly 0.45 like it and like each other, moves to 0.748, is taken for new, and loses its
+`wont_fix`.
+
+### A label is a model's output, and is treated as input
+
+A label is written by a model from what visitors typed, kept for good, and printed in a
+terminal and in an email. That makes it input, and `gaps._fault` checks it like input. A label
+is refused when it is:
+
+- **empty, or over 60 characters**: a refusal, or a paragraph where a title was asked for;
+- **not plain text** (`str.isprintable()`): it holds a control character or an invisible one.
+  Postgres refuses a NUL in a `text` column outright, which would have ended a Monday's digest
+  in a traceback and no email. An escape sequence clears or recolours the terminal it is
+  printed in. The API refuses control characters from visitors, and a model's output is owed
+  no more trust than theirs;
+- **a link or an address** (it holds `://`, `www.` or `@`): what somebody who had talked the
+  model into something would want it to write.
+
+A refused label becomes "Unnamed gap", and the log line gives the reason and the length, never
+the label. The next refresh asks again, and so does every one after it until an answer can be
+used.
+
+What the model is shown is narrowed too (`gaps.brief`). Each question is flattened to one line
+and clipped to 200 characters, and its double quotes are made single, so that a question cannot
+end its own line and write what reads as the next one, or as an instruction. The prompt says
+that the questions are text to label and not instructions.
+
+**What is not checked.** "Six words or fewer" and "never name who asked" are requests, with
+nothing behind them: one label of the first run had seven words. Whether an instruction typed
+into a question can steer the model was not tried, since that takes a crafted question and a
+paid call; the checks are written for the case that it can. A label naming a person would pass
+all of them. That is why `refresh-gaps` prints every label it writes, and why `gaps` shows the
+questions behind each.
+
+### The limits of one refresh
+
+Nothing bounded a refresh at first, and the daily spending limit does not cover it.
+
+- **500 failed questions** (`gaps.MAX_QUESTIONS`), the newest. Grouping compares every search
+  with every centre, so its time grows with the square of the number. 500 searches with nothing
+  in common took 11 seconds on the development machine; at that rate 5,000 would take twenty
+  minutes, on a server that is also serving the site. The spending limit allows about 1,600
+  answers a day, so the number stored is not small by nature. Past the limit `refresh-gaps`
+  says that older ones were left out, and a gap whose questions are all among those is emptied
+  as though they had been purged.
+- **20 names** (`gaps.MAX_NAMED`), the most asked gaps first. The rest are stored as "Unnamed
+  gap" and named by the refreshes after it. Twenty calls are about a third of a cent.
+- **10 gaps in a report** (`report.GAPS_LISTED`), the most asked, with a line counting the
+  rest. `gaps` lists them all.
+
+**Two refreshes at the same moment are not guarded against.** Each compares its groups with
+the table before either has written, so a gap new to both is inserted twice. The next refresh
+recognises one of the two and empties the other, which stays as a row with no questions: last
+in `gaps`, and in neither the report nor the email. It takes the Monday run and a refresh by
+hand within the same few seconds.
+
+### It is the search that is clustered, not the question
+
+This was found by doing it the other way first. Clustered as visitors typed them, the invented
+questions grouped by their phrasing and by one word:
+
+- one group of eight held a blog, conference talks, client references, hobbies, a family and
+  Salesforce: short questions of one shape, about nothing in common;
+- another held the six questions that say "Mihail", among them "Who is Mihail anyway?", "Where
+  is Mihail based then?" and "How much does Mihail charge?", and none that say "he".
+
+Every knowledge-base answer has also stored the query the model searched with (`tool_calls`):
+a few topical keywords, with the name and the filler taken out, and with a follow-up's context
+put back, so that "What about Go?" was searched as "Go programming language experience".
+Clustered by those, the same 23 questions fell into 13 groups that a person would recognise:
+consulting rates (4), salary (3), references (3), work authorisation (2), hobbies (2), and so
+on. Six values of `GAP_SIMILARITY` were tried. 0.40, 0.45 and 0.50 gave the same 13 groups. At
+0.35 there were 6, with unrelated subjects merged; at 0.55 and at 0.60 there were 14, one pair
+having split. The default is 0.45, the middle of the three that agreed, and it is provisional
+like the other two.
+
+The rewrite was built to make retrieval work (docs/ASSISTANT.md). It is also what makes this
+work, and it was already being stored.
+
+### What the table keeps, and what it does not
+
+`content_gaps` is kept indefinitely; chat is deleted after 90 days. So a gap holds:
+
+- **a label**, written by a model. It is told to name the missing topic in six words or fewer
+  and never to name or describe who asked. It is the one piece of text derived from visitors'
+  questions that outlives them, which is why it is checked before it is stored and why
+  `refresh-gaps` prints every label it writes;
+- **a centre**: 1,536 numbers, the average direction of its searches' embeddings. It is how the
+  gap is recognised by the next refresh, and by one a year later, so it cannot be thrown away
+  as the report's embeddings are. It is not text, and it is made from the searches the model
+  wrote and not from the questions as typed. But for a gap of one question, which six of the
+  13 below are, it is the embedding of one search run for one visitor, and it is kept for as
+  long as the gap is. That is the cost of recognising a gap that comes back;
+- **counts**: how many questions, how many of them were fallbacks, the average best score, the
+  share that got a thumbs down;
+- **the ids of up to five example questions**, the ones nearest the centre, and not their
+  text. An id says nothing by itself and resolves to words only while its message exists.
+  Migration 0006 replaced the `example_questions text[]` the table was first given for this
+  reason;
+- **dates**: first and last asked, last refreshed, and when it was marked;
+- **a status**: `open`, `written` (with the `doc_id` of the article) or `wont_fix`.
+
+**A gap nobody asks about any more is emptied, not deleted.** Its questions go with the purge,
+the next refresh finds none, and its counts go to zero. The row stays with its label, status
+and dates, so that when the subject comes round again a year later it is recognised, and a gap
+that was decided against is still decided against.
+
+**A gap marked written that goes unanswered again is called out**, in the report and in
+`gaps`. `gap-status` stamps the moment a gap is marked (`resolved_at`), and a question in it
+that fails after that moment says the article did not close it. It is flagged and not
+reopened: that is a person's call.
+
+### What a refresh showed (2026-10-13)
+
+The development database held 24 failed questions: the 23 invented ones and one older test
+question. They made 13 gaps, named for $0.0021. The seven with more than one question:
+
+| Questions | Of them, said "not there" | Label, as the model wrote it |
+|---|---|---|
+| 4 | 3 | Consulting day rates and service pricing |
+| 3 | 3 | Salary and compensation expectations |
+| 3 | 1 | Client and employer references and testimonials |
+| 2 | 1 | CRM and warehouse systems integration experience |
+| 2 | 1 | Birth date and immediate family status |
+| 2 | 1 | Personal hobbies and interests |
+| 2 | 0 | Work authorization and visa sponsorship status |
+
+The other six have one question each: Terraform, Go, a blog, conference talks, "Short
+professional biography and background" and "Current location / base city".
+
+These are the figures of the refresh run after the review of this stage, with the checks above
+in place and two lines added to the prompt. The first run, earlier the same day, made the same
+13 groups for $0.0019 and worded several of the labels differently.
+
+- **A second refresh recognised all 13 and named nothing**, for the $0.000003 of embedding the
+  searches again.
+- **Every label kept to six words this time. One of the first run's had seven**, and was
+  exactly 60 characters: "CRM and warehouse system integrations (including Salesforce)". The
+  number of words is a request; 60 characters is what the code checks.
+- **Another of the first run's had no capital**: "client references and testimonials", though
+  the prompt asks for sentence case. The code now gives a label one. Only the first letter is
+  touched, so "n8n" inside a label is left alone.
+- **Two of the 13 are not gaps, and a third is half one.** "Who is Mihail anyway?" (the
+  biography gap) and "Where is Mihail based then?" (the location one) were answered well and
+  are here because their scores were low. The CRM group holds the Salesforce question beside
+  one about a logistics business that was answered well too.
+- **Nothing in the counts tells those from real gaps.** "0 said the information was not there"
+  is a hint and no more. Five gaps show it, and three of the five are real: work authorisation,
+  Terraform and Go were each declined in words the flag does not catch, as 15 of the 26
+  declines were ("What one seeding showed"). Marking by that figure would have taken three real
+  gaps out of the queue and the email for good. The way to tell is to read the questions,
+  which is what `gaps` is for, and then `gap-status ... wont_fix`.
 
 ## Invented conversations
 
@@ -325,6 +569,13 @@ uv run python -m portfolio_ai.analytics digest --dry-run     # the email, printe
 uv run python -m portfolio_ai.analytics digest --test        # one line, to prove the mail settings
 uv run python -m portfolio_ai.analytics digest               # what the crontab runs on Mondays
 
+uv run python -m portfolio_ai.analytics refresh-gaps --dry-run   # group and match; name and write nothing
+uv run python -m portfolio_ai.analytics refresh-gaps             # a cent or less
+uv run python -m portfolio_ai.analytics gaps                     # the writing queue; quotes visitors
+uv run python -m portfolio_ai.analytics gaps --status all
+uv run python -m portfolio_ai.analytics gap-status 7 written --doc services
+uv run python -m portfolio_ai.analytics gap-status 9 wont_fix
+
 uv run python -m portfolio_ai.analytics seed --dry-run       # the plan; spends nothing
 uv run python -m portfolio_ai.analytics seed                 # about $0.10; local only
 uv run python -m portfolio_ai.analytics seed --clear         # take them out again
@@ -339,6 +590,14 @@ log. On the server it is run by hand, where the output goes to the terminal that
 ```bash
 docker compose exec worker python -m portfolio_ai.analytics report --since 30d
 ```
+
+**`gaps` quotes visitors too**: under each gap it prints up to three of its example questions
+that are still stored. It is held to the same rule as `report`. `refresh-gaps` is not, and
+prints labels and counts only, because `digest` runs the same refresh on a Monday. It also says
+when more failed questions are stored than it grouped, and how many gaps are still unnamed.
+
+`gap-status` refuses what makes no sense: `written` without `--doc`, a `--doc` that is not an
+indexed article, `--doc` with any other status, and a gap that does not exist.
 
 `report` embeds the window's questions and writes nothing. It logs at warning level only, so
 that the report is not preceded by lines about the pool opening, and prints what the embedding
@@ -363,7 +622,11 @@ there, not that a file is missing.
 | `analytics/seed.py` | the invented file's format and rules, playing it through the assistant, clearing it, and the local-only guard |
 | `analytics/digest.py` | the email as a subject and a body, composed from a report; the one-line test message |
 | `analytics/mail.py` | the mail settings, and `send`: one plain-text message over SMTP, with the failures turned into this project's errors |
-| `analytics/cli.py` | `report`, `digest`, `seed`, and the older `purge` |
+| `analytics/clustering.py` | grouping vectors by their centres: `centre_of` and `cluster`, with no database and no model |
+| `analytics/gaps.py` | the refresh: failed questions to groups, groups to stored gaps, names for the ones without, one write. Also what a label may hold, and the limits of one refresh |
+| `assistant/prompts/gap_label.md` | what the model is told when it names a gap. Versioned and pinned like every prompt, and kept out of the list an eval run records |
+| `migrations/versions/0006_content_gaps.py` | `example_questions` goes; `example_message_ids`, `fallback_count`, `refreshed_at` and `resolved_at` arrive |
+| `analytics/cli.py` | `report`, `digest`, `refresh-gaps`, `gaps`, `gap-status`, `seed`, and the older `purge` |
 | `analytics/retention.py` | the nightly sweep (docs/API.md) |
 | `datasets/traffic/invented.yaml` | the invented conversations. In a folder of its own, because the unit tests load every `datasets/*.yaml` as an eval dataset |
 
@@ -399,6 +662,40 @@ error.
 
 **A float on a band's edge.** `0.3 / 0.05` is `5.999999999999999`. Floored as it stands, a score
 of 0.30 is counted in the band below its own. `histogram` rounds to nine places before flooring.
+
+**`zip(*rows)` turns rows into columns.** `centre_of` adds vectors up coordinate by
+coordinate. `zip(*vectors)` hands back all the first coordinates, then all the second ones: the
+`*` spreads the list into separate arguments, and `zip` pairs them off by position.
+`math.fsum` then adds each column and rounds the total once, correctly. On Python 3.12, the
+project's floor, a plain `sum` of floats compensates for its rounding as well and would give
+the same centres; before 3.12 it did not, and `fsum` is the one whose name says what is wanted.
+
+**A dictionary's own lookup as a sort key.** `sorted(members, key=alike.__getitem__)` sorts by
+`alike[member]`. `alike.__getitem__` is the method that `alike[...]` calls, passed as a
+function. `lambda member: alike[member]` does exactly the same and is as safe here, since
+`sorted` calls its key at once; this is the shorter way to write it. `alike.get` is the one to
+avoid: it answers `None` for a member that is missing, where this raises.
+
+**`dataclasses.replace`.** A frozen dataclass cannot be changed, so naming a gap makes a copy
+of its group with one field different: `dataclasses.replace(group, label=label)`.
+
+**`str.isprintable()`.** One call that answers "is this plain text": False when the string
+holds any character Unicode files under "Other" or "Separator", the plain space excepted. That
+covers the control characters, NUL and ESC among them, and the invisible ones that reverse or
+hide text. Letters of any alphabet are printable. It is what stands between a model's label
+and the table.
+
+**A slice never raises.** `failed[-500:]` is the last 500 items of a list, and all of it when
+the list is shorter. The refresh asks the database for 501 failed questions, learns from a 501st
+that there were more than it groups, and keeps the newest 500 with that slice.
+
+**`StrEnum` for a command's choices.** `gaps --status` and `gap-status` take a `StrEnum`. Typer
+turns its members into the allowed values, refuses anything else with a usage error before the
+command runs, and lists them in `--help`.
+
+**A `real` is not what you put in it.** `top_score` is stored as a `real`, seven significant
+digits: 0.35 goes in and 0.3499999940395355 comes out. Compared as it comes, a score of exactly
+the threshold counts as under it. The queries round it to six places on the way out.
 
 **`smtplib` and `email.message.EmailMessage`.** Both standard library. `EmailMessage` is the
 message: headers set like dictionary keys, and `set_content(text)` for a body, which picks
@@ -438,6 +735,12 @@ from the same data.
   null, which a `where` reads as no.
 - `starts_with(session_id, 'invented-')` rather than `like`, because in a `like` pattern an
   underscore means "any one character".
+- "The newest 500, oldest first" is two orderings, so it is two queries, one inside the other:
+  the inner one reads from the highest id down and stops at the limit, and the outer one puts
+  what it found back in the order it was asked.
+- `coalesce(a, b)` is the first of its arguments that is not null. `set cluster_label =
+  coalesce(%(label)s::text, cluster_label)` writes a new label when it is handed one and
+  leaves the column as it was when handed `None`.
 
 ## How it is tested
 
@@ -475,12 +778,15 @@ from the same data.
   the loop has finished": moved inside it, every test of the command fails.
 - **`tests/unit/test_analytics_digest.py`**: the subject and the body; **the body and the
   subject are searched for every question, answer and comment**; and the command. A week with
-  questions is sent once. Without mail settings it warns, names them, builds nothing and exits
-  0. A quiet week sends nothing. A dry run prints the email, needs no settings and sends
-  nothing even when it could. A failed send is exit code 1 and one line. `--test` sends one
-  line and builds no report. A wrong `--since` fails first, with or without mail settings. The
-  command the email prints looks back a day further than the email. **Everything a scheduled
-  run prints is searched for the questions, both addresses and the password.**
+  questions is sent once, and what is sent is compared whole with what `compose` makes. Without
+  mail settings it warns, names them, builds nothing and exits 0. A quiet week sends nothing
+  and still refreshes the gaps. A dry run prints the email, needs no settings and sends nothing
+  even when it could. A failed send is exit code 1 and one line. `--test` sends one line and
+  builds no report. A wrong `--since` fails first, with or without mail settings. The command
+  the email prints looks back a day further than the email, and its last paragraph says which
+  lines a model wrote. **Everything a scheduled run prints is searched for the questions, both
+  addresses, the password and the gap's name**, which is in the email and must not be in the
+  log.
 - **`tests/unit/test_config.py`**: the mail server defaults to Gmail's and the rest to nothing;
   a blank line means unset; a value that is plainly not an address is refused without being
   repeated, one with a line break and a second header after it and one with a letter outside
@@ -500,25 +806,66 @@ from the same data.
   OpenAI faked. They are stored under `invented-` ids, the second question is answered with the
   first as history, the thumbs down lands on its answer, and each conversation is as old as it
   was asked to be. Seeding twice asks nothing. Clearing leaves a visitor's conversation alone.
+- **`tests/unit/test_analytics_clustering.py`**: vectors given as angles on a page, so the
+  expected groups can be worked out by hand. Largest first; every vector in exactly one group;
+  the threshold met by being exactly as alike as it asks. Two tests place a vector early and
+  pull its group's centre away from it, one to show it moves to a later group and one to show
+  it ends up alone, and a third runs a single pass by hand to show that without the second
+  pass it would have stayed put. **Two identical vectors left behind by one group end up
+  together**, which is the review's case; two left behind that are not alike stay apart; and
+  vectors with no direction, which no round can settle, do not keep the loop going.
+- **`tests/unit/test_analytics_gaps.py`**: what is recorded about a group, and that its
+  examples are its five most typical questions, the most typical first; what the model is shown
+  and with which model, effort and prompt; that only a dozen questions are sent, each on one
+  clipped line that cannot close its own quotes; that a label is tidied and capitalised without
+  touching a name inside it. **A label with a NUL, an escape sequence, reversed text, a link or
+  an address is refused, and the log line holds the reason and not the label**; 60 characters
+  pass and 61 do not; a project's name with a dot in it and letters outside ASCII pass. A
+  stored gap is named only while it has no name, and one refresh names only so many. And the
+  label prompt is pinned but recorded with no eval run.
+- **`tests/unit/test_analytics_commands.py`** also covers `refresh-gaps` (labels and counts,
+  and neither the question nor the search; a dry run says "would empty"; the lines about
+  questions left out and gaps unnamed appear only when true), `gaps` (the examples still
+  stored, in order, at most three of four; one lookup for every gap's examples; the alarm only
+  on a gap marked written) and every refusal of `gap-status`.
+- **`tests/unit/test_analytics_digest.py`** has a stand-in for the refresh in every test, after
+  the first run without one spent two and a half minutes waiting for a database that is not
+  there. It checks the order: refresh, then build.
+- **`tests/unit/test_analytics_report.py`** also covers the gaps' section: the ten most asked
+  and a count of the rest; times printed on UTC's clock whatever clock they arrived on; and a
+  gap with no question left is not an alarm.
+- **`tests/integration/test_analytics_gaps.py`**, against Postgres with only OpenAI faked: the
+  first refresh groups, names and stores; a second names nothing and duplicates nothing; a new
+  question on a known subject joins its gap and the gap keeps its `wont_fix`; a gap whose
+  questions are gone is emptied, kept, and recognised when asked again; a dry run writes
+  nothing and counts what would be emptied; **a refresh that fails on its second name leaves
+  the table as it was**; a question that fails after a gap was marked written shows on the
+  gap. From the review: **nothing the real refresh logs holds a question, a search or a
+  label**, with the logger of every module it reaches replaced by a recorder; `SAME_GAP` a
+  hundredth either side of the line, through the refresh; two groups that would both match one
+  gap, where the second becomes a new gap; a gap's first and last dates kept after those
+  questions are purged; a gap left unnamed is named by the next refresh and keeps its status;
+  and the two limits, each lowered for the test.
+- **`tests/log_recorder.py`** is that recorder. structlog's own `capture_logs()` is not used:
+  a logger is cached at its first use, and one cached before a later `configure_logging` call
+  is not captured, so a test of what is not logged would pass on an empty list. Checked by
+  running it.
+- **`tests/integration/test_migrations.py`**: `content_gaps` has the id column and not the
+  text one, and migration 0006 goes down to 0005 and back, leaving the old column with no
+  default, as 0002 declared it.
 - **`tests/integration/test_analytics_report.py`**: a report built from stored turns, with the
   fake deciding how alike two questions are. One request for five questions; a question two
   visitors asked embedded once; small talk not at all; and with `EMBEDDING_BATCH_SIZE=2`, three
   requests. The refused question nearest a passage comes first. **The two thresholds are set
   through the environment and the test runs twice**, with two pairs of values and two expected
   sets of lists, so a `build` that ignored either setting, or swapped them, fails one run.
-  And the week's email is composed from the stored turns and searched for every one of them.
+  The week's email is composed from the stored turns and searched for every one of them. And a
+  report carries the content gaps as the table holds them.
 
 ## Not built yet
 
-Decided, and to be built in this order:
+Decided, and the last thing to build:
 
-- **Content gaps** (`refresh-gaps`, `gaps`). The questions that failed are clustered and each
-  cluster is named by a model. `content_gaps` will hold the ids of example questions and not
-  their text, because the table is kept indefinitely and a visitor's words are not. A question
-  counts as failed when its answer was a fallback or scored under `LOW_SCORE_THRESHOLD`. In the
-  seeding above that is 20 of the 26 gap questions, and at least two from every one of the six
-  topics, with 3 of the 58 answerable ones beside them. `digest` will refresh the gaps before
-  it builds the report, and the email will carry their names.
 - **`promote-case`**. Prints a question as a ready YAML case. Promoted cases wait in
   `datasets/promoted.yaml`, which is checked and never run, and join the next golden dataset
   when the knowledge base has changed enough to need one. A change of model still needs no

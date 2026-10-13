@@ -1,8 +1,9 @@
-"""Turns made by hand, for tests of the analytics that need no database.
+"""Turns and gaps made by hand, for tests of the analytics that need no database.
 
-``db/analytics.Turn`` is what the analytics read back from the chat tables. The
-signals and the report are plain functions of a list of them, so their tests build
-the list here instead of storing and reading rows.
+``db/analytics.Turn`` is what the analytics read back from the chat tables, and
+``db/analytics.Gap`` a row of ``content_gaps``. The signals and the report are plain
+functions of lists of them, so their tests build the lists here instead of storing
+and reading rows.
 
 Importable from both suites because pyproject.toml puts ``tests/`` on pytest's
 ``pythonpath``, as it is for ``openai_fake.py``.
@@ -11,7 +12,7 @@ Importable from both suites because pyproject.toml puts ``tests/`` on pytest's
 import datetime as dt
 from decimal import Decimal
 
-from portfolio_ai.db.analytics import Turn
+from portfolio_ai.db.analytics import Gap, Turn
 
 START = dt.datetime(2026, 10, 12, 9, 0, tzinfo=dt.UTC)
 
@@ -50,4 +51,41 @@ def turn(  # ruff: ignore[too-many-arguments] -- every one is a column, and all 
         cost=Decimal(cost),
         latency_ms=latency_ms,
         first_token_ms=first_token_ms,
+    )
+
+
+def gap(  # ruff: ignore[too-many-arguments] -- every one is a column, and all are named
+    gap_id: int,
+    label: str = "Consulting day rates",
+    *,
+    status: str = "open",
+    questions: int = 3,
+    fallbacks: int = 2,
+    examples: tuple[int, ...] = (),
+    doc_id: str | None = None,
+    resolved_days_ago: float | None = None,
+    last_seen_days_ago: float = 1,
+    refreshed: bool = True,
+) -> Gap:
+    """One content gap. Times are counted back from :data:`START`.
+
+    ``resolved_days_ago`` against ``last_seen_days_ago`` is what decides whether the
+    gap was asked about again after it was marked: a smaller number is more recent.
+    """
+    return Gap(
+        id=gap_id,
+        label=label,
+        status=status,
+        question_count=questions,
+        fallback_count=fallbacks,
+        avg_top_score=0.31,
+        negative_rate=0.0,
+        example_message_ids=list(examples),
+        resolved_doc_id=doc_id,
+        resolved_at=None
+        if resolved_days_ago is None
+        else START - dt.timedelta(days=resolved_days_ago),
+        first_seen_at=START - dt.timedelta(days=20),
+        last_seen_at=START - dt.timedelta(days=last_seen_days_ago),
+        refreshed_at=START if refreshed else None,
     )

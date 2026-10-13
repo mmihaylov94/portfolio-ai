@@ -5,10 +5,16 @@ Nothing here reads a database or sends anything. ``report.build`` makes the repo
 from a :class:`~portfolio_ai.analytics.report.Report`.
 
 **The body holds nothing a visitor typed.** It is ``report.render`` with
-``verbatim=False``, the form with counts, article titles, costs and timings. The
-chat tells visitors their conversations are kept for 90 days, and an email outlives
-that for as long as its reader keeps it. So the questions themselves stay in the
-database, and the email's last line says how to read them there.
+``verbatim=False``, the form with counts, article titles, costs and timings, and
+the content gaps by name. The chat tells visitors their conversations are kept for
+90 days, and an email outlives that for as long as its reader keeps it. So the
+questions themselves stay in the database, and the email's last lines say how to
+read them there.
+
+**A gap's name is the nearest thing to an exception.** A model wrote it from
+visitors' questions, told to name the missing topic and nobody who asked. It is not
+their words, but it is derived from them, and the email says which of its lines
+those are.
 """
 
 from dataclasses import dataclass
@@ -19,9 +25,9 @@ from portfolio_ai.analytics.report import Report
 # What the subject starts with, so that a mail filter has something fixed to match.
 SUBJECT_PREFIX = "mihaylov.io chat"
 
-# The command that prints the questions, as it is run on the server. `exec`, so that
-# the output goes to the terminal that asked and not to the container's log.
-HOW_TO_READ_THEM = "docker compose exec worker python -m portfolio_ai.analytics report"
+# How the two commands that print the questions are run on the server. `exec`, so
+# that the output goes to the terminal that asked and not to the container's log.
+HOW_TO_READ_THEM = "docker compose exec worker python -m portfolio_ai.analytics"
 
 
 @dataclass(frozen=True)
@@ -48,14 +54,18 @@ def compose(report: Report) -> Message:
         [
             reports.render(report, verbatim=False),
             "---",
-            "This email holds counts and none of what visitors typed. To read the "
-            "questions behind them, on the server:\n\n"
+            "This email holds counts and none of what visitors typed. The content "
+            "gaps' names were written by a model from their questions, to name each "
+            "missing topic and nobody who asked. To read the questions behind the "
+            "counts, on the server:\n\n"
             # A day more than the email covers. `--since` counts back from the moment
             # the command is run, which is some hours after this was sent; the same
             # number of days would start after this email's first questions.
-            f"    {HOW_TO_READ_THEM} --since {days + 1}d\n\n"
+            f"    {HOW_TO_READ_THEM} report --since {days + 1}d\n\n"
             "That is a day more than this email covers, so that it still reaches the "
-            "start of the week when it is run later in the day.",
+            "start of the week when it is run later in the day. And the questions "
+            "behind each gap:\n\n"
+            f"    {HOW_TO_READ_THEM} gaps",
         ]
     )
     return Message(subject=subject, body=body + "\n")

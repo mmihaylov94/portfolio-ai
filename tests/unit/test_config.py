@@ -329,16 +329,17 @@ def test_the_analytics_thresholds_default_to_the_documented_values() -> None:
 
     assert settings.low_score_threshold == pytest.approx(0.35)
     assert settings.rephrase_similarity == pytest.approx(0.60)
+    assert settings.gap_similarity == pytest.approx(0.45)
 
 
-@pytest.mark.parametrize("name", ["low_score_threshold", "rephrase_similarity"])
+@pytest.mark.parametrize("name", ["low_score_threshold", "rephrase_similarity", "gap_similarity"])
 @pytest.mark.parametrize("value", [-0.1, 1.1])
 def test_a_threshold_is_a_similarity_between_nought_and_one(name: str, value: float) -> None:
     with pytest.raises(ValidationError):
         _settings(**{name: value})
 
 
-@pytest.mark.parametrize("name", ["low_score_threshold", "rephrase_similarity"])
+@pytest.mark.parametrize("name", ["low_score_threshold", "rephrase_similarity", "gap_similarity"])
 @pytest.mark.parametrize("value", [0.0, 1.0])
 def test_nought_and_one_themselves_are_allowed(name: str, value: float) -> None:
     """Each end switches a list off or fully on: no answer scores under 0, and no two

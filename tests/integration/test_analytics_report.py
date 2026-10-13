@@ -17,7 +17,9 @@ from portfolio_ai.analytics import digest as digests
 from portfolio_ai.analytics import report as reports
 from portfolio_ai.assistant.agent import TurnResult
 from portfolio_ai.config import get_settings
+from portfolio_ai.db import analytics as analytics_db
 from portfolio_ai.db import chat as chat_db
+from portfolio_ai.db.analytics import GapCounts
 from portfolio_ai.db.pool import get_pool
 
 pytestmark = pytest.mark.integration
@@ -258,3 +260,41 @@ async def test_a_refused_question_with_nothing_indexed_has_no_nearest_passage() 
     [refused] = report.refused
     assert (refused.score, refused.title, refused.section) == (None, None, None)
     assert "    nearest: nothing indexed" in reports.render(report, verbatim=True)
+
+
+@pytest.mark.usefixtures("fake")
+async def test_a_report_carries_the_content_gaps_as_the_table_holds_them() -> None:
+    """`build` reads the gaps and does not work them out: that is `refresh-gaps`, or
+    the digest before it builds. One gap is put in the table by hand, and both the
+    report and its emailed form have it."""
+    pool = await get_pool()
+    async with pool.connection() as conn:
+        await conn.execute("delete from content_gaps")
+    counts = GapCounts(
+        centre=corpus.axis(20),
+        question_count=3,
+        fallback_count=2,
+        avg_top_score=0.3,
+        negative_rate=0.0,
+        first_seen_at=MONDAY,
+        last_seen_at=MONDAY,
+        example_message_ids=[],
+    )
+    await analytics_db.apply_gap_refresh(
+        updates=[], creates=[("Consulting day rates", counts)], refreshed_at=UNTIL
+    )
+    await _conversations()
+
+    try:
+        report = await reports.build(since=SINCE, until=UNTIL)
+    finally:
+        # The other tests here build reports too, and none of them expects a gap.
+        async with pool.connection() as conn:
+            await conn.execute("delete from content_gaps")
+
+    assert [(item.label, item.question_count, item.status) for item in report.gaps] == [
+        ("Consulting day rates", 3, "open")
+    ]
+    emailed = reports.render(report, verbatim=False)
+    assert "-    3  Consulting day rates (gap " in emailed
+    assert "2 said the information was not there; last asked 2026-10-12)" in emailed

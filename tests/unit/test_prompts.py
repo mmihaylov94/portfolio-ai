@@ -6,7 +6,7 @@ from pathlib import Path
 import pytest
 
 from portfolio_ai.assistant.prompts import loader
-from portfolio_ai.assistant.prompts.loader import ALL, RAG_AGENT, Prompt
+from portfolio_ai.assistant.prompts.loader import ALL, EVERY, RAG_AGENT, Prompt
 
 # Each prompt's version and a hash of its text. This is the test that fails when a
 # prompt is edited, and it is meant to.
@@ -24,6 +24,7 @@ PINNED = {
     "out_of_scope_reply": (1, "915ed598f0a1"),
     "daily_limit_reply": (1, "f4daad636fed"),
     "judge": (2, "d8c0973fd84d"),
+    "gap_label": (1, "b3b22eb0b65c"),
 }
 
 # The n8n export the prompts were ported from. Gitignored -- it carries n8n instance
@@ -37,10 +38,13 @@ N8N_EXPORT = (
 
 
 def test_every_prompt_is_pinned() -> None:
-    assert sorted(prompt.name for prompt in ALL) == sorted(PINNED)
+    """EVERY, not ALL. ALL is the prompts an answer or a grade depends on, which is
+    what an eval run records; EVERY adds the ones that do neither, and a prompt is
+    pinned whichever it is."""
+    assert sorted(prompt.name for prompt in EVERY) == sorted(PINNED)
 
 
-@pytest.mark.parametrize("prompt", ALL, ids=lambda prompt: prompt.name)
+@pytest.mark.parametrize("prompt", EVERY, ids=lambda prompt: prompt.name)
 def test_a_prompt_cannot_change_without_a_new_version(prompt: Prompt) -> None:
     expected_version, expected_digest = PINNED[prompt.name]
 
@@ -50,7 +54,7 @@ def test_a_prompt_cannot_change_without_a_new_version(prompt: Prompt) -> None:
     )
 
 
-@pytest.mark.parametrize("prompt", ALL, ids=lambda prompt: prompt.name)
+@pytest.mark.parametrize("prompt", EVERY, ids=lambda prompt: prompt.name)
 def test_no_prompt_starts_with_n8ns_expression_marker(prompt: Prompt) -> None:
     assert not prompt.text.startswith("=")
 

@@ -27,6 +27,7 @@ import pytest
 import structlog
 from fastapi import FastAPI
 from fastapi.routing import APIRoute
+from log_recorder import LogRecorder
 from psycopg_pool import PoolTimeout
 from pydantic import SecretStr
 
@@ -241,22 +242,6 @@ async def _until(condition: Callable[[], bool]) -> None:
     async with asyncio.timeout(5):
         while not condition():  # ruff: ignore[async-busy-wait]
             await asyncio.sleep(0)
-
-
-@dataclass
-class LogRecorder:
-    """Stands in for a module's logger and keeps each line as a dict.
-
-    Patched onto the module rather than captured through structlog, whose
-    configuration depends on which tests happened to run before this one.
-    """
-
-    lines: list[dict[str, Any]] = field(default_factory=list)
-
-    def _record(self, event: str, **fields: Any) -> None:
-        self.lines.append({"event": event, **fields})
-
-    debug = info = warning = error = _record
 
 
 # --- who may call -------------------------------------------------------------

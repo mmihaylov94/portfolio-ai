@@ -319,6 +319,34 @@ Look for these first; each one has cost real time here.
   goes into a server's `.env`.
 - "Happens after the event loop has finished" is a property to pin: a stand-in that refuses to
   be called while a loop is running does it.
+- A command that gains a database call makes its unit tests reach for a database. Nothing
+  fails at once; the suite waits for a timeout. Compare the unit suite's duration with the last
+  run, and look for the stand-in.
+- A `real` column gives back 0.3499999940 for 0.35. A comparison with a threshold, in SQL or in
+  Python, puts a score of exactly the threshold on the wrong side unless one of them is rounded.
+- Embeddings of short questions group by phrasing and by a repeated name before they group by
+  subject. Ask what is being embedded before believing a cluster.
+- A text derived from visitors' words that is kept after them (a gap's label) needs its own
+  rule and somewhere a person sees it. Check both.
+- A model's output written to a `text` column or printed in a terminal is input. Give it the
+  character rule visitors' text has: a NUL stops the insert, and an escape sequence clears the
+  screen.
+- A "prints no question" test over a stand-in says nothing about the real function's log
+  lines. Record those with `tests/log_recorder.py`, and assert first that the expected lines
+  were recorded at all. structlog's `capture_logs()` misses a logger cached before a later
+  `configure_logging`, and a test of what is absent passes on an empty list.
+- A threshold constant needs a case on each side through the function that decides.
+  `similarity > CONSTANT` asserted on fixture data passes at any value.
+- A pass that sets leftovers aside one at a time never compares the leftovers with each other.
+- "Told apart by X" is a count on both sides: count how many of the other kind show X too.
+- A dry run that returns a literal for a figure it did not work out prints a promise.
+- Check a claim about a builtin against the project's floor version: `sum()` of floats is
+  compensated from 3.12.
+- A claim about what the linter flags is checked by linting it. Ruff does not flag a lambda
+  sort key that reads a loop variable, whatever a note about the trap says.
+- "Seven words" is a count. `len(label.split())`.
+- Nothing that calls a model in a loop over stored rows is bounded by the daily spending limit.
+  Look for its own limit, and for a quadratic step beside it.
 
 When a finding is a new kind of mistake, suggest a one-line entry for this list.
 

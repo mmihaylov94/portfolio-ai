@@ -1378,6 +1378,46 @@ docker compose exec worker python -m portfolio_ai.analytics digest --since 14d
 
 To switch it off, take the three lines out and recreate the worker.
 
+### The content gaps
+
+The Monday digest works the content gaps out again before it builds its report, in a week
+with no questions too, so on a server with mail set up there is nothing to run. Without mail
+settings the digest does nothing at all, and the gaps are refreshed only by hand. To see the
+queue, or to work it out by hand:
+
+```bash
+cd ~/docker/portfolio-ai
+docker compose exec worker python -m portfolio_ai.analytics refresh-gaps --dry-run
+docker compose exec worker python -m portfolio_ai.analytics refresh-gaps
+docker compose exec worker python -m portfolio_ai.analytics gaps
+```
+
+**`gaps` quotes visitors**, like `report`: `exec`, a terminal, and nowhere else. `refresh-gaps`
+prints labels and counts only. A refresh names each gap that has no name with one call to the
+classifier's model, at most twenty a run and a cent or less in all, and its dry run names and
+writes nothing. Read the labels it prints: they are a model's words, written from visitors'
+questions, and they go into the email. A gap listed as "Unnamed gap" is one whose label was
+refused or not asked for yet, and the next refresh asks again.
+
+**Read a gap's questions before marking it `wont_fix`.** "0 said the information was not
+there" does not mean the questions were answered: on the invented conversations three of the
+five gaps that showed it were real.
+
+When an article has been written and the hourly ingest has indexed it, mark the gap. The number
+is the one `gaps` prints, and `--doc` is the article's `doc_id`:
+
+```bash
+docker compose exec worker python -m portfolio_ai.analytics gap-status 7 written --doc services
+docker compose exec worker python -m portfolio_ai.analytics gap-status 9 wont_fix
+```
+
+A gap marked written that is asked about, and goes unanswered, after that is called out in the
+next email: the article did not close it.
+
+The deploy that brings these commands also brings migration 0006, which changes the empty
+`content_gaps` table. `deploy-portfolio-ai` sees a migration pending, takes its backup first,
+and migrates (§9).
+
 ### Asking the assistant something, on the server
 
 The quickest way to prove that the production key, the production database and the production

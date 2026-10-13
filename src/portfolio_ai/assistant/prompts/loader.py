@@ -10,10 +10,11 @@ project replaces, word for word apart from the two corrections listed in
 ``rag_agent.md``. Two have since been changed on purpose, each after an eval run.
 The classifier, at version 2, adds to n8n's text without removing any of it. The
 agent's prompt, at version 2, adds one line and replaces four, the smallest of the
-changes measured that helped without breaking something else. Two are new: the
-reply sent once the daily spending limit is reached (n8n had no limit), and the
-eval judge's rubric, itself at version 2 since the first baseline showed two faults
-in how it graded.
+changes measured that helped without breaking something else. Three are new: the
+reply sent once the daily spending limit is reached (n8n had no limit), the eval
+judge's rubric, itself at version 2 since the first baseline showed two faults in
+how it graded, and the instructions for naming a content gap, which the analytics
+use and no answer depends on.
 
 **The version is recorded with every answer** (``chat_messages.llm_calls``) and with
 every eval run (``eval_runs.config``), so a score can always be traced to the prompt
@@ -119,3 +120,13 @@ ALL = (
     DAILY_LIMIT_REPLY,
     JUDGE,
 )
+
+# The analytics' own: it names a content gap from the searches behind it. It writes
+# no answer and grades none, so it is deliberately not in ALL, which is what an eval
+# run records as "the prompts this was measured with" (AssistantConfig.as_record).
+# Listed there, it would make every later run's configuration differ from every
+# stored one's for a reason that changes no score. It is versioned and pinned like
+# the rest, through EVERY.
+GAP_LABEL = load("gap_label")
+
+EVERY = (*ALL, GAP_LABEL)

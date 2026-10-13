@@ -5,16 +5,17 @@ starts from a :class:`Report` made by hand: what its lists select, and what
 ``render`` does and does not print in each of its two modes.
 """
 
+import dataclasses
 import datetime as dt
 from decimal import Decimal
 
 import pytest
-from turns import START, turn
+from turns import START, gap, turn
 
 from portfolio_ai.analytics import report as reports
 from portfolio_ai.analytics.report import Refused, Report
 from portfolio_ai.analytics.signals import Pair
-from portfolio_ai.db.analytics import ArticleUsage, ArticleUse, Turn, Volume
+from portfolio_ai.db.analytics import ArticleUsage, ArticleUse, Gap, Turn, Volume
 from portfolio_ai.exceptions import AnalyticsError
 
 UNTIL = START + dt.timedelta(days=1)
@@ -44,6 +45,7 @@ def _report(
     pairs: list[Pair] | None = None,
     refused: list[Refused] | None = None,
     usage: ArticleUsage | None = None,
+    gaps: list[Gap] | None = None,
 ) -> Report:
     return Report(
         since=SINCE,
@@ -53,6 +55,7 @@ def _report(
         pairs=pairs or [],
         refused=refused or [],
         usage=usage or _usage(),
+        gaps=gaps or [],
         low_score_threshold=0.35,
         rephrase_similarity=0.60,
         embedded=5,
@@ -348,3 +351,154 @@ def test_an_empty_window_says_so_in_one_paragraph(verbatim: bool) -> None:
     assert "Nobody asked anything in this window." in text
     assert "The 7 days before: 4 questions in 2 conversations." in text
     assert "##" not in text
+
+
+# --- content gaps -----------------------------------------------------------------
+
+
+@pytest.mark.parametrize("verbatim", [True, False])
+def test_the_open_gaps_are_listed_most_asked_first_in_both_forms(verbatim: bool) -> None:
+    """In the email too. A label is not something a visitor typed: a model wrote it,
+    told to name the topic and nobody who asked."""
+    report = _report(
+        [turn(1)],
+        gaps=[
+            gap(7, "Consulting day rates", questions=4, fallbacks=3),
+            gap(2, "Salary expectations", questions=3, fallbacks=3, last_seen_days_ago=2),
+        ],
+    )
+
+    text = reports.render(report, verbatim=verbatim)
+
+    assert "## Content gaps" in text
+    assert "most asked first, as of 2026-10-12 09:00 UTC." in text
+    first = text.index(
+        "-    4  Consulting day rates (gap 7; 3 said the information was not there; "
+        "last asked 2026-10-11)"
+    )
+    second = text.index("-    3  Salary expectations (gap 2; 3 said the information was not there")
+    assert first < second
+    assert text.index("## Content gaps") < text.index("## Cost and speed")
+    # Under a title that says seven days, counts that span every question stored.
+    assert "Counted over every question still stored, not over these 7 days alone." in text
+
+
+@pytest.mark.parametrize("verbatim", [True, False])
+def test_a_report_lists_the_ten_most_asked_gaps_and_counts_the_rest(verbatim: bool) -> None:
+    """`analytics gaps` lists them all. An email of two hundred lines is one nobody
+    reads, and nothing else bounds how many gaps there can be."""
+    many = [gap(number, f"Gap number {number}", questions=30 - number) for number in range(1, 13)]
+
+    text = reports.render(_report([turn(1)], gaps=many), verbatim=verbatim)
+
+    listed = [line for line in text.splitlines() if "(gap " in line]
+    assert len(listed) == reports.GAPS_LISTED == 10
+    assert "Gap number 10 (gap 10;" in listed[-1]
+    assert "Gap number 11" not in text
+    assert "- and 2 more: `analytics gaps` lists them all" in text
+
+
+def test_ten_gaps_are_all_listed_with_no_line_about_more() -> None:
+    ten = [gap(number, f"Gap number {number}", questions=30 - number) for number in range(1, 11)]
+
+    text = reports.render(_report([turn(1)], gaps=ten), verbatim=False)
+
+    assert "Gap number 10 (gap 10;" in text
+    assert "more: `analytics gaps`" not in text
+
+
+def test_a_gaps_times_are_printed_on_utcs_clock_whatever_clock_they_arrived_on() -> None:
+    """Postgres hands a timestamp back on the clock of the connection's time zone,
+    which is the database server's setting. These two arrive three hours ahead of
+    UTC: the refresh at noon there, and the last question at half past one in the
+    morning, which was still the day before in UTC."""
+    ahead = dt.timezone(dt.timedelta(hours=3))
+    stored = dataclasses.replace(
+        gap(7, "Consulting day rates"),
+        refreshed_at=dt.datetime(2026, 10, 12, 12, 0, tzinfo=ahead),
+        last_seen_at=dt.datetime(2026, 10, 11, 1, 30, tzinfo=ahead),
+    )
+
+    text = reports.render(_report([turn(1)], gaps=[stored]), verbatim=False)
+
+    assert "as of 2026-10-12 09:00 UTC" in text
+    assert "last asked 2026-10-10)" in text
+
+
+def test_a_gap_with_no_question_left_has_not_failed_since_it_was_marked() -> None:
+    """Its last question may well be later than the day it was marked written. With
+    the question purged there is nothing left that went unanswered, and an alarm
+    would point at nothing."""
+    marked = {"status": "written", "doc_id": "faq", "resolved_days_ago": 3, "last_seen_days_ago": 1}
+
+    assert gap(1, questions=2, **marked).failed_since_resolved  # type: ignore[arg-type]
+    assert not gap(1, questions=0, **marked).failed_since_resolved  # type: ignore[arg-type]
+
+
+def test_before_any_refresh_the_section_says_how_to_make_one() -> None:
+    text = reports.render(_report([turn(1)], gaps=[]), verbatim=True)
+
+    assert "None recorded yet. `analytics refresh-gaps` works them out." in text
+
+
+def test_a_gap_nobody_asks_about_now_or_that_is_closed_is_not_in_the_queue() -> None:
+    """Three that are not work to do: one emptied by the last refresh, one written
+    and quiet since, one decided against."""
+    report = _report(
+        [turn(1)],
+        gaps=[
+            gap(1, "Nobody asks any more", questions=0, fallbacks=0),
+            gap(
+                2,
+                "Written and quiet",
+                status="written",
+                doc_id="faq",
+                resolved_days_ago=1,
+                last_seen_days_ago=5,
+            ),
+            gap(3, "Decided against", status="wont_fix", resolved_days_ago=9),
+        ],
+    )
+
+    text = reports.render(report, verbatim=True)
+
+    assert "- no open gap has been asked about lately" in text
+    for label in ("Nobody asks any more", "Written and quiet", "Decided against"):
+        assert label not in text
+    assert "unanswered again since" not in text
+
+
+def test_a_gap_marked_written_and_unanswered_again_since_is_called_out() -> None:
+    """The alarm the status exists for: an article was written to close the gap, and
+    the question went unanswered after it. Marked three days ago, asked yesterday."""
+    report = _report(
+        [turn(1)],
+        gaps=[
+            gap(
+                4,
+                "Consulting day rates",
+                status="written",
+                doc_id="services",
+                resolved_days_ago=3,
+                last_seen_days_ago=1,
+                questions=2,
+            ),
+        ],
+    )
+
+    text = reports.render(report, verbatim=False)
+
+    assert "Marked written, and unanswered again since:" in text
+    assert (
+        "-    2  Consulting day rates (gap 4; written as services on 2026-10-09; "
+        "last asked 2026-10-11)" in text
+    )
+
+
+def test_a_gap_decided_against_is_not_an_alarm_however_often_it_is_asked() -> None:
+    report = _report(
+        [turn(1)],
+        gaps=[gap(5, "Salary expectations", status="wont_fix", resolved_days_ago=9, questions=6)],
+    )
+
+    assert "unanswered again since" not in reports.render(report, verbatim=True)

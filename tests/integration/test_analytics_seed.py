@@ -183,7 +183,7 @@ async def test_clearing_takes_the_invented_conversations_and_leaves_a_visitors(
 
     removed = await seed.clear()
 
-    assert removed == 2
+    assert (removed.conversations, removed.gaps) == (2, 0)
     assert await seed.stored() == 0
     rows = await _all(
         "select s.session_id, m.content from chat_messages m "
@@ -197,4 +197,28 @@ async def test_clearing_takes_the_invented_conversations_and_leaves_a_visitors(
 
 
 async def test_clearing_nothing_removes_nothing() -> None:
-    assert await seed.clear() == 0
+    cleared = await seed.clear()
+
+    assert (cleared.conversations, cleared.gaps) == (0, 0)
+
+
+async def test_clearing_takes_the_content_gaps_with_the_conversations() -> None:
+    """In development every gap came from an invented question. One left behind
+    would be recognised by the next seeding's refresh, with a label and a status
+    nobody chose this time."""
+    pool = await get_pool()
+    async with pool.connection() as conn:
+        await conn.execute(
+            """
+            insert into content_gaps (
+                cluster_label, centroid, question_count, first_seen_at, last_seen_at
+            )
+            values ('Consulting day rates', %s, 2, now(), now())
+            """,
+            (corpus.axis(0),),
+        )
+
+    cleared = await seed.clear()
+
+    assert cleared.gaps == 1
+    assert await _all("select id from content_gaps") == []
