@@ -767,15 +767,9 @@ and what does it cost?
 `datasets/golden_v3.yaml`, version controlled: 62 cases written from the eleven articles as they
 read on 2026-10-13. golden_v1 (54 cases, before the cutover) and golden_v2 (62, after it) are
 frozen beside it, and docs/EVALS.md lists what changed from each to the next.
-
-**A case does not pin what the evals exist to change**, and the knowledge base does not state
-it: a model, a reasoning-effort setting, the judge, the dataset's size. golden_v2 required an
-answer to name the model that wrote it, because an article named it, so the first change of
-model made the article false and would have made the case false: comparing two models cost a
-dataset version and a baseline. golden_v3 names none, and a unit test and the article checker
-keep it so.
 - 39 answerable questions, including multi-document ones and three false premises, each with
-  `expected_doc_ids` (every article with a section that answers it) and a `reference_answer`
+  `expected_doc_ids` (every article that gives the answer's main point in a statement of its
+  own) and a `reference_answer`
 - 5 questions the knowledge base cannot answer, where the right answer is the fallback
 - 4 follow-ups that carry the previous exchange
 - 5 small talk and 5 out of scope
@@ -788,6 +782,14 @@ keep it so.
 
 Its contact cases check answers for Mihail's two published addresses exactly; no other email
 address appears in it.
+
+**A case does not pin what the evals exist to change**, and the knowledge base does not state
+it. That is whatever `evals run` takes an option for (the models, their efforts, `top_k`, the
+number of search rounds), and with those the judge and the dataset's size. golden_v2 required
+an answer to name the model that wrote it, because an article named it, so the first change of
+model made the article false and would have made the case false: comparing two models cost a
+dataset version and a baseline. golden_v3 states none of them. A model's name is checked, by a
+unit test on the cases and a warning from the article checker; the rest is kept by reading.
 
 Stored in `eval_cases` when first run, and **frozen once a run of it completes**: a changed file
 under the same name is refused, because scores are only comparable on identical cases, and
@@ -1219,7 +1221,8 @@ Non-negotiable from the first commit, because git history is published too:
 | Retention purge | Built with the API (step 4), before any visitor data exists | §10 |
 | Eval parity | By construction: the new assistant at n8n's settings is the baseline; the live n8n bot is not scored | §9 |
 | Eval datasets | Frozen by content hash once a run of them completes (a failed run doesn't count); changes go into a new version | §9 |
-| What a case and an article may name | Not a model, a reasoning-effort setting, the judge or the dataset's size: the evals exist to change those. golden_v2 pinned the answer model and needed a successor at the first change of model; golden_v3 (2026-10-13) names none | §9 |
+| What a case and an article may state | Nothing `evals run` takes an option for (a model, an effort, `top_k`, the search rounds), nor the judge or the dataset's size: the evals exist to change those. golden_v2 pinned the answer model and needed a successor at the first change of model; golden_v3 (2026-10-13) states none | §9 |
+| When a dataset is reviewed | Before its first run, which freezes it. golden_v3's review found seven more cases to change; golden_v2's came after its baseline | §9 |
 | Where evals run | Locally, against the development database; refused in production | §9 |
 | Eval retrieval score | Documents, not chunks, in first-seen order; any expected document is a hit | §9 |
 | Eval judge | `gpt-6.1-sol` with rubric version 2 since 2026-10-10 (`gpt-5` before), pinned apart from the chat model; a change of judge re-grades the stored baseline | §9 |

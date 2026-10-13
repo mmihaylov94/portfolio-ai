@@ -275,11 +275,17 @@ the classifier prompt doesn't name. The classifier sees one message, not the kno
 an unnamed project's questions can be refused as off-topic.
 
 It also warns about an article that names a model: any name in `llm/pricing.py`'s price table,
-and anything shaped like one (`gpt-7`, a dated `gpt-6-luna-2026-09-15`). The eval cases are
-written from the articles, so a model named in an article ends up required by a case, and the
-first change of model then makes both false. That is how golden_v2 came to need a successor
-(docs/EVALS.md). An article says what a model does and how it is chosen, and leaves its name to
-this repository.
+and anything shaped like an OpenAI chat model's name (`gpt-7`, `gpt-4o-mini`, a dated
+`gpt-6-luna-2026-09-15`), with the non-breaking hyphens a model writes read as plain ones. The
+eval cases are written from the articles, so a model named in an article ends up required by a
+case, and the first change of model then makes both false. That is how golden_v2 came to need
+a successor (docs/EVALS.md). An article says what a model does and how it is chosen, and
+leaves its name to this repository's README.
+
+It is a net under that rule and not the rule. It does not know a nickname ("Luna"), a name
+written without its hyphen, or another vendor's models, and it says nothing about the other
+things an article must not state: an effort setting, how many passages or search rounds a
+question gets, the judge, the size of the test set.
 
 `--strict` makes the warnings fail too.
 

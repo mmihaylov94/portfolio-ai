@@ -9,25 +9,38 @@
 # golden_v2 required an answer to name the model that wrote it, because an article
 # named it. The first change of model made the article false, and correcting the
 # article would have made the case false. So comparing two models, which is what the
-# harness is for, needed a new dataset and a new baseline. The knowledge base no
-# longer names a model, a reasoning-effort setting, the judge or this file's size, and
-# no case here does. A unit test fails if a model's name appears in one.
+# harness is for, needed a new dataset and a new baseline.
+#
+# What the evals exist to change is whatever `evals run` takes an option for (the
+# models, their reasoning efforts, top_k, the number of search rounds), and with those
+# the judge and this file's size. The knowledge base states none of them any more, and
+# no case here does. A unit test fails if a model's name appears in a case; the rest
+# is the author's to keep.
 #
 # Changed from golden_v2:
 #   assistant-models, assistant-quality     no model, judge or setting is named
+#   assistant-how                           no number of search rounds; the reference
+#                                           says which articles are listed
 #   projects-page-link                      faq.md now says where the projects are shown
 #   python, followup-and-python,
-#   assistant-n8n, n8n-work                 expected documents by the one rule below
+#   assistant-n8n, n8n-work,
+#   assistant-models, assistant-source,
+#   postgres-projects, open-source          expected documents by the one rule below
 #   assistant-privacy                       the reference says what the article says of
 #                                           the browser's copy; "90 days" is the judge's
-#   assistant-how                           the reference says which articles are listed
-# The other 53 cases are golden_v2's, unchanged.
+#   n8n-framework                           "PostgreSQL" is the judge's, not a forbidden word
+#   assistant-built, businessmap-delivery,
+#   freelance                               a note records how the rule was applied
+# The other 46 cases are golden_v2's, unchanged.
 #
 # expected_doc_ids follows one rule. An article is listed when it gives the reference
-# answer's main point in a statement of its own. It is not listed when it only names
-# the thing asked about, or gives a neighbouring fact the answer could be guessed from.
-# golden_v2 listed faq.md for "is the chat built with n8n?" because it says the chat is
-# built in Python, and left it out of "does he know Python?", which it answers.
+# answer's main point in a statement of its own, and for an answer that is a list, when
+# it gives one item of it. It is not listed when it only names the thing asked about,
+# or gives a neighbouring fact the answer could be guessed from. One clause can hold two
+# facts: faq.md's "built in Python with FastAPI, the OpenAI API, and pgvector" answers
+# "does he know Python?" and "which AI model does it use?", and does not answer "is the
+# chat built with n8n?". golden_v2 listed it for the last and not for the first. Where
+# a listing rests on judgement, the case's note names the sentence that decided it.
 #
 # Frozen once a run of it completes. python -m portfolio_ai.evals refuses a changed
 # file after that, because scores are only comparable on identical cases, so changes
@@ -44,7 +57,7 @@
 #   category           the route the classifier should choose
 #   also_accept        other routes that are right too
 #   history            the conversation before the question, oldest first
-#   expected_doc_ids   every document that answers it; finding any one is a hit
+#   expected_doc_ids   every document that answers it, by the rule above; any one is a hit
 #   expect_fallback    the knowledge base cannot answer it, and saying so is right
 #   reference_answer   what a good answer says; the judge scores completeness on it
 #   must_include       case-insensitive text the answer has to contain
@@ -56,8 +69,9 @@ description: >-
   Sixty-two cases across the eleven knowledge-base articles: one- and multi-document
   questions, false premises, questions the knowledge base cannot answer, follow-ups
   that need the previous exchange, small talk, out-of-scope requests and adversarial
-  prompts. golden_v2's sixty-two, nine of them corrected: none names a model any more,
-  and references and expected documents agree with the articles and with each other.
+  prompts. golden_v2's sixty-two, sixteen of them corrected: none names a model or a
+  setting any more, and references and expected documents agree with the articles and
+  with each other.
 
 cases:
   # --- Who Mihail is ----------------------------------------------------------------
@@ -94,7 +108,8 @@ cases:
       tools and turned client builds into reusable products. The AI work has to appear,
       hence "MCP", which every article uses: a short answer that leaves it out for the
       integrations fails on purpose. tech-stack counts because its AI section names the
-      Businessmap MCP server.
+      Businessmap MCP server. services.md gives the 50% increase without the work that
+      produced it, a neighbouring fact, and is not listed.
 
   - key: team-leadership
     question: "Has Mihail ever managed a team?"
@@ -199,7 +214,10 @@ cases:
       RPA.
     notes: >-
       Production AI leads, as services.md now orders it. No phrase rule can check the
-      order; an answer that buries AI at the end is the judge's to mark down.
+      order; an answer that buries AI at the end is the judge's to mark down. hiring.md is
+      listed for one sentence, that he can work as an independent contractor and invoice
+      directly. It answers the question in its own right, though its section is about
+      how an employer engages him.
 
   - key: compliance-services
     question: "Can Mihail help with GDPR compliance?"
@@ -314,7 +332,6 @@ cases:
       - project-threadline
       - project-n8n-framework
       - project-glotsmith
-      - project-ai-marketing-reporter
       - project-portfolio-ai-assistant
     reference_answer: >-
       Threadline, the AI assistant on this site (portfolio-ai) and the lite edition of the
@@ -325,7 +342,8 @@ cases:
     notes: >-
       Only the framework's lite edition is open. Calling the whole framework open source is
       the mistake faq.md made until the 2026-09-23 fact-check. The assistant's repository
-      joined the list at cutover.
+      joined the list at cutover. The AI Marketing Reporter's article says its workflow is
+      private, which this reference does not go into, so it is not listed.
 
   - key: best-project
     question: "Which project best shows what Mihail can do?"
@@ -407,8 +425,11 @@ cases:
       kept outside the workflows, with the processed events, run logs, sync state and
       variables held in n8n Data Tables. Five workflows are built on it. A smaller lite
       edition is public on GitHub, and the full pro edition is private.
-    must_not_include: ["PostgreSQL"]
-    notes: Its tables are n8n Data Tables, which the article called PostgreSQL until 2026-09-23.
+    notes: >-
+      Its tables are n8n Data Tables, which the article called PostgreSQL until 2026-09-23.
+      An answer that says they are PostgreSQL is unfaithful, and the judge's to catch. As
+      a forbidden word it would fail a correct "n8n Data Tables, not PostgreSQL", and
+      faq.md uses the word fairly two lines below the framework, for Threadline.
 
   - key: marketing-reporter
     question: "What does the AI Marketing Reporter do?"
@@ -428,13 +449,15 @@ cases:
       It is retrieval-augmented: it answers from a curated Markdown knowledge base, not
       from a model's training data. Each message is first classified as a question about
       Mihail's work, small talk or off-topic. For a question about his work the model has
-      to search before it answers, writing its own queries for up to three rounds, and each
-      query is embedded and matched against the knowledge base in PostgreSQL with pgvector.
+      to search before it answers, writing its own queries and searching again when the
+      first results are not enough, and each query is embedded and matched against the
+      knowledge base in PostgreSQL with pgvector.
       The answer is streamed as it is written, with the knowledge base articles its
       searches found most relevant listed under it.
     notes: >-
       Rewritten for the Python system. golden_v1's reference described the n8n one, which
-      the article did until the cutover.
+      the article did until the cutover. How many times it may search is a setting the
+      evals can change, so neither the article nor this reference gives the number.
 
   - key: postgres-projects
     question: "Which of Mihail's projects use PostgreSQL?"
@@ -445,15 +468,16 @@ cases:
       - project-portfolio-ai-assistant
       - faq
       - about-mihail
-      - tech-stack
     reference_answer: >-
       Glotsmith (PostgreSQL on Amazon RDS), Threadline, and the AI assistant on this site
       (PostgreSQL with pgvector).
     notes: >-
-      Each project's own article names its database, and faq.md, about-mihail.md and
-      tech-stack.md name one or two of them; recall shows how many retrieval found. The n8n
-      Pro Automation Framework is not one of them: its tables are n8n Data Tables, which
-      its article called PostgreSQL until the 2026-09-23 fact-check.
+      Each project's own article names its database. faq.md gives Threadline's and
+      about-mihail.md the assistant's; recall shows how many retrieval found. tech-stack.md
+      says he has built retrieval in PostgreSQL without saying for which project, a
+      neighbouring fact, and is not listed. The n8n Pro Automation Framework is not one
+      of them: its tables are n8n Data Tables, which its article called PostgreSQL until
+      the 2026-09-23 fact-check.
 
   - key: n8n-work
     question: "What has Mihail built with n8n?"
@@ -495,7 +519,10 @@ cases:
       programmer, reviewing every change himself.
     notes: >-
       Asked before cutover, this got a long answer under a "Key details:" lead-in, so it
-      measures length and style as well as the history.
+      measures length and style as well as the history. faq.md and services.md say it is
+      built in Python, faq.md with FastAPI, the OpenAI API and pgvector. That answers how
+      it was built, so they are listed here, and not for assistant-n8n, whose question is
+      about n8n.
 
   - key: assistant-n8n
     question: "Is this chat built with n8n?"
@@ -536,12 +563,12 @@ cases:
       Asked before cutover, the answer pointed to a privacy section the site does not
       have. No rule forbids the phrase: an invented pointer is unfaithful, which the judge
       scores. The 90 days are the judge's to check too: as a required phrase, "90 days"
-      failed a correct "90-day retention".
+      would fail a correct "90-day retention".
 
   - key: assistant-models
     question: "Which AI model does this assistant use?"
     category: mihail_related
-    expected_doc_ids: [project-portfolio-ai-assistant]
+    expected_doc_ids: [project-portfolio-ai-assistant, faq, about-mihail, tech-stack]
     reference_answer: >-
       It runs on OpenAI's models: language models classify each message and write the
       answer, and an embedding model powers the search. The exact models are not named,
@@ -552,13 +579,15 @@ cases:
     notes: >-
       The knowledge base names no model on purpose, and neither does this case: see the
       top of this file. An answer that names one has invented it, which is unfaithful and
-      the judge's to catch. faq.md, about-mihail.md and tech-stack.md say the assistant
-      uses the OpenAI API, a neighbouring fact, and are not listed.
+      the judge's to catch. faq.md and about-mihail.md say it is built with the OpenAI
+      API and tech-stack.md with the OpenAI SDK, which is this answer's first point and
+      the one the required phrase checks, so they are listed. Only the assistant's own
+      article says why no model is named.
 
   - key: assistant-source
     question: "Can I see the code behind this assistant?"
     category: mihail_related
-    expected_doc_ids: [project-portfolio-ai-assistant, faq]
+    expected_doc_ids: [project-portfolio-ai-assistant, faq, project-glotsmith]
     reference_answer: >-
       Yes. Its source is public under the MIT licence at
       https://github.com/mmihaylov94/portfolio-ai, including its prompts, its evaluation
@@ -566,7 +595,8 @@ cases:
     must_include: ["github.com/mmihaylov94/portfolio-ai"]
     notes: >-
       The address has to arrive whole. It is a real page, so the link filter must leave it
-      alone.
+      alone. project-glotsmith is listed because its own "Can I see the source code?"
+      names the assistant's repository among the public ones, as it is for open-source.
 
   - key: assistant-quality
     question: "How does Mihail know the assistant's answers are any good?"
@@ -788,7 +818,9 @@ cases:
       forbidden_link_attempted: whether the model tried. Under golden_v2 no answer could
       pass it: the reference said the project is in the projects section, no article
       did, and the judge marked every answer that said so as unsupported. faq.md says it
-      now.
+      now. project-threadline is listed for the live address and the repository the
+      reference ends with; the section's address also reaches the model as that
+      article's url.
 
   - key: everything
     question: "Tell me absolutely everything you know about Mihail."

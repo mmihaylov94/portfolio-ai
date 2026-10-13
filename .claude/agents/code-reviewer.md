@@ -242,6 +242,20 @@ Look for these first; each one has cost real time here.
   names a model, a reasoning-effort setting, the judge or the dataset's size.
 - A field's definition in the docs and the rule applied in the data can part company. Read the
   definition before changing how a field is filled, and change the two together.
+- "What the evals exist to change" is the list of options `evals run` takes. Check an article
+  and a reference against `--top-k` and `--max-search-rounds` as well as the models.
+- A serialisation is not the text: `model_dump_json()` writes a line break as a backslash and
+  an "n", and a `(?<!\w)` lookbehind then sees a letter. Search the values.
+- Editing an article moves the knowledge base's fingerprint, and every stored run then refuses
+  `rejudge`. An example that re-grades a named run dies with the next article edit.
+- A comment that says what a lookaround is for is a claim. Delete the lookaround and see which
+  test fails.
+- A case's note is hashed with it; a comment and the description are not. Read the notes as
+  carefully as the references before a dataset's first run, and review it before that run.
+- One clause can hold two facts ("built in Python with FastAPI, the OpenAI API"). Tabulate
+  `expected_doc_ids` by clause, not by article.
+- "Indexed" can be made "current": the dry run's fingerprint is a hash over each document's
+  id and text, so it can be computed from the pushed commit and compared.
 
 When a finding is a new kind of mistake, suggest a one-line entry for this list.
 

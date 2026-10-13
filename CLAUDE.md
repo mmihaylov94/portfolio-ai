@@ -367,12 +367,19 @@ it compares git blob SHAs and stops.
 - **golden_v3 is the current dataset, and the default.** golden_v1 describes the knowledge base
   before the cutover, and golden_v2 the one that named its models. Both are kept for their
   runs, and runs of different datasets cannot be compared.
-- **Nothing an answer is graded against names what the evals exist to change**: a model, a
-  reasoning-effort setting, the judge, the dataset's size. Not in a knowledge base article and
-  not in a case. golden_v2 pinned the answer model through one line of one article and one
-  required phrase, and the first change of model cost a dataset version and a baseline.
-  `portfolio-ai-validate` warns about a model's name in an article, and a unit test fails on
-  one in a case. A model change is then one `run` and one `compare`, and nothing else.
+- **Nothing an answer is graded against states what the evals exist to change.** That is
+  whatever `evals run` takes an option for (the models, their efforts, `top_k`, the number of
+  search rounds), and with those the judge and the dataset's size. Not in a knowledge base
+  article and not in a case. golden_v2 pinned the answer model through one line of one article
+  and one required phrase, and the first change of model cost a dataset version and a
+  baseline. Only a model's name has a check: `portfolio-ai-validate` warns about one in an
+  article (a warning, which CI does not fail on), and a unit test fails on one in a case. The
+  rest is found by reading, so read an article and a reference against every `evals run`
+  option. A change of model is then one `run`, one `compare`, and one line of README.md,
+  which names the models in use and is where the article sends a curious visitor.
+- **Have a dataset reviewed before its first run, not after.** A complete run freezes it, and
+  a note freezes with its case. golden_v2 was reviewed after its baseline and its faults
+  waited for golden_v3; golden_v3 was reviewed before, and seven more cases changed.
 - **A dataset freezes once a run of it completes.** Scores are only comparable on identical
   cases, so a changed golden_v3.yaml is refused after its first complete run -- copy it to
   golden_v4 instead, and make that the default in `evals/cli.py`. Keep a draft under another
@@ -396,8 +403,8 @@ ARCHITECTURE.md §13).
 
 - **Foundations** — packaging, settings, logging, the async pool, migrations, tests, CI and the
   image on GHCR. Written up as ten lessons in `docs/lessons/`.
-- **Ingestion** — deployed and running hourly: 11 documents, and 122 chunks since the cutover's
-  rewritten articles (117 before).
+- **Ingestion** — deployed and running hourly: 11 documents, and 123 chunks since the assistant's
+  article gained a section on 2026-10-13 (122 after the cutover, 117 before it).
 - **Assistant core** — Rachel answers end to end from the terminal: classify, search, answer,
   remember, record.
 - **API** — FastAPI over the assistant, private to the Docker network: bearer auth, per-session
@@ -433,10 +440,12 @@ ARCHITECTURE.md §13).
   **golden_v3 (2026-10-13) is the current dataset, and the first that names no model.**
   golden_v2 required an answer to name the model that wrote it, because the assistant's
   article named it. The change of model made the article false, and correcting it would have
-  made the case false. The knowledge base now names no model, effort setting, judge or dataset
-  size, and golden_v3 is golden_v2 with nine cases corrected (docs/EVALS.md). **Its baseline,
-  `v3-baseline`, has not been run**: it waits for the edited articles to be pushed and
-  ingested into the dev database.
+  made the case false. The knowledge base now states no model, effort setting, search-round
+  limit, judge or dataset size, and golden_v3 is golden_v2 with sixteen cases corrected, seven
+  of them found by the review before its first run (docs/EVALS.md). **Its baseline,
+  `v3-baseline`, has not been run.** Two things come first: the last article edit pushed and
+  ingested into the dev database, and the four rewritten cases asked a few times each from a
+  throwaway file, because nothing has answered them on the new articles yet.
 
 **Step 6**, the front end and cutover, is in phases:
 1. the Express proxy in the portfolio repo: built, with tests, and switched on at cutover;
@@ -450,8 +459,11 @@ ARCHITECTURE.md §13).
 
 After the week of watching, analytics reporting (7). Still open from the evals:
 - "tell me everything" runs long on every model and wording tried;
-- golden_v3's baseline, `v3-baseline` (about $0.55), once the edited articles are pushed and
-  ingested locally. Nothing can be compared on golden_v3 until it exists.
+- golden_v3's baseline, `v3-baseline` (about $0.55), after the last article edit is ingested
+  locally and the rewritten cases have been tried. Nothing can be compared on golden_v3 until
+  it exists, and no earlier run can be re-graded: the knowledge base has changed under them.
+- the project card's image on the site still shows the old model's name; the owner is
+  replacing it with a screenshot that names none.
 
 Analytics reporting is last on purpose — it needs real traffic to be worth writing. The
 *capture* (feedback, `top_score`, `fallback_used`, where a conversation came from) shipped with

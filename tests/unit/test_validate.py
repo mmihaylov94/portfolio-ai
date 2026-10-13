@@ -232,8 +232,28 @@ def _saying(sentence: str) -> str:
         ("Pinned to gpt-6-luna-2026-09-15.", "gpt-6-luna-2026-09-15"),
         # As a model writes a name when it is not copying one.
         ("It uses GPT-5 mini for answers.", "gpt-5"),
+        # Letters written straight against the number.
+        ("An earlier draft used gpt-4o-mini.", "gpt-4o-mini"),
+        # With the non-breaking hyphens a model writes, which a name copied out of an
+        # answer still has. \N{...} names the character, so that it shows in the source.
+        (
+            "It runs on gpt\N{NON-BREAKING HYPHEN}5\N{NON-BREAKING HYPHEN}mini.",
+            "gpt-5-mini",
+        ),
+        # At the start of a line, with nothing before it but the line break.
+        ("The models, one to a line:\ngpt-6-luna\nand an embedding model.", "gpt-6-luna"),
     ],
-    ids=["answers", "judge", "embeddings", "unpriced", "dated", "as-a-name"],
+    ids=[
+        "answers",
+        "judge",
+        "embeddings",
+        "unpriced",
+        "dated",
+        "as-a-name",
+        "letters-on-the-number",
+        "non-breaking-hyphens",
+        "start-of-a-line",
+    ],
 )
 def test_an_article_that_names_a_model_warns_but_passes(
     corpus: Path, sentence: str, named: str
@@ -250,13 +270,14 @@ def test_an_article_that_names_a_model_warns_but_passes(
     assert "1 warning(s)" in result.output
 
 
-def test_two_models_named_in_one_article_are_one_warning_naming_both(corpus: Path) -> None:
-    """And the shorter name is not reported a second time from inside the longer one."""
-    write(corpus, "models.md", _saying("gpt-5-mini answers and gpt-5 judges; gpt-5-mini routes."))
+def test_two_models_named_in_one_article_are_one_warning_naming_each_once(corpus: Path) -> None:
+    """One named twice is listed once. And "gpt-5" is not listed at all: the sentence
+    never names it, it only holds those characters at the start of a longer name."""
+    write(corpus, "models.md", _saying("gpt-5-mini answers, gpt-6-luna judges, gpt-5-mini routes."))
 
     result = runner.invoke(app, [str(corpus)])
 
-    assert "names a model (gpt-5, gpt-5-mini)" in result.output
+    assert "names a model (gpt-5-mini, gpt-6-luna)" in result.output
     assert "1 warning(s)" in result.output
 
 
@@ -267,8 +288,16 @@ def test_two_models_named_in_one_article_are_one_warning_naming_both(corpus: Pat
         "It is not ChatGPT, and it is not chatgpt-5 either.",
         "The exact models are deliberately not named here.",
         "PostgreSQL with pgvector, queried through psycopg 3.",
+        # A name from the price table inside a longer word is not that name.
+        "Nothing here is called text-embedding-3-smaller or my-text-embedding-3-small.",
     ],
-    ids=["provider-only", "a-product-name", "says-so", "other-names-with-digits"],
+    ids=[
+        "provider-only",
+        "a-product-name",
+        "says-so",
+        "other-names-with-digits",
+        "inside-a-longer-word",
+    ],
 )
 def test_an_article_that_names_no_model_is_not_warned_about(corpus: Path, sentence: str) -> None:
     write(corpus, "models.md", _saying(sentence))

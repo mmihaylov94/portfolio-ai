@@ -30,7 +30,7 @@ from portfolio_ai.assistant.prompts.loader import CLASSIFIER
 from portfolio_ai.exceptions import DocumentRejectedError
 from portfolio_ai.ingestion.chunking import MAX_TOKENS_PER_CHUNK, chunk_document
 from portfolio_ai.ingestion.frontmatter import DocumentMeta, parse_document
-from portfolio_ai.llm.pricing import MODEL_NAME, estimate_tokens
+from portfolio_ai.llm.pricing import estimate_tokens, model_names
 
 app = typer.Typer(
     add_completion=False,
@@ -184,7 +184,7 @@ def _check_names_no_model(relative: str, body: str) -> list[Finding]:
     A warning, not an error. The article indexes fine, and a name can be right to
     write, in an article about work done with one particular model. The author decides.
     """
-    named = sorted({match.group(0).lower() for match in MODEL_NAME.finditer(body)})
+    named = model_names(body)
     if not named:
         return []
 

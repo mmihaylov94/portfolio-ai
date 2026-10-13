@@ -4,7 +4,9 @@ The first tests here run in CI on the real files in datasets/, so a dataset edit
 no longer validates fails the build rather than the next eval run.
 """
 
+import json
 import re
+from collections.abc import Iterator
 from pathlib import Path
 from typing import Any
 
@@ -15,7 +17,7 @@ from portfolio_ai.assistant.prompts.loader import RAG_AGENT, SMALL_TALK
 from portfolio_ai.evals import datasets
 from portfolio_ai.evals.datasets import Dataset, EvalCase
 from portfolio_ai.exceptions import EvalError
-from portfolio_ai.llm.pricing import MODEL_NAME
+from portfolio_ai.llm.pricing import model_names
 
 DATASETS = Path(__file__).resolve().parents[2] / "datasets"
 # Every golden dataset. An older one is frozen and kept for the runs made of it, and it
@@ -80,16 +82,33 @@ def test_no_dataset_holds_an_email_address_but_mihails_published_ones(path: Path
     assert found <= PUBLISHED_ADDRESSES, sorted(found - PUBLISHED_ADDRESSES)
 
 
+def _texts(value: object) -> Iterator[str]:
+    """Every string anywhere inside a dumped case: a field, a list's item, a turn of
+    the history. A generator that calls itself: ``yield from`` hands on whatever the
+    inner call yields."""
+    if isinstance(value, str):
+        yield value
+    elif isinstance(value, dict):
+        for item in value.values():
+            yield from _texts(item)
+    elif isinstance(value, (list, tuple)):
+        for item in value:
+            yield from _texts(item)
+
+
 def _cases_naming_a_model(path: Path) -> dict[str, list[str]]:
     """Each case in the file that names a model anywhere in it, with the names.
 
-    ``model_dump_json`` writes the whole case as one string, its notes included, which
-    is the simplest way to search every field at once."""
+    The values themselves are searched, joined by line breaks, and not the case
+    written out as JSON. JSON writes a line break inside a value as a backslash and an
+    "n", so a name at the start of a line has a letter in front of it, and the pattern
+    takes a letter in front to mean the middle of a word. The first version of this
+    searched the JSON, and a model named at the start of a paragraph went unseen."""
     named: dict[str, list[str]] = {}
     for case in datasets.load(path).cases:
-        found = {match.group(0).lower() for match in MODEL_NAME.finditer(case.model_dump_json())}
+        found = model_names("\n".join(_texts(case.model_dump())))
         if found:
-            named[case.key] = sorted(found)
+            named[case.key] = found
     return named
 
 
@@ -121,6 +140,37 @@ def test_the_search_for_a_models_name_finds_the_cases_that_had_one() -> None:
         "assistant-models": ["gpt-5-mini", "text-embedding-3-small"],
         "assistant-quality": ["gpt-5"],
     }
+
+
+@pytest.mark.parametrize(
+    "where",
+    [
+        {"question": "Is it gpt-5-mini that answers?"},
+        {
+            "history": [
+                {"role": "user", "content": "Which model are you?"},
+                {"role": "assistant", "content": "gpt-5-mini writes my answers."},
+            ]
+        },
+        # At the start of a paragraph, which is what the search over JSON missed.
+        {"reference_answer": "It runs on OpenAI's models.\n\ngpt-5-mini writes the answers."},
+        {"must_include": ["gpt-5-mini"]},
+        {"must_not_include": ["gpt-5-mini"]},
+        {"notes": "The article used to say gpt-5-mini."},
+    ],
+    ids=["question", "history", "reference", "must-include", "must-not-include", "notes"],
+)
+def test_a_model_named_in_any_field_of_a_case_is_found(
+    tmp_path: Path, where: dict[str, Any]
+) -> None:
+    """golden_v2's two names are both in references, so a search of references alone
+    would pass the test above. A name is as binding in a required phrase, and a note
+    is frozen with its case."""
+    path = tmp_path / "golden_test.yaml"
+    # JSON is YAML too, which saves writing YAML by hand here.
+    path.write_text(json.dumps(_dataset(_case(**where))), encoding="utf-8")
+
+    assert _cases_naming_a_model(path) == {"job-title": ["gpt-5-mini"]}
 
 
 @pytest.mark.parametrize(

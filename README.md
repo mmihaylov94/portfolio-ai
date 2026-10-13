@@ -49,12 +49,19 @@ Live: the chat on [mihaylov.io](https://mihaylov.io) has answered from this serv
   every run stored alongside the configuration that produced it.
 - **The site's chat** — the chat box itself, in the site's own repository
   ([my-portfolio](https://github.com/mmihaylov94/my-portfolio)): answers streamed as they are
-  written, the documents each one drew on listed under it, and thumbs up/down on every answer.
+  written, the articles its searches found most relevant listed under it, and thumbs up/down
+  on every answer.
   The site's API passes each question to this service, which has no public address.
 
-The baselines the assistant is judged against are recorded in [docs/EVALS.md](docs/EVALS.md):
-the first, at the settings of the n8n version it replaced, with runs at lower reasoning effort
-beside it, and the current one, on the knowledge base as it reads since the switch. Still to
+**The models in use** are settings, chosen by eval runs and changed the same way: `gpt-6-luna`
+writes the answers, `gpt-5-mini` classifies each message, `text-embedding-3-small` produces the
+embeddings, and `gpt-6.1-sol` judges the evals. The knowledge base names none of them on
+purpose, and sends a visitor who asks here.
+
+The runs the assistant has been judged by are recorded in [docs/EVALS.md](docs/EVALS.md): the
+first baseline, at the settings of the n8n version it replaced, with runs at lower reasoning
+effort beside it; the one on the knowledge base as it read after the switch; and the runs that
+chose the model in use. The current dataset's own baseline has not been run yet. Still to
 build is the analytics reporting: what visitors ask and where answers fall short is captured
 already, and clustering it into content gaps and a weekly digest waits for real traffic. The
 build order is in [ARCHITECTURE.md](ARCHITECTURE.md) §12.

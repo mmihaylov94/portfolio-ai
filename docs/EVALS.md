@@ -135,15 +135,22 @@ golden_v2 has a baseline of its own, and nothing measured on golden_v1 carries o
 golden_v2. One case required an answer to name the model that wrote it, because an article
 named it. The first change of model made the article false, and correcting the article would
 have made the case false, so comparing two models needed a new dataset and a new baseline. That
-is the one comparison the harness is for. Nine cases changed and 53 did not ("golden_v3" in
+is the one comparison the harness is for. Sixteen cases changed and 46 did not ("golden_v3" in
 Results has the list).
 
 **A case does not pin what the evals exist to change**, and the knowledge base does not state
-it: a model, a reasoning-effort setting, the judge, the dataset's size. Two checks hold the
-line. `portfolio-ai-validate` warns about a model's name in an article, and a unit test fails
-on one anywhere in a case, in every dataset from golden_v3 on and in a draft. Both use one
-pattern, `llm/pricing.MODEL_NAME`: every name in the price table, and anything shaped like one
-that is not in it yet.
+it. That is whatever `evals run` takes an option for (the models, their reasoning efforts,
+`top_k`, the number of search rounds), and with those the judge and the dataset's size.
+
+One item on that list has a check, a model's name, in two places. `portfolio-ai-validate`
+warns about one in an article, and a unit test fails on one anywhere in a case, in every
+dataset from golden_v3 on and in a draft. Both call `llm/pricing.model_names`, which knows
+every name in the price table and anything shaped like an OpenAI chat model's name, with the
+non-breaking hyphens a model writes folded first. It does not know a nickname ("Luna"), a name
+written without its hyphen, or another vendor's models. The warning does not fail the
+portfolio's CI, which runs the checker without `--strict`; that flag would also block a new
+project article until the classifier prompt here named it. Everything else on the list is the
+author's to keep, and a reviewer's to look for.
 
 A case can carry these fields:
 - **`expected_doc_ids`** lists every article that gives the reference answer's main point in
@@ -156,7 +163,10 @@ A case can carry these fields:
   found. Applied unevenly, this skews the retrieval scores: an article that answers but isn't
   listed counts against precision and MRR whenever it is retrieved. golden_v2 applied it
   unevenly, under an earlier wording of this rule whose two halves disagreed about exactly
-  that sentence, and golden_v3 corrects four cases for it.
+  that sentence, and eight cases' lists change for it in golden_v3. One clause can hold two
+  facts, so a listing is decided clause by clause: the same sentence of `faq.md` says "the
+  OpenAI API", which answers "which AI model does it use?". Where a listing rests on judgement,
+  the case's note names the sentence that decided it.
 - **`also_accept`** names another route that is also right. "Are you Mihail?" is answered
   properly by small talk and by the knowledge-base route alike, so neither counts as a misroute.
 - **`must_include` and `must_not_include`** are case-insensitive substrings, and hard rules: a
@@ -315,11 +325,14 @@ every run. A run graded by one cannot be compared with a run graded by another, 
 changes, the run to compare against is graded again first, under a label of its own:
 
 ```bash
-uv run python -m portfolio_ai.evals rejudge luna-mini --label luna-mini-regraded --dry-run
-uv run python -m portfolio_ai.evals rejudge luna-mini --label luna-mini-regraded
+uv run python -m portfolio_ai.evals rejudge v3-baseline --label v3-baseline-regraded --dry-run
+uv run python -m portfolio_ai.evals rejudge v3-baseline --label v3-baseline-regraded
 ```
 
 That is how `v2-baseline-sol` was made from `v2-baseline` when the judge became `gpt-6.1-sol`.
+A run can be graded again only while the knowledge base is the one it ran against, so an edit
+to an article ends it for every run made before the edit: none of the runs stored before
+2026-10-13 can be re-graded now.
 
 `rejudge` has the current judge grade a stored run's answers, and stores the result as a new
 run. Nothing is asked again: the answer, the route, what was retrieved, the rule checks, the
@@ -503,6 +516,9 @@ on Windows the protection is weaker.
   Mihail's two published ones. And no case of golden_v3, of a later dataset or of a draft may
   name a model; a second test runs the same search over golden_v2, which is frozen with the
   two cases that did, so that a search that found nothing anywhere could not pass unnoticed.
+  A third puts a name into each field of a case in turn, one of them at the start of a
+  paragraph. The first version of the search read the case written out as JSON, where a line
+  break is a backslash and an "n", and so missed a name that began a line.
 - **`tests/unit/test_eval_metrics.py`** covers the retrieval arithmetic, and every rule both
   firing and not firing. For links that means allowed links from the prompt, a document's URL, a
   passage, a relative link resolved against the site, and the same page written with `www.`,
@@ -1071,9 +1087,9 @@ does not.
 **More for golden_v3**, since the model changing makes two cases describe the past. All three
 are fixed there, and the first two are why it could not wait:
 - `assistant-models` requires "gpt-5-mini", which is what the knowledge base article says
-  writes the answers. When production moves to `gpt-6-luna` the article changes, and this case
-  with it. A required phrase with a hyphen in it also fails "GPT-5 mini", which is the same
-  model written as a name.
+  writes the answers. Production moved to `gpt-6-luna` that day, which made the article false,
+  and this case with it. A required phrase with a hyphen in it also fails "GPT-5 mini", which
+  is the same model written as a name.
 - `assistant-quality`'s reference gives `gpt-5` as the judge and the 15.6s to 3.9s result,
   which is the article's account of the first runs.
 - `projects-page-link` scores 2 for faithfulness under rubric 2 in all four runs, including
@@ -1099,42 +1115,80 @@ two cases false, and golden_v2 is frozen. So the first comparison of two models 
 dataset and a new baseline, where it should have ended in one run and one `compare`.
 
 **The rule since: a case does not pin what the evals exist to change, and the knowledge base
-does not state it.** That covers a model, a reasoning-effort setting, the judge and the
+does not state it.** That is whatever `evals run` takes an option for (the models, their
+reasoning efforts, `top_k`, the number of search rounds), and with those the judge and the
 dataset's size.
 
 - **The article** says that OpenAI's language models classify each message and write the
   answers, that an embedding model powers the search, and that the exact models are not fixed
   because the harness compares them. "Which AI model does the assistant use?" has a section of
-  its own, which points to this repository for the models in use. The measurements stay (15.6
+  its own, which points to this repository for the models in use; the README names them. The
+  article no longer says how many times the assistant may search. The measurements stay (15.6
   seconds to 3.9, 28 misroutes in 270): they have happened, and do not go stale.
-- **golden_v3** is golden_v2 with nine cases corrected, below.
-- **Two checks** keep it so, described under "The dataset": a warning from
-  `portfolio-ai-validate` on an article, and a failing unit test on a case.
+- **golden_v3** is golden_v2 with sixteen cases corrected, below.
+- **Two checks**, described under "The dataset", watch for a model's name and for nothing else
+  on that list.
+
+**Half of it was found by a review before the first run.** A complete run freezes a dataset,
+so the `code-reviewer` agent read golden_v3 while it could still be changed. Nine cases had
+changed before it and sixteen after. It found the search-round limit, in the article and in
+`assistant-how`'s reference: `--max-search-rounds` is an option of `evals run`, so "up to three
+rounds" was the model's name over again. It found four more expected-document lists that did
+not follow the rule, a forbidden word a correct answer would use, and a hole in the test that
+keeps names out of cases. golden_v2 was reviewed after its baseline, and its faults had to wait
+for this file.
 
 | Case | Changed in golden_v3 |
 |---|---|
-| `assistant-models` | The reference says it runs on OpenAI's models, unnamed because the harness changes them. Requires "OpenAI" where it required "gpt-5-mini". |
+| `assistant-models` | The reference says it runs on OpenAI's models, unnamed because the harness changes them. Requires "OpenAI" where it required "gpt-5-mini". Expected documents gain `faq`, `about-mihail` and `tech-stack`, which say it is built with the OpenAI API or SDK. |
 | `assistant-quality` | The reference names neither the judge nor the setting. |
+| `assistant-how` | The reference gives no number of search rounds, and says "the knowledge base articles its searches found most relevant". |
 | `projects-page-link` | `faq.md` now says where the projects are shown, and the reference follows it. Under golden_v2 no answer could pass. |
 | `python`, `followup-and-python` | Expected documents gain `faq` and `services`. |
 | `assistant-n8n` | Expected documents lose `faq`, `services` and `tech-stack`. |
 | `n8n-work` | Expected documents gain `services`; its note is corrected. |
+| `postgres-projects` | Expected documents lose `tech-stack`, which names no project. |
+| `open-source` | Expected documents lose `project-ai-marketing-reporter`, whose point the reference does not cover. |
+| `assistant-source` | Expected documents gain `project-glotsmith`, which names the assistant's repository as public. |
 | `assistant-privacy` | The reference says the conversation "can be resumed for 24 hours". "90 days" is no longer a required phrase. |
-| `assistant-how` | The reference says "the knowledge base articles its searches found most relevant". |
+| `n8n-framework` | "PostgreSQL" is no longer a forbidden word: it would fail a correct "Data Tables, not PostgreSQL". |
+| `assistant-built`, `businessmap-delivery`, `freelance` | A note records which sentence decided a borderline listing. Nothing an answer is graded on changed. |
 
-**Expected documents follow one rule**: an article is listed when it gives the reference
-answer's main point in a statement of its own, and not when it only names the thing or gives a
-neighbouring fact. The four cases above are where golden_v2 departed from it. `faq.md` and
-`services.md` say the assistant is built in Python. That answers "does he know Python?", where
-golden_v2 left them out, and does not answer "is this chat built with n8n?", where it listed
-them. `python-projects` and `assistant-quality` already followed the rule and are unchanged.
+**Expected documents follow one rule**, the one under "The dataset", and eight of the cases
+above have their lists changed for it. One clause can hold two facts, so a listing is decided
+clause by clause. `faq.md`'s "built in Python with FastAPI, the OpenAI API, and pgvector"
+answers "does he know Python?", where golden_v2 left it out. It answers "which AI model does
+it use?", with the provider. It does not answer "is this chat built with n8n?", where golden_v2
+listed it. Five listings rest on judgement, and each of those cases' notes names the sentence
+that decided it.
+
+**What the two checks do not cover.** The name check knows OpenAI's `gpt-` names and the price
+table. It does not know a nickname ("Luna"), a name written without its hyphen, or another
+vendor's models. On an article it is a warning, and the portfolio's CI does not fail on a
+warning. The efforts, `top_k`, the search rounds, the judge and the dataset's size have no
+check at all: the search-round limit was found by a reader.
 
 **No run of golden_v3 has been made.** Its baseline, `v3-baseline`, is the settings in use
-(`gpt-6-luna` answering, `gpt-5-mini` routing) and waits for one thing: the edited articles
-pushed, and ingested into the development database. A dataset written against edited articles
-has to be run against them, and the prepare step can check only that each expected article is
-indexed, not that it is current. golden_v2's six runs stay as they are. A run of golden_v3
-cannot be compared with them.
+(`gpt-6-luna` answering, `gpt-5-mini` routing), and two things come before it:
+
+- **The index has to be current.** The first article edit was pushed and ingested into the
+  development database on 2026-10-13 (123 chunks, fingerprint `a7316f4ee9f6`). The search-round
+  sentence changed after that, and has to be pushed and ingested as well. A dataset written
+  against edited articles has to be run against them, and the prepare step can check only that
+  each expected article is indexed. The dry run prints the fingerprint, which moves with the
+  ingest.
+- **The rewritten cases have never been answered on the new articles.** `projects-page-link`
+  was a case no answer could pass, found only after golden_v2 froze. "Which model?" now has a
+  right answer that is partly "not named", and an answer worded "I don't have the exact model
+  names in my knowledge base, but..." would be taken for a fallback by
+  `postprocess.is_fallback`: sent without its sources, and filed as a gap in the knowledge base
+  that is in fact deliberate. So the four rewritten cases are asked five times each first,
+  with the judge, from a throwaway file that freezes nothing.
+
+**The stored runs.** golden_v2's six runs stay as they are. A run of golden_v3 cannot be
+compared with them. None of the runs made before 2026-10-13 can be graded again either:
+`rejudge` reads the passages back from the knowledge base, which has changed since. Until
+`v3-baseline` exists, a change of judge has nothing to re-grade.
 
 From here a change of model is `run --label x --chat-model … --chat-effort …` and `compare
 v3-baseline x`. golden_v3 will still need a successor when the knowledge base's own facts

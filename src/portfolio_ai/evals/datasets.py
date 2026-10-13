@@ -74,8 +74,10 @@ class EvalCase(BaseModel):
     also_accept: tuple[Classification, ...] = ()
     # The conversation so far, oldest first, for follow-ups like "yes please".
     history: tuple[Turn, ...] = ()
-    # Every document that answers the question. Topics repeat across the knowledge
-    # base -- contact details are in four documents -- so any one found is a hit.
+    # Every document that gives the reference answer's main point in a statement of
+    # its own; for an answer that is a list, one item of it is enough. Topics repeat
+    # across the knowledge base -- contact details are in five documents -- so any one
+    # found is a hit. docs/EVALS.md has the rule in full, with what does not count.
     expected_doc_ids: tuple[str, ...] = ()
     # The knowledge base cannot answer this; saying so is the right answer.
     expect_fallback: bool = False
