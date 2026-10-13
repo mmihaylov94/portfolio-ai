@@ -461,10 +461,12 @@ ai_assistant/
 │   ├── analytics/
 │   │   ├── signals.py            # cosine similarity, questions asked again, medians, bands
 │   │   ├── report.py             # the window, the report as data, and its two forms as text
+│   │   ├── digest.py             # the weekly email as a subject and a body, from a report
+│   │   ├── mail.py               # smtplib: STARTTLS, an app password, one plain-text message
 │   │   ├── seed.py               # invented conversations, into the development database only
 │   │   ├── retention.py          # the 90-day purge
-│   │   └── cli.py                # purge | report | seed; to come: digest, refresh-gaps, gaps,
-│   │                             #   promote-case, with mail.py and clustering.py
+│   │   └── cli.py                # purge | report | digest | seed; to come: refresh-gaps, gaps,
+│   │                             #   promote-case, with clustering.py
 │   └── evals/
 │       ├── datasets.py           # the YAML format, its validation, the hash that freezes it
 │       ├── runner.py             # prepare (every check) and execute (the run), a few cases at once
@@ -927,13 +929,13 @@ changed enough to need one. A change of model still needs no change of dataset.
 ```bash
 python -m portfolio_ai.analytics report --since 7d    # built: quotes visitors; terminal only
 python -m portfolio_ai.analytics seed                 # built: invented conversations; local only
-python -m portfolio_ai.analytics digest               # the weekly email: counts and gap names
+python -m portfolio_ai.analytics digest               # built: the weekly email of the counts
 python -m portfolio_ai.analytics refresh-gaps         # recluster, update content_gaps
 python -m portfolio_ai.analytics gaps --status open   # the writing queue, ranked
 python -m portfolio_ai.analytics promote-case 812 --expected-doc project-threadline
 ```
 
-As of 2026-10-13 the first two are built, with `purge`; the rest is decided and not built.
+As of 2026-10-13 the first three are built, with `purge`; the rest is decided and not built.
 docs/ANALYTICS.md walks through what exists.
 
 **One report, two forms.** `report` prints what visitors typed: unanswered questions, the pairs
@@ -957,6 +959,15 @@ A week in which nobody asked anything sends nothing. If a send fails, nothing is
 nothing is written to disk: the questions are in the database for 90 days, and the command is
 run again. (The first design wrote the digest to a file on failure. A file of visitors'
 questions on a container's disk would sit outside the purge.)
+
+Until the three mail settings are in `.env`, the Monday job logs one warning that names them
+and exits cleanly. An optional email is not a failure, and a job that failed every week would
+be noise. `digest --test` sends one line to prove the settings, and `digest --dry-run` prints
+the email without sending it.
+
+The send happens after the event loop has finished. `smtplib` blocks, and the command's
+database and OpenAI work is async; done in that order, nothing is ever blocked and no thread is
+needed. The gaps' names join the email when the content gaps are built.
 
 ### Built without visitors
 
@@ -1111,7 +1122,7 @@ services:
 ```cron
 0 * * * *   python -m portfolio_ai.ingestion          # hourly, on the hour
 0 3 * * *   python -m portfolio_ai.analytics purge    # retention sweep
-# 30 5 * * 1  python -m portfolio_ai.analytics digest # weekly, Monday -- enabled in step 7
+30 5 * * 1  python -m portfolio_ai.analytics digest   # weekly, Monday: the counts, by email
 ```
 
 Set `TZ=Europe/London` on the worker so those times mean what they say.
@@ -1173,16 +1184,15 @@ config rather than failing on the first request.
 | `DAILY_SPEND_CAP_USD` | default `1.00`, over a rolling 24 hours; on breach the API returns a polite refusal, not an error; `0` turns the chat off |
 | `CHAT_RETENTION_DAYS` | default `90`; `0` disables the purge job, which then warns every night |
 | `IP_HASH_SALT` | the key visitors' IPs are HMAC-hashed with, at least 32 characters. The API will not start without it |
-| `SMTP_HOST` / `SMTP_PORT` / `SMTP_USER` / `SMTP_APP_PASSWORD` | `smtp.gmail.com` / `587` / the Gmail address / **app password, not the account password** |
-| `DIGEST_TO_EMAIL` | digest recipient — env only, never committed |
+| `SMTP_HOST` / `SMTP_PORT` / `SMTP_USER` / `SMTP_APP_PASSWORD` | `smtp.gmail.com` / `587` / the Gmail address, no default / **app password, not the account password**, no default |
+| `DIGEST_TO_EMAIL` | digest recipient — env only, never committed. With it, `SMTP_USER` or the password unset, the digest warns and sends nothing |
 | `TZ` | `Europe/London`, so the crontab times mean what they say |
 | `LOG_LEVEL` / `ENVIRONMENT` | |
 
-`.env.example` has an entry for every variable the code reads today, with placeholders and never a
-real value: this repository is public. The others in the table arrive with the step that uses
-them: the `SMTP_*` settings and `DIGEST_TO_EMAIL` with the weekly email. `TZ` is the
-container's, not the app's. `extra="forbid"` means none of them can be
-listed in `.env.example` before `Settings` knows them.
+`.env.example` has an entry for every variable in the table, with placeholders and never a
+real value: this repository is public. `TZ` is the exception, being the container's and not
+the app's. `extra="forbid"` means a variable cannot be listed in `.env.example` before
+`Settings` knows it, so the two are added in the same change.
 
 ---
 
@@ -1214,8 +1224,9 @@ listed in `.env.example` before `Settings` knows them.
 7. **Analytics reporting** — signals, clustering, digest, `promote-case`. Last, and planned
    for after a few hundred real questions. The site had no traffic and expected none for
    months, so it is being built against invented conversations played through the real
-   assistant (§10), in four stages: the report (built), the weekly email, the content gaps,
-   and `promote-case`. Its thresholds are provisional until there are visitors to set them from.
+   assistant (§10), in four stages: the report (built), the weekly email (built), the
+   content gaps, and `promote-case`. Its thresholds are provisional until there are visitors
+   to set them from.
 
 Step 5 sits before cutover because the baseline is what proves parity. Step 7 sits after it
 because it reads what visitors asked — and step 4 must already be recording the data it will read.
@@ -1289,6 +1300,7 @@ Non-negotiable from the first commit, because git history is published too:
 | Retention | 90 days raw; derived data kept indefinitely | §10 |
 | Digest delivery | Gmail SMTP via `smtplib`, recipient in env | §10 |
 | What the digest carries | Counts, article titles and gap names; nothing a visitor typed. Their words are read with `analytics report`, in a terminal | §10 |
+| A digest with nowhere to go | Without mail settings it warns once a week and exits cleanly; in a week nobody asked anything it sends nothing | §10 |
 | Analytics without traffic | Built against invented conversations played through the real assistant, on the development database only; thresholds provisional | §10 |
 | Which questions are clustered | The failed ones only (a fallback, or a low score). "What people ask about" is the article counts | §10 |
 | Promoted eval cases | `promote-case` prints a YAML case; it waits in a holding file and joins the next golden dataset. Evals and visitors' messages are in different databases | §10 |

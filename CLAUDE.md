@@ -127,7 +127,7 @@ src/portfolio_ai/
                  postprocess (link filter, fallback), memory, cli, prompts/*.md + loader
   api/           main (app + lifespan), __main__ (the server), deps (admission), turns (answers in
                  flight), security, errors, schemas, middleware, routers/
-  analytics/     retention, signals, report, seed, cli; later mail, clustering
+  analytics/     retention, signals, report, digest, mail, seed, cli; later clustering
   evals/         datasets, runner, judge, metrics, report, cli
 migrations/      datasets/      tests/unit  tests/integration      docker/
 ```
@@ -305,15 +305,18 @@ uv run python -m portfolio_ai.analytics report --since 7d   # quotes visitors: t
 uv run python -m portfolio_ai.analytics seed --dry-run      # invented chats: the plan
 uv run python -m portfolio_ai.analytics seed                # about $0.10; local only
 uv run python -m portfolio_ai.analytics seed --clear        # take them out again
+uv run python -m portfolio_ai.analytics digest --dry-run    # the weekly email, printed
+uv run python -m portfolio_ai.analytics digest --test       # one line, to prove the mail settings
 ```
 
-Still to build in step 7, as commands of the same module: `digest` (the weekly email),
-`refresh-gaps` and `gaps` (the content gaps), and `promote-case`.
+Still to build in step 7, as commands of the same module: `refresh-gaps` and `gaps` (the
+content gaps), and `promote-case`.
 
 Production schedules live in `docker/crontab`, run by the `worker` container with
-`TZ=Europe/London`: ingest hourly on the hour, purge daily at 03:00, and -- once step 7 builds
-it -- the digest on Mondays at 05:30 (commented out until then). Hourly rather than daily because a run that finds nothing changed costs nothing --
-it compares git blob SHAs and stops.
+`TZ=Europe/London`: ingest hourly on the hour, purge daily at 03:00, and the digest on Mondays
+at 05:30. Ingest is hourly rather than daily because a run that finds nothing changed costs
+nothing -- it compares git blob SHAs and stops. The digest sends nothing, and exits cleanly,
+in a week when nobody asked anything and while the mail settings are not in `.env`.
 
 ## Guardrails
 
@@ -363,6 +366,10 @@ it compares git blob SHAs and stops.
   not to the log. What may leave the database's side is the other form,
   `report.render(verbatim=False)`: counts and article titles, with a unit test that searches it
   for every question, answer and comment.
+- **The digest's log lines carry counts and never an address.** Who it is sent to is
+  personal data like a question is, and under the crontab a log line is all the command
+  prints. `mail.send` raises errors that give the kind of failure and not the server's words,
+  which quote the addresses involved.
 - **Invented conversations go into the development database only.** `analytics seed` refuses
   any other `ENVIRONMENT`, its dry run included. A stored turn does not say where it came
   from, so in production an invented one would be counted as a visitor for good. Locally they
@@ -490,7 +497,9 @@ plays through the real assistant on the development database (docs/ANALYTICS.md)
 shipped with the API, because none of it can be reconstructed after the fact.
 
 1. the report and the invented conversations: built (`analytics report`, `analytics seed`);
-2. the weekly email, with counts and gap names and nothing a visitor typed: not built;
+2. the weekly email, with counts and nothing a visitor typed: built (`analytics digest`,
+   sent with `smtplib` after the event loop has finished). Not yet deployed with mail
+   settings: that needs a Gmail app password in the server's `.env` (docs/DEPLOYMENT.md §11);
 3. content gaps, clustered from the questions that failed: not built;
 4. `promote-case`, which prints a YAML case for a holding file (`datasets/promoted.yaml`,
    checked and never run) until the next golden dataset: not built.

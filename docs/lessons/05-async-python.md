@@ -138,6 +138,12 @@ await asyncio.to_thread(send_the_email, message)
 properly — so the loop keeps serving everything else. It's the designated escape hatch, and it's
 what you reach for when a library gives you no async option.
 
+When the digest was actually built, it turned out not to need the hatch. It's a command, not a
+server: it does its async work, lets `asyncio.run` return, and only then sends the email, from
+ordinary code where a blocking call has nothing left to block. `analytics/mail.py` says so at
+the top. `to_thread` is still the answer whenever the blocking call has to happen while the
+loop is busy with other things, which is where a server always is.
+
 ### Calling an async function doesn't run it
 
 Worth its own section because it differs from JavaScript, and the difference is silent.

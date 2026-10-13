@@ -13,6 +13,7 @@ import corpus
 import pytest
 from openai_fake import FakeOpenAI, install_fake_openai
 
+from portfolio_ai.analytics import digest as digests
 from portfolio_ai.analytics import report as reports
 from portfolio_ai.assistant.agent import TurnResult
 from portfolio_ai.config import get_settings
@@ -215,6 +216,24 @@ async def test_the_two_thresholds_come_from_the_settings_and_draw_the_lists(
     emailed = reports.render(report, verbatim=False)
     for question in (RATE, RATE_AGAIN, LARAVEL, WEATHER, SUM, "Hello"):
         assert question not in emailed
+
+
+@pytest.mark.usefixtures("fake")
+async def test_the_weeks_email_is_composed_from_what_is_stored_and_quotes_none_of_it() -> None:
+    """The whole path the Monday job takes, short of the mail server: stored turns,
+    a report built from them, an email composed from the report."""
+    await _conversations()
+
+    message = digests.compose(await reports.build(since=SINCE, until=UNTIL))
+
+    assert message.subject == (
+        "mihaylov.io chat: 7 questions in the 7 days to 2026-10-13, 0 not answered"
+    )
+    assert "- 7 questions in 3 conversations (the 7 days before: 1 in 1)" in message.body
+    assert "- 4 about Mihail, 1 small talk, 2 off-topic" in message.body
+    for question in (RATE, RATE_AGAIN, LARAVEL, WEATHER, SUM, "Hello", "An older question?"):
+        assert question not in message.body
+        assert question not in message.subject
 
 
 async def test_a_window_nobody_asked_in_builds_and_embeds_nothing(fake: FakeOpenAI) -> None:

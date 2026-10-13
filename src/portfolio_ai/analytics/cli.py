@@ -3,14 +3,17 @@
 ::
 
     purge [--dry-run]            delete chat older than CHAT_RETENTION_DAYS; nightly, by cron
+    digest [--since 7d]          email the week's counts; Mondays, by cron
+           [--dry-run | --test]  print the email and send nothing | send a one-line test
     report [--since 7d]          what was asked and where answers fell short; for a terminal
     seed [--clear] [--dry-run]   invented conversations, into the development database only
 
 ``report`` quotes what visitors typed. It is for a person at a terminal and must
 never be put in the crontab: under supercronic a command's output is the
-container's log, and nothing a visitor types goes into a log.
+container's log, and nothing a visitor types goes into a log. ``digest`` is the
+one that is scheduled, and it carries the counts without the words.
 
-The weekly email, the content gaps and ``promote-case`` are the rest of build step 7.
+The content gaps and ``promote-case`` are the rest of build step 7.
 """
 
 import io
@@ -18,15 +21,20 @@ import sys
 from pathlib import Path
 from typing import Annotated
 
+import structlog
 import typer
 
+from portfolio_ai.analytics import digest as digests
+from portfolio_ai.analytics import mail, retention, seed
 from portfolio_ai.analytics import report as reports
-from portfolio_ai.analytics import retention, seed
 from portfolio_ai.analytics.retention import RetentionReport
 from portfolio_ai.analytics.seed import InventedTraffic, Played, SeedReport
 from portfolio_ai.cli import run_async
 from portfolio_ai.db.pool import close_pool
+from portfolio_ai.exceptions import ConfigError, PortfolioAIError
 from portfolio_ai.llm.client import close_client
+
+log = structlog.get_logger(__name__)
 
 app = typer.Typer(add_completion=False, help="Analytics over the chat history.")
 
@@ -120,6 +128,91 @@ def show_report(
     code = run_async(_run, log_level="WARNING")
     if built:
         typer.echo(reports.render(built[0], verbatim=True))
+    raise typer.Exit(code=code)
+
+
+# --- digest ---------------------------------------------------------------------
+
+
+@app.command("digest")
+def send_digest(
+    since: Annotated[
+        str, typer.Option("--since", help="How far back to look, in days: 7d, 30d.")
+    ] = "7d",
+    dry_run: Annotated[
+        bool, typer.Option("--dry-run", help="Print the email, and send nothing.")
+    ] = False,
+    test: Annotated[
+        bool, typer.Option("--test", help="Send a one-line test, to prove the mail settings.")
+    ] = False,
+) -> None:
+    """Email the window's counts. Nothing a visitor typed is in it."""
+    outbox: list[digests.Message] = []
+    counts: dict[str, int] = {}
+    quiet: list[int] = []
+
+    async def _run() -> None:
+        try:
+            # First, whatever else is true. A wrong --since in the crontab line should
+            # fail on its first Monday, and not pass quietly every week until the
+            # mail settings arrive.
+            start, end = reports.window(since)
+
+            missing = mail.missing_settings()
+            if test:
+                if missing:
+                    raise ConfigError(f"Cannot send a test. Not set: {', '.join(missing)}.")
+                outbox.append(digests.trial_message())
+                return
+            if missing and not dry_run:
+                # Not an error. The email is optional, and a job that failed every
+                # Monday for want of it would teach whoever reads the logs to skip
+                # past failures. Said once a week, at a level that is hard to miss.
+                log.warning("digest_not_configured", missing=missing)
+                return
+
+            report = await reports.build(since=start, until=end)
+            if not report.turns:
+                # Months without a visitor are months without an email.
+                log.info("digest_skipped", reason="nobody asked anything", days=report.days)
+                quiet.append(report.days)
+                return
+            outbox.append(digests.compose(report))
+            counts.update(
+                questions=len(report.turns),
+                conversations=report.conversations,
+                fallbacks=len(report.fallbacks),
+            )
+        finally:
+            await _shutdown()
+
+    # A person reading a dry run wants the email, not the lines about the pool. The
+    # scheduled run keeps the settings' level: its log lines are its whole output.
+    code = run_async(_run, log_level="WARNING" if dry_run else None)
+
+    if code == 0 and dry_run:
+        if quiet:
+            typer.echo(f"Nothing to send: nobody asked anything in the last {quiet[0]} day(s).")
+        for message in outbox:
+            typer.echo(f"Subject: {message.subject}\n\n{message.body}")
+            typer.echo("DRY RUN: nothing was sent.")
+    elif code == 0 and outbox:
+        box = mail.mailbox()
+        if box is None:  # pragma: no cover - missing_settings() said otherwise above
+            raise RuntimeError("the mail settings went missing between two reads")
+        # After the event loop has finished, on purpose: smtplib blocks, and there
+        # is now nothing for it to block (see analytics/mail.py).
+        try:
+            mail.send(box, subject=outbox[0].subject, body=outbox[0].body)
+        except PortfolioAIError as exc:
+            # The same line run_async writes for a refusal, since this happens after
+            # it has returned. The message is written to hold no address.
+            log.error("command_failed", error=str(exc), error_type=type(exc).__name__)
+            code = 1
+        else:
+            # Counts, as always. Not the recipient: an address is personal data too.
+            log.info("digest_sent", test=test, **counts)
+
     raise typer.Exit(code=code)
 
 

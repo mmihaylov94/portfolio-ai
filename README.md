@@ -50,9 +50,9 @@ Live: the chat on [mihaylov.io](https://mihaylov.io) has answered from this serv
   every run stored alongside the configuration that produced it.
 - **Analytics, in part** — a report of what was asked and where the answers fell short: the
   questions the knowledge base could not answer, answers written with nothing close to write
-  from, questions asked twice in other words, and which articles the answers drew on. Built
-  before the site had traffic, against invented conversations played through the real
-  assistant.
+  from, questions asked twice in other words, and which articles the answers drew on. A weekly
+  email carries its counts, and nothing a visitor typed. Built before the site had traffic,
+  against invented conversations played through the real assistant.
 - **The site's chat** — the chat box itself, in the site's own repository
   ([my-portfolio](https://github.com/mmihaylov94/my-portfolio)): answers streamed as they are
   written, the articles its searches found most relevant listed under it, and thumbs up/down
@@ -69,9 +69,9 @@ first baseline, at the settings of the n8n version it replaced, with runs at low
 effort beside it; the one on the knowledge base as it read after the switch; the runs that
 chose the model in use; and the baseline of the current dataset, which names no model so that
 the next change of model is one run and one comparison. Still to
-build is the rest of the analytics: a weekly email of the report's counts, the clustering of
-unanswered questions into content gaps, and the command that turns a real question into an
-eval case. The build order is in [ARCHITECTURE.md](ARCHITECTURE.md) §12.
+build is the rest of the analytics: the clustering of unanswered questions into content gaps,
+and the command that turns a real question into an eval case. The build order is in
+[ARCHITECTURE.md](ARCHITECTURE.md) §12.
 
 ## Getting started
 
@@ -99,6 +99,7 @@ uv run python -m portfolio_ai.assistant -m "..."    # ask one question and exit
 uv run uvicorn portfolio_ai.api.main:app --reload   # the API, reloading on changes; /docs for the schema
 uv run python -m portfolio_ai.analytics purge --dry-run   # what the retention sweep would delete
 uv run python -m portfolio_ai.analytics report --since 7d # what was asked; quotes it, so terminal only
+uv run python -m portfolio_ai.analytics digest --dry-run  # the weekly email, printed and not sent
 uv run python -m portfolio_ai.analytics seed --dry-run    # invented conversations for development
 
 uv run python -m portfolio_ai.evals check datasets/golden_v3.yaml    # validate the golden set

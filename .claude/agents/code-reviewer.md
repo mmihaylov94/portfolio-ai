@@ -294,6 +294,31 @@ Look for these first; each one has cost real time here.
 - A claim about what a code page lacks is checked by encoding the character: cp1251 has the
   curly apostrophe and does not have U+2011.
 - When a function gains a field, grep the docs for every table that lists what it records.
+- "Add the keys only after the deploy" is true of a `.env` file pydantic reads and false of a
+  container, where they are environment variables and an unknown one is ignored. Check which
+  the sentence is about.
+- A function in `src/` named `test_*` is collected as a test by any test module that imports
+  it.
+- `starttls()` with no context encrypts and verifies nothing. Read the context's `verify_mode`
+  and `check_hostname`; do not take "TLS" in a comment for either.
+- An error raised from an SMTP refusal must not repeat the server's words: they quote the
+  addresses, and the message is logged.
+- A value that goes into a mail header is checked for a line break before it gets there.
+- A doc that reproduces a file (the crontab in ARCHITECTURE.md §11) goes stale with the file.
+  Grep the docs for the line itself, not for the feature's name.
+- A lesson that uses a feature not yet built as its example is a claim about code to come.
+  Grep `docs/lessons` for the feature when it is built.
+- `value not in str(error)` cannot fail for a value with a line break in it: the error prints
+  its repr. Search for each line of the value.
+- An `except` for a library's errors misses what it raises before it talks to anyone: smtplib
+  encodes a login as ASCII and raises `UnicodeEncodeError`.
+- An early "not configured" return hides a wrong argument behind it. Parse the arguments first.
+- A command printed in an email is run later than the email was built, and a rolling `--since`
+  has moved by then.
+- A Gmail app password is not scoped to sending. Say which account it belongs to before it
+  goes into a server's `.env`.
+- "Happens after the event loop has finished" is a property to pin: a stand-in that refuses to
+  be called while a loop is running does it.
 
 When a finding is a new kind of mistake, suggest a one-line entry for this list.
 

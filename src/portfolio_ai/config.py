@@ -262,6 +262,24 @@ class Settings(BaseSettings):
     # other way: a pair wrongly called a rephrase says an answer failed when it had not.
     rephrase_similarity: float = Field(default=0.60, ge=0.0, le=1.0)
 
+    # --- The weekly email -----------------------------------------------------
+    # Where `analytics digest` sends from and to. Only that command reads these, so
+    # the three without a default are optional: with any of them missing it says so
+    # and sends nothing, the way the purge does with retention switched off.
+    #
+    # The defaults are Gmail's: port 587 is the one that starts in plain text and
+    # is upgraded to TLS before anything is said (STARTTLS).
+    smtp_host: str = "smtp.gmail.com"
+    smtp_port: int = Field(default=587, ge=1, le=65535)
+    # The account that sends, which is also the From address.
+    smtp_user: str | None = None
+    # A Gmail app password: sixteen letters made for one program, in an account with
+    # two-step verification. Not the account's own password, which Gmail no longer
+    # accepts over SMTP at all.
+    smtp_app_password: SecretStr | None = None
+    # Who receives it. Configuration, and never written into this repository.
+    digest_to_email: str | None = None
+
     log_level: Literal["DEBUG", "INFO", "WARNING", "ERROR"] = "INFO"
 
     @field_validator(
@@ -269,6 +287,9 @@ class Settings(BaseSettings):
         "chat_reasoning_effort",
         "portfolio_ai_api_key",
         "ip_hash_salt",
+        "smtp_user",
+        "smtp_app_password",
+        "digest_to_email",
         mode="before",
     )
     @classmethod
@@ -287,6 +308,31 @@ class Settings(BaseSettings):
         """
         if isinstance(value, str) and not value.strip():
             return None
+        return value
+
+    @field_validator("smtp_user", "digest_to_email")
+    @classmethod
+    def _looks_like_an_address(cls, value: str | None) -> str | None:
+        """Refuse what is plainly not an email address, without repeating it.
+
+        Not a full check: the only real test of an address is sending to it, which
+        ``digest --test`` does. This catches the mistakes a .env invites at startup,
+        and not on a Monday morning: a name with no domain, a value with a space or a
+        line break in it, and a letter outside ASCII. The last two would otherwise
+        fail late and oddly. ``EmailMessage`` refuses a header with a line break in
+        it when the message is built, and ``smtplib`` encodes the login as ASCII and
+        raises ``UnicodeEncodeError`` before it has contacted anyone.
+
+        Being wrong here stops every command, the hourly ingestion included, like any
+        other setting that does not validate. That is the trade this file makes
+        everywhere: a bad value is found by whoever typed it, at once.
+        """
+        if value is None:
+            return None
+        name, at, domain = value.partition("@")
+        shaped = bool(name and at and "." in domain)
+        if not shaped or not value.isascii() or any(char.isspace() for char in value):
+            raise ValueError("must be an email address in plain ASCII, such as name@example.com")
         return value
 
     @field_validator("portfolio_ai_api_key", "ip_hash_salt")

@@ -8,10 +8,10 @@ How the project reads its own chat history back, module by module:
 The code is in `src/portfolio_ai/analytics/`, the SQL in `db/analytics.py`, and the invented
 conversations it was built against in `datasets/traffic/`. ARCHITECTURE.md §10 has the design.
 
-**Built so far:** the report (`analytics report`) and the invented conversations
-(`analytics seed`). The nightly retention sweep, `analytics purge`, is older and is described in
-docs/API.md, "Retention". **Not built yet:** the weekly email, the content gaps and
-`promote-case`. The last section says what is decided about each.
+**Built so far:** the report (`analytics report`), the weekly email of its counts
+(`analytics digest`) and the invented conversations (`analytics seed`). The nightly retention
+sweep, `analytics purge`, is older and is described in docs/API.md, "Retention". **Not built
+yet:** the content gaps and `promote-case`. The last section says what is decided about each.
 
 ## The idea it rests on
 
@@ -123,6 +123,89 @@ out of the counts, and the report says how many were.
 Past 50 counted answers the report also names the sections that were never among any answer's
 best five. On fewer, an unused section says more about how little was asked than about the
 section.
+
+## The weekly email
+
+`python -m portfolio_ai.analytics digest` is run by the crontab, as `purge` is: on Mondays at
+05:30, for the seven days before. It is the report's second form, the counts without the words,
+sent to one person.
+
+What it does, in order:
+
+0. **`--since` is read**, before anything else. A mistyped one in the crontab line then fails
+   on its first Monday, and not only from the day the mail settings arrive.
+1. **Are the mail settings there?** (`mail.missing_settings`). Three have no default:
+   `SMTP_USER`, `SMTP_APP_PASSWORD` and `DIGEST_TO_EMAIL`. With any missing it logs
+   `digest_not_configured` as a warning, naming them, and stops with exit code 0. Nothing is
+   read or spent. It is the same choice the purge makes with retention switched off: the email
+   is optional, and a job that failed every Monday for want of it would teach whoever reads the
+   logs to skip past failures.
+2. **The report** (`report.build`), exactly as `report` builds it.
+3. **Did anybody ask anything?** If not it logs `digest_skipped` and stops. Months without a
+   visitor are months without an email.
+4. **The message** (`digest.compose`). The subject is the week in a line, for an inbox that
+   shows only subjects: "mihaylov.io chat: 36 questions in the 7 days to 2026-10-13, 3 not
+   answered". The body is `render(report, verbatim=False)` and a last paragraph that says the
+   email holds none of what visitors typed, with the command that prints it. That command
+   looks back a day further than the email does (`--since 8d` for a week): `--since` counts
+   from the moment the command is run, which is hours after the email was sent, and the same
+   number of days would begin after the email's first questions.
+5. **The send** (`mail.send`), after the event loop has finished. See below for why.
+
+It logs `digest_sent` with the counts and never with the address it went to.
+
+| Outcome | Exit code | Log line |
+|---|---|---|
+| Sent | 0 | `digest_sent`, with counts |
+| Mail settings missing | 0 | `digest_not_configured` (warning), naming them |
+| Nobody asked anything | 0 | `digest_skipped` |
+| The send failed, or the login was refused | 1 | `command_failed`, with the kind of failure |
+| The report could not be built, or `--since` is not a number of days | 1 | `command_failed` |
+
+**A failed send loses nothing.** The questions are in the database for 90 days, so the command
+is run again, with `--since` set to reach back as far as is wanted. Nothing is written to disk.
+
+Two flags are for a person:
+
+- `--dry-run` prints the subject and the body and sends nothing. It needs no mail settings,
+  which makes it the way to read the email before the mailbox exists.
+- `--test` sends a one-line message and builds no report. It proves the three settings and
+  nothing else. Without them it fails and names what is missing: somebody asked for a test,
+  and "not set up" is the answer.
+
+**The conversation with the mail server** (`mail.send`), in `smtplib`'s words:
+
+1. `smtplib.SMTP(host, 587)` connects in plain text, which is how port 587 starts.
+2. `starttls(context=ssl.create_default_context())` upgrades the connection to TLS, and the
+   context is what makes that mean something: it checks the server's certificate against the
+   system's trusted authorities, and that it was issued for this host. Left out, `starttls`
+   falls back to a context with both checks off (so it is on Python 3.12). The connection is
+   then encrypted to whoever answered.
+3. `login`, after step 2 and never before: the password goes over the encrypted connection.
+4. `send_message` hands the message over.
+
+The message carries a `Date` and a `Message-ID` of its own. Gmail's server adds both when they
+are missing; another `SMTP_HOST` may not. The id is made on the sender's domain, because left
+to itself `make_msgid` uses the machine's host name, and a container's name has no business in
+a mail header.
+
+A rejected login is a `ConfigError` that gives the server's code, names the two settings and
+says Gmail wants an app password. The code matters: 535 is a refused name or password, and a
+454 is the server asking to be tried later. Everything else that can go wrong in that
+conversation is a `MailError`: a refusal, a server that cannot be reached, a timeout, a
+certificate that does not verify, and a name or password `smtplib` cannot encode, which it
+raises as `UnicodeEncodeError` before it has contacted anyone. A `MailError` gives the kind of
+failure and the SMTP code, and never repeats what the server said: a refusal quotes the
+addresses it is about, and the message is logged.
+
+**Why the send is not `async`.** `smtplib` blocks: each call waits for the server before it
+returns. Inside the event loop that would stop every other task for as long as it took, which
+is the lesson-5 trap. The command does its database and OpenAI work inside the loop, lets the
+loop finish, and then sends from ordinary code with nothing left to hold up.
+`asyncio.to_thread(send, ...)` would be the tool inside a server, where the loop has other work
+to do; one command does not need the machinery.
+
+The content gaps' names join the email when the gaps are built.
 
 ## Invented conversations
 
@@ -238,6 +321,10 @@ All run from the repository root.
 uv run python -m portfolio_ai.analytics report               # the last 7 days
 uv run python -m portfolio_ai.analytics report --since 30d
 
+uv run python -m portfolio_ai.analytics digest --dry-run     # the email, printed; sends nothing
+uv run python -m portfolio_ai.analytics digest --test        # one line, to prove the mail settings
+uv run python -m portfolio_ai.analytics digest               # what the crontab runs on Mondays
+
 uv run python -m portfolio_ai.analytics seed --dry-run       # the plan; spends nothing
 uv run python -m portfolio_ai.analytics seed                 # about $0.10; local only
 uv run python -m portfolio_ai.analytics seed --clear         # take them out again
@@ -274,7 +361,9 @@ there, not that a file is missing.
 | `analytics/signals.py` | arithmetic with no database and no model: cosine similarity, consecutive pairs, median and 90th percentile, counting by band |
 | `analytics/report.py` | `window`, `build` (the queries and the embedding of the questions) and `render` (the two forms) |
 | `analytics/seed.py` | the invented file's format and rules, playing it through the assistant, clearing it, and the local-only guard |
-| `analytics/cli.py` | `report`, `seed`, and the older `purge` |
+| `analytics/digest.py` | the email as a subject and a body, composed from a report; the one-line test message |
+| `analytics/mail.py` | the mail settings, and `send`: one plain-text message over SMTP, with the failures turned into this project's errors |
+| `analytics/cli.py` | `report`, `digest`, `seed`, and the older `purge` |
 | `analytics/retention.py` | the nightly sweep (docs/API.md) |
 | `datasets/traffic/invented.yaml` | the invented conversations. In a folder of its own, because the unit tests load every `datasets/*.yaml` as an eval dataset |
 
@@ -310,6 +399,22 @@ error.
 
 **A float on a band's edge.** `0.3 / 0.05` is `5.999999999999999`. Floored as it stands, a score
 of 0.30 is counted in the band below its own. `histogram` rounds to nine places before flooring.
+
+**`smtplib` and `email.message.EmailMessage`.** Both standard library. `EmailMessage` is the
+message: headers set like dictionary keys, and `set_content(text)` for a body, which picks
+UTF-8 and an encoding for the wire by itself. `smtplib.SMTP` is the connection, and a context
+manager: `with` closes it on the way out whatever happened inside.
+
+**A function in `src/` must not be called `test_something`.** pytest collects every function
+whose name starts with `test_` from a test module's namespace, an imported one included. The
+message `digest --test` sends is built by `trial_message` for that reason: imported into a test
+file as `test_message`, it would be run as a test of nothing and pass.
+
+**Patching a name where it is looked up.** The tests replace `smtplib.SMTP` on the `smtplib`
+module, and `mail.py` finds the replacement because it writes `smtplib.SMTP`, which looks the
+name up on that module every time it runs. Had it written `from smtplib import SMTP`, it would
+hold its own reference to the real class from the moment it was imported, and patching
+`smtplib` afterwards would change nothing it could see.
 
 **An async generator has to be run to its end.** `conversation.chat` yields events while an
 answer is written and stores the turn when it reaches the last one. `seed` wants only that last
@@ -358,6 +463,30 @@ from the same data.
   `?` instead of stopping.
 - **`tests/unit/test_agent.py`**: a search records the `doc_id` and section of each passage, in
   the order of its chunk ids.
+- **`tests/unit/test_analytics_mail.py`**, with `tests/smtp_fake.py` standing in for the mail
+  server: the connection is encrypted before the password is sent; the context passed really
+  checks the certificate and the host name; the message carries its sender, recipient and body,
+  characters outside ASCII included. A rejected login names the settings and repeats neither
+  the address nor the password. A refusal gives its kind and code and no address. A server that
+  cannot be reached, a timeout, a wrong certificate and a login `smtplib` cannot encode are
+  each a `MailError`, and a programming mistake is not dressed up as one. The message is dated
+  and its id is on the sender's domain, not this machine's name. **The stand-in refuses a
+  connection made while an event loop is running**, which is what pins "the send happens after
+  the loop has finished": moved inside it, every test of the command fails.
+- **`tests/unit/test_analytics_digest.py`**: the subject and the body; **the body and the
+  subject are searched for every question, answer and comment**; and the command. A week with
+  questions is sent once. Without mail settings it warns, names them, builds nothing and exits
+  0. A quiet week sends nothing. A dry run prints the email, needs no settings and sends
+  nothing even when it could. A failed send is exit code 1 and one line. `--test` sends one
+  line and builds no report. A wrong `--since` fails first, with or without mail settings. The
+  command the email prints looks back a day further than the email. **Everything a scheduled
+  run prints is searched for the questions, both addresses and the password.**
+- **`tests/unit/test_config.py`**: the mail server defaults to Gmail's and the rest to nothing;
+  a blank line means unset; a value that is plainly not an address is refused without being
+  repeated, one with a line break and a second header after it and one with a letter outside
+  ASCII included. The error is searched for each line of the value: an error that did repeat
+  it would print a line break as a backslash and an "n", and the whole value would not be
+  found.
 - **`tests/unit/test_analytics_cli.py`**: `purge`, as before.
 - **`tests/integration/test_analytics_db.py`**, against Postgres: the window is on the
   question's time and open at its end; an unrated answer is still a turn; an article is counted
@@ -377,21 +506,19 @@ from the same data.
   requests. The refused question nearest a passage comes first. **The two thresholds are set
   through the environment and the test runs twice**, with two pairs of values and two expected
   sets of lists, so a `build` that ignored either setting, or swapped them, fails one run.
+  And the week's email is composed from the stored turns and searched for every one of them.
 
 ## Not built yet
 
 Decided, and to be built in this order:
 
-- **The weekly email** (`digest`). The counts and the content gaps' names, and nothing a visitor
-  typed. Sent through Gmail SMTP with `smtplib`. It sends nothing in a week when nobody asked
-  anything. A failed send loses nothing: the questions are in the database for 90 days and the
-  command is run again.
 - **Content gaps** (`refresh-gaps`, `gaps`). The questions that failed are clustered and each
   cluster is named by a model. `content_gaps` will hold the ids of example questions and not
   their text, because the table is kept indefinitely and a visitor's words are not. A question
   counts as failed when its answer was a fallback or scored under `LOW_SCORE_THRESHOLD`. In the
   seeding above that is 20 of the 26 gap questions, and at least two from every one of the six
-  topics, with 3 of the 58 answerable ones beside them.
+  topics, with 3 of the 58 answerable ones beside them. `digest` will refresh the gaps before
+  it builds the report, and the email will carry their names.
 - **`promote-case`**. Prints a question as a ready YAML case. Promoted cases wait in
   `datasets/promoted.yaml`, which is checked and never run, and join the next golden dataset
   when the knowledge base has changed enough to need one. A change of model still needs no

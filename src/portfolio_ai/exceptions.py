@@ -98,6 +98,19 @@ class AnalyticsError(PortfolioAIError):
     """
 
 
+class MailError(PortfolioAIError):
+    """An email could not be sent, for a reason that is not the configuration.
+
+    The server could not be reached, dropped the connection, or refused the message.
+    Nothing is lost when the weekly digest fails this way: what it reports is still in
+    the database, and the command is run again. A rejected login is not this error. It
+    is a :class:`ConfigError`, because the fix is in ``.env``.
+
+    The message never repeats what the server said. An SMTP refusal quotes the
+    addresses involved, and this message goes into a log line.
+    """
+
+
 class PurgeSafetyError(PortfolioAIError):
     """A run would have deleted an implausible share of the knowledge base.
 

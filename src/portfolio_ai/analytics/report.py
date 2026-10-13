@@ -98,6 +98,11 @@ class Report:
     embedding_cost: Decimal
 
     @property
+    def days(self) -> int:
+        """The length of the window in whole days, and never less than one."""
+        return max(1, round((self.until - self.since) / dt.timedelta(days=1)))
+
+    @property
     def conversations(self) -> int:
         return len({turn.conversation for turn in self.turns})
 
@@ -243,12 +248,8 @@ def _seconds(milliseconds: float) -> str:
     return f"{milliseconds / 1000:.1f}s"
 
 
-def _days(report: Report) -> int:
-    return max(1, round((report.until - report.since) / dt.timedelta(days=1)))
-
-
 def _volume(report: Report) -> list[str]:
-    days = _days(report)
+    days = report.days
     routes = Counter(turn.route for turn in report.turns)
     counts = [f"{routes[route]} {name}" for route, name in ROUTE_NAMES.items() if routes[route]]
     # A route this module has no name for. There is none today; a fourth route added
@@ -468,7 +469,7 @@ def render(report: Report, *, verbatim: bool) -> str:
     """
     title = (
         f"# Chat report: {report.since:%Y-%m-%d} to {report.until:%Y-%m-%d} "
-        f"({_plural(_days(report), 'day')})"
+        f"({_plural(report.days, 'day')})"
     )
     if not report.turns:
         return "\n".join(
@@ -476,7 +477,7 @@ def render(report: Report, *, verbatim: bool) -> str:
                 title,
                 "",
                 "Nobody asked anything in this window. The "
-                f"{_plural(_days(report), 'day')} before: "
+                f"{_plural(report.days, 'day')} before: "
                 f"{_plural(report.previous.questions, 'question')} in "
                 f"{_plural(report.previous.conversations, 'conversation')}.",
             ]

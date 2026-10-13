@@ -105,7 +105,8 @@ the host part of `DATABASE_URL`. §5a finds it and §5g proves it resolves.
   and the exposed one would be the weaker. [API.md](API.md) walks through the code and the
   contract.
 - **`portfolio-ai-worker`** — the same image, running `supercronic /etc/crontab` instead: hourly
-  ingestion and the nightly retention sweep, and the weekly digest once step 7 builds it. Hourly sounds excessive and is not: a run
+  ingestion, the nightly retention sweep and the weekly digest (§11). Hourly sounds excessive
+  and is not: a run
   with nothing to do costs one request to the GitHub tree API and about a second, because every
   file's blob SHA matches what is stored. What the frequency buys is a bound on staleness and,
   more importantly, a heartbeat — a webhook that stops firing looks exactly like a repository
@@ -492,6 +493,8 @@ knowing about before you need them:
 - **`SESSION_RATE_LIMIT`** (20 per `SESSION_RATE_WINDOW_MINUTES`, 15) and **`MAX_CONCURRENT_TURNS`**
   (10) are the API's other limits. The per-IP limit is the Express API's.
 - **`CHAT_RETENTION_DAYS`** (90) is how long chat is kept; the nightly purge enforces it.
+- **`SMTP_USER`**, **`SMTP_APP_PASSWORD`** and **`DIGEST_TO_EMAIL`** switch on the weekly email
+  (§11, "The weekly email"). Left out, the Monday job logs one warning and sends nothing.
 
 > **`ENVIRONMENT=production` matters more than it looks.** Five guards in this codebase key off
 > it. The port validator in `config.py` would reject a 5432 URL if this said `local`. The other
@@ -1282,6 +1285,98 @@ the terminal that asked and nowhere else. It embeds the window's questions, a fr
 cent that the report's last line under "Cost and speed" states, and writes nothing.
 
 `analytics seed`, in the same module, is for development and refuses to run here.
+
+### The weekly email
+
+On Mondays at 05:30 the worker runs `python -m portfolio_ai.analytics digest`, which emails the
+last seven days' counts: how much was asked, and how much of it went unanswered. Nothing a
+visitor typed is in it (docs/ANALYTICS.md, "The weekly email").
+
+**It needs nothing to be left alone.** Until the mail settings exist it logs one warning,
+`digest_not_configured`, naming what is missing, and exits cleanly. In a week when nobody asked
+anything it logs `digest_skipped` and sends nothing.
+
+**To switch it on:**
+
+1. **Make an app password** for the Gmail account that will send. Google offers them only to
+   accounts with 2-Step Verification on; searching the Google account's settings for "app
+   passwords" finds the page. It is sixteen letters, shown in four groups. The account's own
+   password does not work: Gmail refuses it over SMTP.
+
+   **Use an account made for sending, not your main one.** An app password is not limited to
+   sending mail. Treat it as a key to that account's whole mailbox, one that skips the second
+   step, and it will sit in this server's `.env`, which both containers are given. With an
+   account that exists only to send this email, the worst a leaked key can do is send mail
+   as that account. The recipient, in step 2, is then your real address.
+2. **Add three lines to `~/docker/portfolio-ai/.env`**, with an editor, so that none of the
+   three values is ever in the shell's history:
+
+   ```bash
+   # The Gmail address that sends.
+   SMTP_USER=
+   # The sixteen letters, typed without the spaces.
+   SMTP_APP_PASSWORD=
+   # Who receives it.
+   DIGEST_TO_EMAIL=
+   ```
+
+   Each value goes straight after its equals sign, with no quotes and nothing after it on the
+   line.
+
+   The three lines can go in before or after the deploy that carries the command. In a
+   container these are environment variables, and one the running code does not know is
+   ignored (§6). Steps 4 and 5 are another matter: they need the image that has `digest`.
+3. **Recreate the worker**, so that it starts with the new environment. `restart` would keep
+   the old one:
+
+   ```bash
+   cd ~/docker/portfolio-ai
+   docker compose up -d worker
+   ```
+
+4. **Prove it.** This sends one line and builds no report:
+
+   ```bash
+   docker compose exec worker python -m portfolio_ai.analytics digest --test
+   ```
+
+   The email arrives, and the command prints a `digest_sent` line with `"test": true`. What
+   else it can print, and what each means:
+
+   - `command_failed` with "Not set: ..." names a setting the worker cannot see. Either the
+     line is missing or its key is misspelt, which is not refused on this box (§6), or the
+     worker was not recreated in step 3.
+   - `command_failed` with "rejected the login (code 535)" is the name or the password. The
+     usual cause is the account's own password where the app password belongs.
+   - "Configuration is invalid: DIGEST_TO_EMAIL" (or `SMTP_USER`) is a value that is not an
+     address. **Fix it before leaving.** Every command reads the settings, so until it is
+     fixed the hourly ingestion and the nightly sweep fail the same way, and so would the API
+     on its next restart.
+   - A `MailError` naming `SSLCertVerificationError` means the image could not verify Gmail's
+     certificate. This shows whether it has any authorities to check against:
+
+     ```bash
+     docker compose exec worker python -c "import ssl; print(ssl.create_default_context().cert_store_stats())"
+     ```
+5. **Read what Monday will send**, without sending it:
+
+   ```bash
+   docker compose exec worker python -m portfolio_ai.analytics digest --dry-run
+   ```
+
+**A misspelt key is not refused here**, as it would be on a development machine (§6). It shows
+in step 4 as "Not set", and on a Monday as the `digest_not_configured` warning, which lists the
+setting that was not found.
+
+**If a send fails**, the log has `command_failed` with the kind of failure, and nothing is
+lost. The questions are in the database for 90 days. Run it again by hand, reaching back as
+far as is wanted:
+
+```bash
+docker compose exec worker python -m portfolio_ai.analytics digest --since 14d
+```
+
+To switch it off, take the three lines out and recreate the worker.
 
 ### Asking the assistant something, on the server
 

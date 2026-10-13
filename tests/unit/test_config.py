@@ -247,6 +247,81 @@ def test_limits_and_retention_default_to_the_documented_values() -> None:
     assert settings.chat_retention_days == 90
 
 
+def test_the_mail_settings_default_to_gmails_server_and_to_nobody() -> None:
+    """The server is Gmail's unless told otherwise. Who sends, with what password and
+    to whom has no default: those are somebody's, and belong in `.env` only."""
+    settings = _settings()
+
+    assert (settings.smtp_host, settings.smtp_port) == ("smtp.gmail.com", 587)
+    assert settings.smtp_user is None
+    assert settings.smtp_app_password is None
+    assert settings.digest_to_email is None
+
+
+@pytest.mark.parametrize("name", ["smtp_user", "smtp_app_password", "digest_to_email"])
+def test_a_blank_mail_setting_means_unset(name: str) -> None:
+    """`.env.example` lists all three with nothing after the equals sign. Copied as
+    they are, they have to mean "no email", not "an address that is an empty string"."""
+    assert getattr(_settings(**{name: "  "}), name) is None
+
+
+@pytest.mark.parametrize("name", ["smtp_user", "digest_to_email"])
+@pytest.mark.parametrize(
+    "value",
+    [
+        "owner",
+        "owner@localhost",
+        "@example.org",
+        "ow ner@example.com",
+        "owner@example.com\nBcc: someone@example.com",
+        "jos\N{LATIN SMALL LETTER E WITH ACUTE}@example.com",
+    ],
+    ids=["no-domain", "no-dot", "no-name", "a-space", "a-second-header", "not-ascii"],
+)
+def test_what_is_plainly_not_an_address_is_refused_without_being_repeated(
+    name: str, value: str
+) -> None:
+    """The last two would otherwise fail late, and oddly. A value with a line break
+    is refused by EmailMessage when the message is built, which for the digest is a
+    Monday morning. A letter outside ASCII makes smtplib raise UnicodeEncodeError at
+    the login, before it has contacted anyone."""
+    with pytest.raises(ValidationError) as caught:
+        _settings(**{name: value})
+
+    said = str(caught.value)
+    assert "must be an email address" in said
+    # Part by part. An error that did repeat the value would print its repr, where a
+    # line break is a backslash and an "n", and the whole value would not be found.
+    for part in value.splitlines():
+        assert part not in said
+
+
+def test_a_real_looking_address_and_a_password_are_kept() -> None:
+    # Made up, in the shape Gmail gives an app password.
+    made_up = "abcd efgh ijkl mnop"
+    settings = _settings(
+        smtp_user="sender@example.com",
+        smtp_app_password=made_up,
+        digest_to_email="owner@example.com",
+    )
+
+    assert (settings.smtp_user, settings.digest_to_email) == (
+        "sender@example.com",
+        "owner@example.com",
+    )
+    assert settings.smtp_app_password is not None
+    assert "abcd efgh" not in repr(settings), "a SecretStr, like the OpenAI key"
+    assert settings.smtp_app_password.get_secret_value() == made_up
+
+
+def test_the_mail_port_is_a_port() -> None:
+    assert _settings(smtp_port=1).smtp_port == 1
+    assert _settings(smtp_port=65535).smtp_port == 65535
+    for not_a_port in (0, 65536):
+        with pytest.raises(ValidationError):
+            _settings(smtp_port=not_a_port)
+
+
 def test_the_analytics_thresholds_default_to_the_documented_values() -> None:
     """Provisional figures, and written down in four places: here, config.py,
     .env.example and docs/ANALYTICS.md. This is the one that fails when they part."""
