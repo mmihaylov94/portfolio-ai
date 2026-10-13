@@ -308,10 +308,16 @@ would be the weaker.
 
 ### `.github/workflows/ci.yml`
 
-Beyond the three jobs, four smaller things worth naming.
+Beyond the three jobs, five smaller things worth naming.
 
 `concurrency` with `cancel-in-progress` stops a run when a newer commit lands on the same branch,
 so a quick succession of pushes does not queue up runs of code nobody is waiting on.
+
+`timeout-minutes: 10` on each job, added later. A job with none is allowed six hours, and a
+test can hang without failing: a unit test that loses its stand-in for the database does not
+error, it waits for a connection that never comes. Each job takes under a minute, so ten is
+generous and still an answer the same morning. It has to be written on every job; a workflow
+has no one setting for it.
 
 `permissions: packages: write` is granted on the `image` job only. The other two jobs do not need
 it and do not get it.

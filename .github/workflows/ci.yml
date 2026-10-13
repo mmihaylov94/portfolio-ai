@@ -22,9 +22,18 @@ env:
   # nobody would notice until it mattered.
   UV_VERSION: "0.11.16"
 
+# Every job below has `timeout-minutes: 10`. A job with none is allowed six hours,
+# and a test can hang without failing: a unit test that loses its stand-in for the
+# database does not error, it waits for a connection that never comes. One did, on
+# a development machine, while this project's own review was breaking tests on
+# purpose. Each job takes under a minute and the slowest whole run so far took a
+# little over two, so ten is room for a cold cache and still an answer the same
+# morning. It is set on each job because a workflow has no one setting for it.
+
 jobs:
   quality:
     name: Lint, types, unit tests
+    timeout-minutes: 10
     # Pinned rather than ubuntu-latest, for the same reason as every other pin in
     # this repository: `latest` moves on a date somebody else chooses, and a runner
     # image change is exactly the kind of difference that turns up as an unrelated
@@ -74,6 +83,7 @@ jobs:
 
   database:
     name: Integration tests
+    timeout-minutes: 10
     runs-on: ubuntu-24.04
 
     services:
@@ -131,6 +141,7 @@ jobs:
 
   image:
     name: Build image
+    timeout-minutes: 10
     runs-on: ubuntu-24.04
     needs: [quality, database]
 
