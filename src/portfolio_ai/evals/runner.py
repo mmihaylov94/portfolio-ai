@@ -53,7 +53,7 @@ from portfolio_ai.db import evals as evals_db
 from portfolio_ai.db.evals import Corpus, RunRecord, StoredDataset, StoredResult
 from portfolio_ai.evals import datasets, metrics, report
 from portfolio_ai.evals import judge as judging
-from portfolio_ai.evals.datasets import Dataset, EvalCase
+from portfolio_ai.evals.datasets import HOLDING, Dataset, EvalCase
 from portfolio_ai.exceptions import ConfigError, EvalError, PortfolioAIError
 from portfolio_ai.llm import pricing
 
@@ -171,6 +171,15 @@ async def prepare(  # ruff: ignore[too-many-arguments] -- keyword-only; see resp
     only: frozenset[str] = frozenset(),
 ) -> Plan:
     """Every check that can refuse a run, before anything is spent or stored."""
+    if dataset.name == HOLDING:
+        # Before anything else, a dry run included. `rejudge` needs no check of its
+        # own: it grades a stored run again, and this is why there is none to grade.
+        raise EvalError(
+            f"{HOLDING} is the holding file for cases promoted from real questions, and is "
+            "never run: a complete run would freeze it. Its cases are measured once they "
+            "have joined a golden dataset. `check` validates it."
+        )
+
     # A misspelt model fails on every call it makes, and OpenAI's "no such model" is an
     # ordinary per-case failure, so the run would carry on: every answer paid for and
     # none graded, the label used up, and the dataset frozen.

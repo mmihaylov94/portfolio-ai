@@ -185,6 +185,12 @@ document. But `on delete set null` from `eval_cases.source_message_id` to `chat_
 90-day retention sweep will eventually delete the original message, and the eval case must outlive
 it. Cascade there would quietly delete your regression tests.
 
+(That column is gone now. Migration 0007 dropped it, three weeks later, when it turned out nothing
+could ever fill it: eval cases and visitors' messages live in different databases. Migration
+0003 still declares it, because a migration that has run is never edited. The schema today is
+what you get by running all of them in order, and 0007 is where the column's story ends. The
+reasoning about `set null` and `cascade` is as true as it was.)
+
 **`cost_usd` is `numeric`, not a float.** Money in binary floating point accumulates error, and
 this column gets summed.
 
@@ -390,6 +396,7 @@ stamp 0003` puts the record back.
 
 6. Because the 90-day retention sweep will eventually delete the original chat message, and the eval
    case has to outlive it. Cascade would silently delete regression tests as old conversations were
-   purged — losing exactly the thing the analytics loop worked to produce.
+   purged — losing exactly the thing the analytics loop worked to produce. (Migration 0007 later
+   dropped the column for another reason; the answer is about the choice 0003 made.)
 
 </details>

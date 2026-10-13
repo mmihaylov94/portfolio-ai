@@ -2,7 +2,9 @@
 
 ``db/chat.py`` writes a conversation as it happens and reads what the next answer
 needs. This module is the other direction: long after the answer, what was asked,
-how it went, and which articles the answers drew on.
+how it went, and which articles the answers drew on. Also here: the questions that
+failed and the content gaps they are grouped into, and one stored question read
+back with the conversation before it, for ``promote-case``.
 
 Three things about the queries are worth knowing before reading them.
 
@@ -668,6 +670,94 @@ async def delete_gaps() -> int:
     async with pool.connection() as conn, conn.cursor() as cur:
         await cur.execute("delete from content_gaps")
         return cur.rowcount
+
+
+# --- promoting a question into an eval case -------------------------------------
+
+
+@dataclass(frozen=True)
+class AnsweredQuestion:
+    """One question a visitor asked and was answered, as ``promote-case`` reads it."""
+
+    question_id: int
+    question: str
+    asked_at: dt.datetime
+    # The conversation's own primary key, for reading what came before the question.
+    session_pk: int
+    # What happened to it: the route the classifier chose, and whether the answer was
+    # the fallback. A case is promoted because one of these went wrong.
+    route: str
+    fallback_used: bool
+
+
+async def answered_question(message_id: int) -> AnsweredQuestion | None:
+    """The answered question an id names: the question's own id, or its answer's.
+
+    Either, because the two are printed in different places: ``report`` and ``gaps``
+    print a question's id, and the API's feedback route works in answers'.
+    ``%(id)s in (q.id, a.id)`` is SQL's short way to write "equal to either".
+
+    None when the id names neither, or names a question that was never answered: a
+    turn that failed part-way stores nothing, so there is no such row to find.
+    """
+    pool = await get_pool()
+
+    async with pool.connection() as conn, conn.cursor() as cur:
+        await cur.execute(
+            """
+            select q.id as question_id, q.content as question, q.created_at as asked_at,
+                   q.session_id as session_pk, a.classification, a.fallback_used
+            from chat_messages q
+            join chat_messages a on a.reply_to_id = q.id and a.role = 'assistant'
+            where q.role = 'user' and %(id)s in (q.id, a.id)
+            """,
+            {"id": message_id},
+        )
+        row = await cur.fetchone()
+
+    if row is None:
+        return None
+    return AnsweredQuestion(
+        question_id=row["question_id"],
+        question=row["question"],
+        asked_at=row["asked_at"],
+        session_pk=row["session_pk"],
+        route=row["classification"],
+        fallback_used=row["fallback_used"],
+    )
+
+
+async def exchanges_before(
+    session_pk: int, question_id: int, *, limit: int
+) -> list[tuple[str, str]]:
+    """The last ``limit`` exchanges of a conversation before one of its questions.
+
+    Oldest first, each a question and the answer it got. This is what the assistant
+    had in front of it when the question was asked, if ``limit`` is the memory
+    window: the same two orderings as ``failed_questions``, newest first to apply
+    the limit and then back into the order they happened.
+    """
+    if limit <= 0:
+        return []
+
+    pool = await get_pool()
+
+    async with pool.connection() as conn, conn.cursor() as cur:
+        await cur.execute(
+            """
+            select * from (
+                select q.id, q.content as question, a.content as answer
+                from chat_messages q
+                join chat_messages a on a.reply_to_id = q.id and a.role = 'assistant'
+                where q.session_id = %(session)s and q.role = 'user' and q.id < %(before)s
+                order by q.id desc
+                limit %(limit)s
+            ) newest
+            order by id
+            """,
+            {"session": session_pk, "before": question_id, "limit": limit},
+        )
+        return [(str(row["question"]), str(row["answer"])) for row in await cur.fetchall()]
 
 
 # --- invented conversations (analytics seed) ------------------------------------

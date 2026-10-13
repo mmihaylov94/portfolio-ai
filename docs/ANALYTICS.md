@@ -8,11 +8,11 @@ How the project reads its own chat history back, module by module:
 The code is in `src/portfolio_ai/analytics/`, the SQL in `db/analytics.py`, and the invented
 conversations it was built against in `datasets/traffic/`. ARCHITECTURE.md §10 has the design.
 
-**Built so far:** the report (`analytics report`), the weekly email of its counts
-(`analytics digest`), the content gaps (`analytics refresh-gaps`, `gaps`, `gap-status`) and the
-invented conversations (`analytics seed`). The nightly retention sweep, `analytics purge`, is
-older and is described in docs/API.md, "Retention". **Not built yet:** `promote-case`. The last
-section says what is decided about it.
+**What there is:** the report (`analytics report`), the weekly email of its counts
+(`analytics digest`), the content gaps (`analytics refresh-gaps`, `gaps`, `gap-status`), a
+visitor's question turned into an eval case (`analytics promote-case`), and the invented
+conversations all of it was built against (`analytics seed`). The nightly retention sweep,
+`analytics purge`, is older and is described in docs/API.md, "Retention".
 
 ## The idea it rests on
 
@@ -451,6 +451,97 @@ in place and two lines added to the prompt. The first run, earlier the same day,
   gaps out of the queue and the email for good. The way to tell is to read the questions,
   which is what `gaps` is for, and then `gap-status ... wont_fix`.
 
+## Promoting a question
+
+The last link of the loop. A question the knowledge base could not answer became a gap, an
+article was written to close it, and the question itself now becomes a test, so that the
+assistant cannot quietly get worse at what it was fixed for.
+
+`python -m portfolio_ai.analytics promote-case 812 --expected-doc services`
+
+1. **The question** (`db/analytics.answered_question`). `812` is a question's id, as `report`
+   and `gaps` print it, or its answer's. One query finds the turn by either, and reads from the
+   answer what happened: the route the classifier chose, and whether the reply was the
+   fallback.
+2. **The documents** (`db/analytics.document_exists`). Each `--expected-doc` has to be an
+   indexed article. A case that expects a document nothing has indexed can only fail, and
+   `evals run` would refuse a whole dataset for it, so it is refused here, by name.
+3. **The conversation before it**, with `--with-history` (`db/analytics.exchanges_before`): the
+   exchanges of the same conversation that came before the question, as many as the assistant
+   itself was given when it answered (`MEMORY_WINDOW_TURNS`). It is what makes a follow-up such
+   as "And for a week?" a question at all.
+4. **The case** (`promote.promote`) is built as an `EvalCase`, the model the eval harness loads
+   a dataset into. Its category is `mihail_related` whatever route the question took, and its
+   `notes` say where it came from: the message's id, the day, the route, the fallback.
+5. **The text** (`promote.as_yaml`, `promote.what_to_do`). The case as one item of a dataset's
+   `cases:` list, and after it, as YAML comments, where it goes and what to do before it is
+   committed.
+
+**It prints, and stores nothing.** Eval cases are stored where evals run, which is the
+development database; the question is in production's. So the command runs where the question
+is, reads, and prints one case, and the case reaches the evals the way every case does: in a
+file in the repository. It waits in `datasets/promoted.yaml`, which is checked and never run,
+until the next golden dataset takes it in (docs/EVALS.md, "Promoted cases"). `eval_cases` had a
+`source_message_id` column for this, laid out before anything could use it. Nothing could ever
+fill it, and migration 0007 drops it.
+
+**Built as the eval model, so the two cannot disagree.** What is printed has already passed
+every rule a dataset file is checked against, and a field the harness gains or a rule it
+tightens applies here with nothing changed. The tests go the other way too: the printed text
+is put under a dataset's header and read by the loader a dataset file goes through, for a
+dozen questions chosen to break YAML (`yes`, `null`, a colon and a hash, a leading dash,
+several lines), and each has to come back as the case it was made from.
+
+**What it prints is a visitor's words, on their way into a public repository.** So it is held
+to the rule `report` and `gaps` are held to, a terminal and nowhere else, and it ends with
+what to do before the case is committed:
+
+- **rewrite the question in your own words**, and the history if there is one. Keep what is
+  asked and how plainly; leave out the visitor's phrasing and anything that says who asked;
+- write the `reference_answer` from the article, which the command leaves out;
+- give the case a key that says what it tests. It is printed as `promoted-812` unless `--key`
+  named it.
+
+**Why rewrite, and not only read.** The chat tells visitors their conversations are kept for
+90 days, and the assistant's article says they are then deleted. A commit to a public
+repository is for good. It is the argument that keeps questions out of the weekly email, and
+it applies here with more force. A question rewritten is derived from what a visitor asked,
+as a gap's name is, and is not their words. It tests the same subject. What it gives up is
+the exact wording that failed, which a case seldom needs: the failure was a missing article,
+not a turn of phrase. Where the phrasing was the failure, as with a question turned away as
+off-topic, keep its shape and change its words.
+
+An error from this command never repeats the question, or the conversation. A key the
+datasets would refuse is refused with the rule, before anything is read. Anything else that
+does not make a valid case is refused by naming the field, and never with pydantic's own
+message, which quotes the value it was given.
+
+**One character is changed on the way.** U+0085, "next line", is a line break few things
+write. The API lets it through, the dumper writes it as it is, and YAML reads it back as a
+line break and folds it into a space. The review of this stage tried every character the API
+accepts, about 78,000 questions and answers, and it was the only one that did not come back
+from the file as it went in. It is made an ordinary line break before the case is built.
+
+**It writes UTF-8 bytes, whatever the console's encoding.** On Windows, output redirected to a
+file is written in the ANSI code page, and the other commands print `?` for a character that
+page lacks. In a report that is a blemish. In a case about to be committed it would be the
+visitor's question quietly changed, so this one command switches its output to UTF-8 first.
+
+That decides the bytes Python writes, and no more:
+
+- **Command Prompt's `>` and bash's** put those bytes in the file as they are.
+- **Windows PowerShell's `>` and `|` do not.** It decodes a program's output with the
+  console's own code page and writes the result out as UTF-16, so the file holds other
+  characters: on a console set to cp866, the one curly apostrophe in "Mihail's" came out as
+  three Cyrillic letters, with exit code 0. Nothing in the command can prevent it. In
+  PowerShell, copy the case from the terminal.
+- `evals check` now says "is not UTF-8 text" of such a file, where it used to be a traceback.
+  It cannot catch the same text opened in an editor and pasted, which is UTF-8 by then and
+  loads. That is one more reason to read the case, and to rewrite it.
+
+A refusal is one line on standard output, like every command's here. Redirected, it goes into
+the file and nothing is shown: look at the exit code.
+
 ## Invented conversations
 
 The step was planned for after the site had traffic. It had none, and none was expected for
@@ -576,6 +667,10 @@ uv run python -m portfolio_ai.analytics gaps --status all
 uv run python -m portfolio_ai.analytics gap-status 7 written --doc services
 uv run python -m portfolio_ai.analytics gap-status 9 wont_fix
 
+uv run python -m portfolio_ai.analytics promote-case 812 --expected-doc services   # quotes visitors
+uv run python -m portfolio_ai.analytics promote-case 812 --expected-doc services \
+    --expected-doc faq --key day-rate-pricing --with-history
+
 uv run python -m portfolio_ai.analytics seed --dry-run       # the plan; spends nothing
 uv run python -m portfolio_ai.analytics seed                 # about $0.10; local only
 uv run python -m portfolio_ai.analytics seed --clear         # take them out again
@@ -592,9 +687,15 @@ docker compose exec worker python -m portfolio_ai.analytics report --since 30d
 ```
 
 **`gaps` quotes visitors too**: under each gap it prints up to three of its example questions
-that are still stored. It is held to the same rule as `report`. `refresh-gaps` is not, and
-prints labels and counts only, because `digest` runs the same refresh on a Monday. It also says
-when more failed questions are stored than it grouped, and how many gaps are still unnamed.
+that are still stored, each with its id, which is what `promote-case` takes. It is held to the
+same rule as `report`. `refresh-gaps` is not, and prints labels and counts only, because
+`digest` runs the same refresh on a Monday. It also says when more failed questions are stored
+than it grouped, and how many gaps are still unnamed.
+
+**`promote-case` quotes visitors as well**, and is held to the same rule. It reads the
+database and writes nothing, so no environment is refused, and it is run where the questions
+are: on the server, with `docker compose exec`. `--expected-doc` is required and may be
+repeated. Without it the command is refused as a usage error, before anything is read.
 
 `gap-status` refuses what makes no sense: `written` without `--doc`, a `--doc` that is not an
 indexed article, `--doc` with any other status, and a gap that does not exist.
@@ -614,7 +715,7 @@ there, not that a file is missing.
 
 | Module | Role |
 |---|---|
-| `db/analytics.py` | every query the analytics make: the window's turns, the volume before it, article usage, and the three statements `seed` needs |
+| `db/analytics.py` | every query the analytics make: the window's turns, the volume before it, article usage, the gaps, the reads `promote-case` makes (the question, the conversation before it, and whether a document is indexed), and the three statements `seed` needs |
 | `assistant/agent.py` | `Search`, the record of one search stored with each answer, which now carries the `doc_id` and section of every passage |
 | `strict_yaml.py` | YAML in which a key written twice is an error; the invented file and the eval datasets are both read through it |
 | `analytics/signals.py` | arithmetic with no database and no model: cosine similarity, consecutive pairs, median and 90th percentile, counting by band |
@@ -626,7 +727,10 @@ there, not that a file is missing.
 | `analytics/gaps.py` | the refresh: failed questions to groups, groups to stored gaps, names for the ones without, one write. Also what a label may hold, and the limits of one refresh |
 | `assistant/prompts/gap_label.md` | what the model is told when it names a gap. Versioned and pinned like every prompt, and kept out of the list an eval run records |
 | `migrations/versions/0006_content_gaps.py` | `example_questions` goes; `example_message_ids`, `fallback_count`, `refreshed_at` and `resolved_at` arrive |
-| `analytics/cli.py` | `report`, `digest`, `refresh-gaps`, `gaps`, `gap-status`, `seed`, and the older `purge` |
+| `analytics/promote.py` | a stored question as an `EvalCase`, the case as YAML, and what to do with it |
+| `evals/datasets.py` | `EvalCase`, which a promoted case is built as, and `HOLDING`, the name of the dataset that is never run |
+| `migrations/versions/0007_drop_source_message_id.py` | `eval_cases.source_message_id` goes: nothing could fill it |
+| `analytics/cli.py` | `report`, `digest`, `refresh-gaps`, `gaps`, `gap-status`, `promote-case`, `seed`, and the older `purge` |
 | `analytics/retention.py` | the nightly sweep (docs/API.md) |
 | `datasets/traffic/invented.yaml` | the invented conversations. In a folder of its own, because the unit tests load every `datasets/*.yaml` as an eval dataset |
 
@@ -688,6 +792,51 @@ and the table.
 **A slice never raises.** `failed[-500:]` is the last 500 items of a list, and all of it when
 the list is shorter. The refresh asks the database for 501 failed questions, learns from a 501st
 that there were more than it groups, and keeps the newest 500 with that slice.
+
+**`yaml.safe_dump`, and what its three options are for.** "Safe" means it writes plain data
+only, and refuses an object it has no plain form for, so a pydantic model is turned into
+dictionaries first (`model_dump`). `sort_keys=False` keeps a case's fields in the order the
+model declares them; the default sorts them by name. `allow_unicode=True` writes an accented
+letter as itself, where the default writes an escape. `width=88` is about where a long line
+is folded: with the indentation that puts a case under `cases:`, printed lines come to
+roughly 100 columns, as the golden files' do. The dumper does the quoting: a question that is
+the single word `yes` would load back as true if it were written bare, so it is written
+`'yes'`.
+
+**`TypeAdapter`, for a type with no model around it.** pydantic validates a model's fields. A
+case's key is an annotated string (`Key`), and `TypeAdapter(Key).validate_python(text)` asks
+the same rule of one string, before there is a case to put it in. That is how a wrong `--key`
+is refused first, with nothing read.
+
+**`Model.model_validate(data)` against `Model(...)`.** Both validate. `model_validate` takes
+plain dictionaries and lists and builds the nested models itself, so a fault three levels
+down is one error with a path to it (`history.3.content`). Building the inner objects first
+raises the same fault early, from wherever they were built, and outside whatever was meant to
+catch it.
+
+**`model_copy(update=...)` is not `dataclasses.replace`.** Both make a copy of something
+frozen with one field different. `dataclasses.replace` runs `__init__`, so whatever a
+dataclass checks there is checked again. `model_copy(update=...)` validates nothing: it took
+`'Not A Name!'` for a dataset's name. Fine in a test, for a value known to be valid.
+
+**`dict.fromkeys(items)` removes repeats and keeps the order.** A dictionary keeps its keys in
+the order they were added, and a key added twice is there once. `list(dict.fromkeys(docs))` is
+the idiom for "each once, in the order given", which a `set` would not keep.
+
+**`ValidationError.errors()`.** `str(error)` of a pydantic refusal is made for a developer and
+quotes the value that was refused. `error.errors(include_input=False)` gives the same problems
+as a list of dictionaries, each with the field (`loc`) and the complaint (`msg`), and without
+the value. That is what to build a message from when the value is not yours to repeat.
+
+**A required option in Typer.** An option whose type is `list[str]` and which has no default
+must be given at least once: Typer refuses the command as a usage error, exit code 2, before
+the function runs.
+
+**`sys.stdout.reconfigure(encoding="utf-8", errors="replace")`.** The same call the callback
+uses to set `errors`, here setting what bytes a character becomes as well. Both are given,
+because `reconfigure(encoding=...)` on its own puts `errors` back to `"strict"`, and the
+callback's setting would be gone from that line on. It is only there on a real text stream
+(`io.TextIOWrapper`), which is why both calls sit behind an `isinstance` check.
 
 **`StrEnum` for a command's choices.** `gaps --status` and `gap-status` take a `StrEnum`. Typer
 turns its members into the allowed values, refuses anything else with a usage error before the
@@ -861,12 +1010,44 @@ from the same data.
   sets of lists, so a `build` that ignored either setting, or swapped them, fails one run.
   The week's email is composed from the stored turns and searched for every one of them. And a
   report carries the content gaps as the table holds them.
+- **`tests/unit/test_analytics_promote.py`**, with the three reads replaced: the case a
+  question becomes, and what its note says; a question that was turned away is promoted as one
+  that should be answered; the id may be the answer's; documents are listed once each in the
+  order given; the history is the conversation before, as long as the memory window. An id
+  that names nothing and a document that is not indexed are refused. A key the datasets would
+  refuse is refused before anything is read. A conversation with an empty message in it is
+  one line naming `history`, with none of the conversation in it. **What is printed is loaded
+  back through the dataset loader for a dozen questions chosen to break YAML, and has to equal
+  the case it came from**; U+0085 is made a line break, and then comes back too. A letter
+  outside ASCII is printed as itself. Everything the command prints can be pasted into the
+  file as it is, and the advice says to rewrite the question.
+- **`tests/unit/test_analytics_commands.py`** also covers `promote-case`: every flag reaches
+  the function, the case is the first thing printed though the stand-in logged a line at INFO
+  as the pool does, the advice is all comments, a missing `--expected-doc` is a usage error
+  that reads nothing, and a refusal prints no case. **The command is run on a console that is
+  cp1251 and the bytes it wrote are read as UTF-8.** The first version of that test called the
+  helper that makes the switch, and passed with the command never calling it.
+- **`tests/integration/test_analytics_promote.py`**, against Postgres: a question is found by
+  its own id and by its answer's; what happened to it is read from the answer; the exchanges
+  before it are its own conversation's, oldest first, and neither another visitor's nor what
+  came after; a limit keeps the ones nearest the question; and one question promoted end to
+  end, with its history.
+- **`tests/integration/test_migrations.py`** also covers 0007: the column and its foreign key
+  are gone, and down at 0006 the column is back as 0003 declared it, set to null when its
+  message is deleted.
+- **`tests/unit/test_eval_runner.py`** and **`test_eval_datasets.py`** (docs/EVALS.md): a
+  dataset named `promoted` is never run, and every file in `datasets/` loads.
 
-## Not built yet
+## What waits for visitors
 
-Decided, and the last thing to build:
+Everything in step 7 is built, and all of it against invented conversations. What that could
+not settle:
 
-- **`promote-case`**. Prints a question as a ready YAML case. Promoted cases wait in
-  `datasets/promoted.yaml`, which is checked and never run, and join the next golden dataset
-  when the knowledge base has changed enough to need one. A change of model still needs no
-  change of dataset.
+- **The three thresholds** (`LOW_SCORE_THRESHOLD`, `REPHRASE_SIMILARITY`, `GAP_SIMILARITY`) and
+  `SAME_GAP` are provisional. Every report ends with the distributions to set the first two
+  again from, and `refresh-gaps --dry-run` shows what another `GAP_SIMILARITY` would group.
+- **The fallback flag is a floor.** It was set on 11 of 26 invented declines. Which rewordings
+  real answers use will be in the report's "Answered with nothing close" list.
+- **`datasets/promoted.yaml` does not exist yet.** The first real promotion starts it.
+- **Whether an instruction typed into a question can steer the model that names a gap** was
+  not tried. The checks on a label are written for the case that it can.

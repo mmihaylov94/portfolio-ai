@@ -358,6 +358,32 @@ def _ignore(progress: runner.Progress) -> None:
 # --- preparing ------------------------------------------------------------------
 
 
+async def test_the_holding_file_for_promoted_cases_is_never_run(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A complete run freezes a dataset, and datasets/promoted.yaml exists to be added
+    to. Refused first, before the database is read: so a dry run is refused too, and
+    `rejudge` has no run of it to grade again.
+
+    Each read `prepare` makes is replaced by something that fails the test. With
+    nothing in their place, a check that was dropped or moved after them did not
+    fail this test: it sent it looking for a database, and it hung.
+    """
+
+    async def read(*args: object, **kwargs: object) -> None:  # ruff: ignore[unused-async]
+        raise AssertionError(f"the database was read: {args} {kwargs}")
+
+    for name in ("label_taken", "stored_dataset", "corpus_state"):
+        monkeypatch.setattr(evals_db, name, read)
+    # model_copy(update=...) makes another frozen model with one field different,
+    # as dataclasses.replace does for a dataclass. Unlike it, it checks nothing: the
+    # new value is not validated. Fine for a name known to be a valid one.
+    promoted = DATASET.model_copy(update={"name": datasets.HOLDING})
+
+    with pytest.raises(EvalError, match="promoted is the holding file for cases promoted"):
+        await runner.prepare(promoted, label="baseline", config=CONFIG, judge_model=None)
+
+
 async def test_a_label_already_used_is_refused_before_anything_runs(store: Store) -> None:
     store.taken.add("baseline")
 

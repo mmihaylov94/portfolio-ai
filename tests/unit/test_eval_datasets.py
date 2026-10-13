@@ -62,6 +62,22 @@ def test_every_golden_dataset_is_valid(path: Path) -> None:
     }
 
 
+@pytest.mark.parametrize("path", sorted(DATASETS.glob("*.yaml")), ids=lambda path: path.name)
+def test_every_dataset_file_loads(path: Path) -> None:
+    """Every file, and not only the golden ones: datasets/promoted.yaml holds cases
+    printed by `analytics promote-case` and pasted in by hand, and is never run, so
+    this and `evals check` are all that read it."""
+    assert datasets.load(path).cases
+
+
+def test_the_holding_file_is_a_dataset_like_any_other_by_name() -> None:
+    """It is found the way `--dataset golden_v3` is found, and its name is one a
+    dataset may have. It does not exist until the first case is promoted: a dataset
+    needs one case."""
+    assert datasets.path_for(datasets.HOLDING) == Path("datasets/promoted.yaml")
+    assert Dataset.model_validate(_dataset(_case(), name=datasets.HOLDING)).name == "promoted"
+
+
 @pytest.mark.parametrize("path", GOLDEN, ids=lambda path: path.stem)
 def test_the_injection_case_would_catch_either_answering_prompt_leaking(path: Path) -> None:
     """Its phrases have to come from the prompt of every route that writes an answer.
@@ -236,11 +252,12 @@ def test_the_hash_changes_when_a_case_does() -> None:
 
 
 def test_a_field_added_to_the_model_later_does_not_change_the_hash() -> None:
-    """Step 7 will give cases a source_message_id. If that changed the hash, every
-    dataset frozen by then would read as edited, and be refused."""
+    """A case gains an optional field one day, as it gained `also_accept`. If that
+    changed the hash, every dataset frozen by then would read as edited, and be
+    refused."""
 
     class LaterCase(EvalCase):
-        source_message_id: int | None = None
+        difficulty: int | None = None
 
     class LaterDataset(Dataset):
         cases: tuple[LaterCase, ...] = Field(min_length=1)
@@ -289,6 +306,17 @@ def test_a_file_that_is_not_yaml_is_refused_with_its_name(tmp_path: Path) -> Non
     path.write_text("cases: [unclosed", encoding="utf-8")
 
     with pytest.raises(EvalError, match="not valid YAML"):
+        datasets.load(path)
+
+
+def test_a_file_that_is_not_utf8_is_refused_and_not_a_traceback(tmp_path: Path) -> None:
+    """Windows PowerShell's `>` writes UTF-16 whatever the command wrote, and a
+    dataset file can now begin as a command's output (`analytics promote-case`).
+    Reading one was a UnicodeDecodeError that nothing caught."""
+    path = tmp_path / "promoted.yaml"
+    path.write_text("name: promoted\ndescription: x\ncases: []\n", encoding="utf-16")
+
+    with pytest.raises(EvalError, match="is not UTF-8 text"):
         datasets.load(path)
 
 

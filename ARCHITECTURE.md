@@ -367,7 +367,6 @@ eval_cases    (id, dataset_id fk, key,                          -- unique per da
                history jsonb,                                   -- the exchange before a follow-up
                expected_doc_ids text[], expect_fallback bool,
                reference_answer, must_include text[], must_not_include text[],
-               source_message_id bigint null,                   -- promoted from real traffic
                notes)
 eval_runs     (id, dataset_id fk, label unique, config jsonb,   -- models, efforts, top_k, prompt versions,
                status, started_at, finished_at, totals jsonb)   --   judge, corpus fingerprint, git sha
@@ -383,11 +382,11 @@ eval_results  (id, run_id fk, case_id fk, answer, classification,
                error)
 ```
 
-`eval_cases.source_message_id` was meant as the join that closes the loop: a real question that
-retrieved badly becomes a permanent regression test once the missing content is written. It
-cannot be filled. Evals run only against the development database and visitors' messages are
-only in production, so `promote-case` prints the case instead (§10), and the column goes when
-that command is built. Migration 0003 laid these tables out; 0005 added what building the
+`eval_cases` had a `source_message_id`, meant as the join that closes the loop: a real question
+that retrieved badly becomes a permanent regression test once the missing content is written.
+It could not be filled. Evals run only against the development database and visitors' messages
+are only in production, so `promote-case` prints the case instead (§10), and migration 0007
+dropped the column. Migration 0003 laid these tables out; 0005 added what building the
 harness showed they lacked (keys, history, the expected fallback, accepted routes, unique
 labels, first-word time, the assistant's signals, and every OpenAI call behind a result with
 its reasoning tokens).
@@ -412,7 +411,8 @@ ai_assistant/
 ├── migrations/                   # alembic
 │   ├── env.py                    # URL rewriting, schema creation, version_table_schema
 │   └── versions/                 # 0001 knowledge base, 0002 chat+analytics, 0003 evals,
-│                                 # 0004 turn details, 0005 eval harness, 0006 content gaps
+│                                 # 0004 turn details, 0005 eval harness, 0006 content gaps,
+│                                 # 0007 an unused column dropped from the eval cases
 ├── src/portfolio_ai/
 │   ├── config.py                 # Settings (pydantic-settings), single source of env truth
 │   ├── logging.py                # structlog JSON logging
@@ -474,10 +474,11 @@ ai_assistant/
 │   │   ├── mail.py               # smtplib: STARTTLS, an app password, one plain-text message
 │   │   ├── clustering.py         # vectors grouped by their centres; no library
 │   │   ├── gaps.py               # the content-gap refresh: cluster, match, name, write
+│   │   ├── promote.py            # a stored question as an eval case, printed as YAML
 │   │   ├── seed.py               # invented conversations, into the development database only
 │   │   ├── retention.py          # the 90-day purge
 │   │   └── cli.py                # purge | report | digest | refresh-gaps | gaps | gap-status |
-│   │                             #   seed; to come: promote-case
+│   │                             #   promote-case | seed
 │   └── evals/
 │       ├── datasets.py           # the YAML format, its validation, the hash that freezes it
 │       ├── runner.py             # prepare (every check) and execute (the run), a few cases at once
@@ -817,8 +818,9 @@ unit test on the cases and a warning from the article checker; the rest is kept 
 Stored in `eval_cases` when first run, and **frozen once a run of it completes**: a changed file
 under the same name is refused, because scores are only comparable on identical cases, and
 changes go into the next version, as golden_v1's did into golden_v2 at cutover. A run that failed
-part-way does not freeze it. Real questions get promoted via `analytics promote-case` (§10) into
-a new version, which is how the set grows beyond what was imagined up front.
+part-way does not freeze it. Real questions get promoted via `analytics promote-case` (§10): each
+waits in `datasets/promoted.yaml`, which is checked and never run, and joins the next version,
+which is how the set grows beyond what was imagined up front.
 
 ### Metrics
 
@@ -956,6 +958,13 @@ beside the eval cases. The command prints a YAML case. It waits in `datasets/pro
 which is checked and never run, and joins the next golden dataset when the knowledge base has
 changed enough to need one. A change of model still needs no change of dataset.
 
+The case is built as the model the eval harness loads a dataset into, so what is printed has
+already passed every rule a dataset file is checked against. It leaves the reference answer
+for a person to write, and ends with what to do before committing it. First of all, to
+rewrite the question in other words: a commit to a public repository is for good, and the
+chat tells visitors their conversations are deleted after 90 days. It is the argument that
+keeps questions out of the weekly email.
+
 ### Interface
 
 ```bash
@@ -965,11 +974,10 @@ python -m portfolio_ai.analytics digest               # built: the weekly email
 python -m portfolio_ai.analytics refresh-gaps         # built: recluster, update content_gaps
 python -m portfolio_ai.analytics gaps --status open   # built: the writing queue; quotes visitors
 python -m portfolio_ai.analytics gap-status 7 written --doc services   # built
-python -m portfolio_ai.analytics promote-case 812 --expected-doc project-threadline
+python -m portfolio_ai.analytics promote-case 812 --expected-doc faq   # built: quotes visitors
 ```
 
-As of 2026-10-13 all but `promote-case` are built, with `purge`. docs/ANALYTICS.md walks
-through what exists.
+As of 2026-10-13 all of them are built, with `purge`. docs/ANALYTICS.md walks through them.
 
 **One report, two forms.** `report` prints what visitors typed: unanswered questions, the pairs
 asked again, thumbs-down with their comments. It is for the owner at a terminal, and is never
@@ -1031,10 +1039,13 @@ This stores real visitors' typed input, and on a portfolio site people volunteer
 - **Retention: 90 days** for raw `chat_messages` and their feedback rows, enforced nightly by
   `python -m portfolio_ai.analytics purge` in the worker container (built with the API in step 4,
   so it runs from before the first visitor's message is stored). Sessions not seen for that long
-  go too, taking the hashed address and browser string with them. Derived data — `content_gaps`, aggregate metrics, and any
-  question promoted into `eval_cases` — is kept indefinitely, so the learning survives the
-  deletion of the conversation it came from. Long enough to build eval sets and see seasonal
-  patterns; short enough to state plainly in a privacy policy.
+  go too, taking the hashed address and browser string with them. Derived data — `content_gaps`
+  and aggregate metrics — is kept indefinitely, so the learning survives the deletion of the
+  conversation it came from. A question promoted into an eval case leaves the database
+  altogether: it is committed to this repository, after a person has rewritten it in other
+  words. What is committed is derived from what a visitor asked, as a gap's name is, and is
+  not their sentence, so the 90 days the chat promises still hold. Long enough to build eval
+  sets and see seasonal patterns; short enough to state plainly in a privacy policy.
 - IP addresses stored only as an HMAC-SHA256 keyed with `IP_HASH_SALT`, never raw -- the
   database layer is never even handed one. A keyed hash rather than a plain one, because all four
   billion IPv4 addresses can be hashed in an afternoon. Referrers are kept without their query
@@ -1263,10 +1274,10 @@ the app's. `extra="forbid"` means a variable cannot be listed in `.env.example` 
    retiring n8n remain.
 7. **Analytics reporting** — signals, clustering, digest, `promote-case`. Last, and planned
    for after a few hundred real questions. The site had no traffic and expected none for
-   months, so it is being built against invented conversations played through the real
-   assistant (§10), in four stages: the report (built), the weekly email (built), the
-   content gaps (built), and `promote-case`. Its thresholds are provisional until there are visitors
-   to set them from.
+   months, so it was built against invented conversations played through the real
+   assistant (§10), in four stages: the report, the weekly email, the content gaps, and
+   `promote-case`. **Built on 2026-10-13.** Its thresholds are provisional until there are
+   visitors to set them from.
 
 Step 5 sits before cutover because the baseline is what proves parity. Step 7 sits after it
 because it reads what visitors asked — and step 4 must already be recording the data it will read.
@@ -1348,6 +1359,9 @@ Non-negotiable from the first commit, because git history is published too:
 | What a content gap stores | The ids of example questions, never their text; a model-written label, checked like input; its centre | §5, §10 |
 | What bounds a gap refresh | The newest 500 failed questions and twenty names a run; the daily spending limit does not cover it | §10 |
 | Promoted eval cases | `promote-case` prints a YAML case; it waits in a holding file and joins the next golden dataset. Evals and visitors' messages are in different databases | §10 |
+| The holding file | `datasets/promoted.yaml` is checked and never run: a complete run would freeze a file that exists to be added to | §9, §10 |
+| What a promoted case holds | The question rewritten in the owner's words, never the visitor's sentence: a commit is for good and the chat promises 90 days | §10 |
+| `eval_cases.source_message_id` | Dropped by migration 0007: nothing could fill it. A promoted case says where it came from in its notes | §5 |
 | Vector arithmetic in Python | `math.sumprod`; no numpy for a few hundred comparisons | §10 |
 | Ingestion schedule | Hourly, on the hour | §11 |
 | Environments | Two: local (LAN server, dev-only) and production (EC2) | §11 |

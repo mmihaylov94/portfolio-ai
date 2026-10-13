@@ -198,6 +198,10 @@ A key written twice in the same mapping is refused too, before pydantic sees the
 YAML keeps the second of two equal keys without a word, so a case with `expected_doc_ids`
 written twice would be scored on the second, and `extra="forbid"` would never see the first.
 
+A file that is not UTF-8 is refused by name as well. That used to be a traceback, and it
+matters since a dataset file can begin as a command's output ("Promoted cases", below):
+Windows PowerShell's `>` writes UTF-16 whatever the command wrote.
+
 **To change a dataset after its first complete run**, copy it to the next version
 (`golden_v4.yaml` after golden_v3), rename it inside, and edit the copy. Then make it the default
 of `run --dataset` in `evals/cli.py`: a unit test fails while the default is not the newest file,
@@ -209,6 +213,74 @@ file and freeze it. A draft's name inside has to match its file, so that changes
 too. golden_v3 was made this way. Until a run completes, edits replace the stored cases freely.
 That includes after a run that failed part-way: it has no scores worth protecting, and its
 partial results are deleted with the old cases.
+
+### Promoted cases
+
+A question a visitor asked and the assistant failed on becomes a case, once the article that
+answers it is written. `python -m portfolio_ai.analytics promote-case` prints the case
+(docs/ANALYTICS.md, "Promoting a question"), and a person pastes it into
+`datasets/promoted.yaml`.
+
+**That file is a holding file. It is checked and never run.** A golden dataset freezes at its
+first complete run, and this one exists to be added to, so `evals run` refuses the name
+`promoted`, a dry run included. `rejudge` needs no refusal of its own: it grades a stored run
+again, and there is none. Its cases are measured once they have joined a golden dataset:
+
+1. When the knowledge base has changed enough to need a new golden dataset, copy the current
+   one to a draft (`draft_v4.yaml`), as above.
+2. Move the promoted cases into the draft, and review them with the rest before its first run.
+3. Delete `datasets/promoted.yaml`. A dataset needs at least one case, so an emptied file
+   would not load; the next promotion starts it again.
+
+A change of model still needs no change of dataset. A promoted case waits for the next version
+for the same reason every other change does: scores are comparable only on identical cases.
+
+**The file does not exist until the first promotion**, because a dataset needs one case. It
+starts with this header, and the printed case goes under `cases:`:
+
+```yaml
+# Cases promoted from real questions with `analytics promote-case`, waiting for the next
+# golden dataset. Checked by `evals check` and the unit tests; never run, because a
+# complete run would freeze a file that exists to be added to.
+#
+# Every question here began as one a visitor typed, and was rewritten in other words
+# before it was committed: the repository is public and a commit is for good, and the
+# chat tells visitors their conversations are deleted after 90 days.
+
+name: promoted
+description: >-
+  Cases promoted from real questions, waiting for the next golden dataset.
+
+cases:
+```
+
+**Before a promoted case is committed**, three things, which the command prints after the case:
+
+- **Rewrite the question in your own words, and any history.** Keep what is asked and how
+  plainly; leave out the visitor's phrasing and anything that says who asked: a name, an
+  employer, a place, an address. The repository is public and a commit is for good, where the
+  chat tells visitors their conversations are deleted after 90 days. The case tests the
+  subject and not the visitor's wording. The unit test that searches every dataset for an
+  email address catches an address and nothing else.
+- **Write its `reference_answer` from the article.** The command leaves it out: what a good
+  answer says is a person's to decide, and without one the judge has nothing to grade
+  completeness against.
+- **Give it a key that says what it tests.** It is printed as `promoted-812`, after the
+  message's id, unless `--key` named it.
+
+The case's `notes` say where it came from: the message's id, the day it was asked, the route
+it took and whether the answer was the fallback. That is all that links a case to its origin.
+`eval_cases` once had a `source_message_id` column for it, which nothing could fill, because
+eval cases are stored in the development database and visitors' messages in production's.
+Migration 0007 dropped it.
+
+A promoted case is always `mihail_related`, whatever route the question took: it names the
+documents that answer it, so the searching route is the one it should take. A question that
+was turned away as off-topic, and is promoted, tests exactly that.
+
+`python -m portfolio_ai.evals check datasets/promoted.yaml` validates the file, and the unit
+tests load every YAML file in `datasets/`, this one included, and search it for addresses and
+for a model's name.
 
 ## What is measured
 
@@ -406,7 +478,8 @@ $0.51 of either.
 
 `run` uses golden_v3 unless `--dataset` names another; golden_v1 and golden_v2 are named only
 to add to the runs already made of them. `rejudge` is for the day the judge changes ("The
-judge", above).
+judge", above). One name is refused: `promoted`, the holding file for cases promoted from real
+questions ("Promoted cases", above).
 
 `compare` refuses two runs of different datasets, because their cases differ. `--markdown`
 writes the comparison as a table, ready to paste into the Results section below. The path above
@@ -523,7 +596,10 @@ on Windows the protection is weaker.
   two cases that did, so that a search that found nothing anywhere could not pass unnoticed.
   A third puts a name into each field of a case in turn, one of them at the start of a
   paragraph. The first version of the search read the case written out as JSON, where a line
-  break is a backslash and an "n", and so missed a name that began a line.
+  break is a backslash and an "n", and so missed a name that began a line. Every YAML file in
+  `datasets/` is loaded, the holding file for promoted cases included once it exists, and the
+  holding file's name is found the way any dataset's is. A file that is not UTF-8 is refused
+  with its name.
 - **`tests/unit/test_eval_metrics.py`** covers the retrieval arithmetic, and every rule both
   firing and not firing. For links that means allowed links from the prompt, a document's URL, a
   passage, a relative link resolved against the site, and the same page written with `www.`,
@@ -535,6 +611,9 @@ on Windows the protection is weaker.
   its longer timeout reaches the request without changing any other call's.
 - **`tests/unit/test_eval_runner.py`** replaces the assistant, the judge and the database with
   stand-ins, and checks:
+  - a dataset named `promoted` is refused before the database is read. Each read is replaced
+    by something that fails the test, because with nothing in their place a dropped check
+    did not fail it: it sent it looking for a database, and it hung;
   - an unpriced model, an effort the model does not take, a used label, a frozen dataset that
     changed and an unindexed document are each refused before anything runs, and the plan says
     where the dataset stands;

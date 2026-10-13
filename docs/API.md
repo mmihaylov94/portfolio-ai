@@ -479,8 +479,10 @@ with this sweep in mind:
 - **Feedback** cascades with the answer it rated.
 - **An answer** cascades with its question (`reply_to_id`), even if the answer was written a few
   seconds on the recent side of the cutoff. Half a turn is not worth keeping.
-- **A question promoted into the eval dataset** survives: `eval_cases.source_message_id` is `on
-  delete set null`, so the test case outlives the conversation it came from.
+- **A question promoted into an eval case** is not in the database at all, so the sweep has
+  nothing to keep: `analytics promote-case` prints it, and it lives in the repository
+  (docs/ANALYTICS.md). `eval_cases` once had a `source_message_id` with `on delete set null`
+  for this; migration 0007 dropped it.
 
 `--dry-run` counts with the same cutoff and deletes nothing. `CHAT_RETENTION_DAYS=0` turns the sweep
 off, and the job then logs a warning every night, since the privacy policy is quietly not being

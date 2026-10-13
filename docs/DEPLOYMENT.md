@@ -1418,6 +1418,36 @@ The deploy that brings these commands also brings migration 0006, which changes 
 `content_gaps` table. `deploy-portfolio-ai` sees a migration pending, takes its backup first,
 and migrates (§9).
 
+### Turning a question into an eval case
+
+Once the article that closes a gap is live and indexed, the question that exposed it becomes a
+test. The number is a question's, as `gaps` and `report` print it, and `--expected-doc` is the
+article's `doc_id`:
+
+```bash
+cd ~/docker/portfolio-ai
+docker compose exec worker python -m portfolio_ai.analytics promote-case 812 --expected-doc services
+```
+
+Add `--with-history` when the question only makes sense after the ones before it, `--key` to
+name the case, and `--expected-doc` again for each further article that answers it.
+
+**It prints a visitor's question**, so it is `exec` and a terminal, like `gaps`. It reads the
+database and writes nothing. Copy what it prints from the terminal into
+`datasets/promoted.yaml` in the repository on your own machine; docs/EVALS.md, "Promoted
+cases", has that file's header and says what happens to it. The last lines it prints say what
+to do before committing: rewrite the question in your own words, write the reference answer,
+name the case. The rewriting is not optional. The chat tells visitors their conversations are
+deleted after 90 days, and a commit to a public repository is for good.
+
+Copy it from the terminal. If you redirect it to a file on your own machine instead, do it in
+Command Prompt or bash: Windows PowerShell's `>` re-encodes a program's output and the file
+holds other characters, with nothing to say so.
+
+The deploy that brings this command also brings migration 0007, which drops
+`eval_cases.source_message_id`: a column of a table that is empty in production, since evals
+never run there.
+
 ### Asking the assistant something, on the server
 
 The quickest way to prove that the production key, the production database and the production

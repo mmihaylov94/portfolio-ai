@@ -127,7 +127,7 @@ src/portfolio_ai/
                  postprocess (link filter, fallback), memory, cli, prompts/*.md + loader
   api/           main (app + lifespan), __main__ (the server), deps (admission), turns (answers in
                  flight), security, errors, schemas, middleware, routers/
-  analytics/     retention, signals, report, digest, mail, clustering, gaps, seed, cli
+  analytics/     retention, signals, report, digest, mail, clustering, gaps, promote, seed, cli
   evals/         datasets, runner, judge, metrics, report, cli
 migrations/      datasets/      tests/unit  tests/integration      docker/
 ```
@@ -238,8 +238,9 @@ migrations/      datasets/      tests/unit  tests/integration      docker/
   `DAILY_SPEND_CAP_USD` over a rolling 24 hours (default $1.00, about 1,600 answers) that returns
   a polite refusal rather than an error; `0` turns the chat off. The daily cap is the real
   protection; the others just stop casual abuse.
-- **Retention is 90 days** for raw `chat_messages` and feedback. `content_gaps`, aggregates and
-  promoted `eval_cases` are kept indefinitely, so insight outlives the conversation.
+- **Retention is 90 days** for raw `chat_messages` and feedback. `content_gaps` and aggregates
+  are kept indefinitely, so insight outlives the conversation. A promoted question leaves the
+  database altogether: it is committed to this repository as an eval case.
 
 ## Public repo — hygiene
 
@@ -311,9 +312,8 @@ uv run python -m portfolio_ai.analytics refresh-gaps --dry-run   # the content g
 uv run python -m portfolio_ai.analytics refresh-gaps        # names new gaps; a cent or less
 uv run python -m portfolio_ai.analytics gaps                # the writing queue; quotes visitors
 uv run python -m portfolio_ai.analytics gap-status 7 written --doc services
+uv run python -m portfolio_ai.analytics promote-case 812 --expected-doc services   # quotes visitors
 ```
-
-Still to build in step 7, as a command of the same module: `promote-case`.
 
 Production schedules live in `docker/crontab`, run by the `worker` container with
 `TZ=Europe/London`: ingest hourly on the hour, purge daily at 03:00, and the digest on Mondays
@@ -363,12 +363,26 @@ in a week when nobody asked anything and while the mail settings are not in `.en
 - **No test chats through the production API.** Every turn it answers is stored. Check a
   deployment with the non-writing calls in docs/DEPLOYMENT.md §8 (health, readiness, a 401, a
   feedback 404) and check OpenAI with the terminal chat's `--no-save`.
-- **`analytics report` and `analytics gaps` print what visitors typed.** Run them in a
-  terminal and read them there. Never put either in the crontab, where its output would be the
-  worker's log, and never paste it anywhere. On the server it is `docker compose exec`, whose
-  output goes to the terminal and not to the log. What may leave the database's side is the
-  other form, `report.render(verbatim=False)`: counts, article titles and the gaps' labels,
-  with a unit test that searches it for every question, answer and comment.
+- **`analytics report`, `analytics gaps` and `analytics promote-case` print what visitors
+  typed.** Run them in a terminal and read them there. Never put one in the crontab, where its
+  output would be the worker's log. Never paste what `report` or `gaps` prints anywhere; what
+  `promote-case` prints has one destination, below, and only after it is rewritten. On the
+  server it is `docker compose exec`, whose output goes to the terminal and not to the log.
+  What may leave the database's side is the other form, `report.render(verbatim=False)`:
+  counts, article titles and the gaps' labels, with a unit test that searches it for every
+  question, answer and comment.
+- **A promoted case is rewritten before it is committed.** The chat tells visitors their
+  conversations are deleted after 90 days, and a commit to a public repository is for good.
+  So the question, and any history, is put into other words: what is asked is kept, the
+  visitor's phrasing and anything that says who asked is not. The unit tests catch an email
+  address and nothing else. The case goes into `datasets/promoted.yaml`, which is checked and
+  **never run**: `evals run` refuses the name, because a complete run would freeze a file that
+  exists to be added to. Its cases join the next golden dataset, reviewed with the rest
+  before that dataset's first run.
+- **A redirect is not a copy.** `promote-case` writes UTF-8, and Command Prompt's `>` keeps
+  it. Windows PowerShell's `>` and `|` decode a program's output with the console's code page
+  and write UTF-16: the file holds other characters, with exit code 0. Copy from the terminal
+  there.
 - **A unit test of an analytics command replaces every database call the command makes.**
   When `digest` learnt to refresh the gaps, its tests reached for a database that is not
   there and the unit suite went from eleven seconds to two and a half minutes, passing or
@@ -506,8 +520,8 @@ Still open from the evals:
   giving the main point and leaving out one to three details of its reference. It is where a
   comparison of models will show.
 
-**Step 7, analytics reporting, is being built in four stages, without visitors.** It was
-planned for after the site had traffic. It has none, and none is expected for months, so it is
+**Step 7, analytics reporting, is built, in four stages and without visitors.** It was
+planned for after the site had traffic. It has none, and none is expected for months, so it was
 built against 28 invented conversations (`datasets/traffic/invented.yaml`) that `analytics seed`
 plays through the real assistant on the development database (docs/ANALYTICS.md). The
 *capture* it reads (feedback, `top_score`, `fallback_used`, where a conversation came from)
@@ -525,8 +539,16 @@ shipped with the API, because none of it can be reconstructed after the fact.
    questions, never their text. One refresh groups at most the newest 500 failed questions
    and names at most twenty gaps. **A gap's count of fallbacks does not say whether it is a
    real gap**: read its questions with `gaps` before marking it `wont_fix`;
-4. `promote-case`, which prints a YAML case for a holding file (`datasets/promoted.yaml`,
-   checked and never run) until the next golden dataset: not built.
+4. `promote-case`: built (migration 0007). It prints a visitor's question as a YAML eval
+   case, built as the `EvalCase` the harness loads, for a holding file
+   (`datasets/promoted.yaml`, checked and never run) until the next golden dataset. It stores
+   nothing: eval cases live in the development database and visitors' messages in
+   production's, which is also why `eval_cases.source_message_id` could never be filled and
+   was dropped. The holding file does not exist until the first real promotion.
+
+With that every step of the build order is built. What is left is not building: the week of
+watching after the cutover and retiring n8n (docs/DEPLOYMENT.md §12), the mailbox for the
+digest (§11), and setting the thresholds again once there are visitors.
 
 What the first seeding showed (2026-10-13):
 - **`fallback_used` is a floor.** On 26 new questions the knowledge base cannot answer it was

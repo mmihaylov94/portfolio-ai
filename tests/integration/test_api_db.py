@@ -211,15 +211,9 @@ async def test_the_sweep_removes_what_is_old_and_keeps_what_is_not() -> None:
         "update chat_sessions set last_seen_at = %s where session_id = %s",
         (dt.datetime.now(dt.UTC) - dt.timedelta(days=95), OTHER_SESSION),
     )
-    # A rating on the old answer, and the old question promoted into the eval set.
+    # A rating on the old answer.
     await feedback_db.record_feedback(
         session_id=SESSION, message_id=old_answer, rating=-1, comment=None
-    )
-    dataset = await _one("insert into eval_datasets (name) values ('golden') returning id")
-    await _execute(
-        "insert into eval_cases (dataset_id, key, question, category, source_message_id) "
-        "values (%s, 'promoted', 'A question?', 'mihail_related', %s)",
-        (dataset["id"], old_answer - 1),
     )
 
     planned = await chat_db.count_older_than(cutoff)
@@ -232,6 +226,4 @@ async def test_the_sweep_removes_what_is_old_and_keeps_what_is_not() -> None:
     assert remaining["ids"] == [recent_answer - 1, recent_answer]
     assert (await _one("select count(*) as n from message_feedback"))["n"] == 0
     assert (await _one("select count(*) as n from chat_sessions"))["n"] == 1
-    survivor = await _one("select question, source_message_id from eval_cases")
-    assert survivor == {"question": "A question?", "source_message_id": None}
     assert abandoned not in remaining["ids"]

@@ -16,10 +16,11 @@ from pathlib import Path
 
 import click
 import pytest
+import structlog
 from turns import gap, turn
 from typer.testing import CliRunner
 
-from portfolio_ai.analytics import cli, seed
+from portfolio_ai.analytics import cli, promote, seed
 from portfolio_ai.analytics import gaps as gap_refresh
 from portfolio_ai.analytics import report as reports
 from portfolio_ai.analytics.cli import app
@@ -28,6 +29,7 @@ from portfolio_ai.analytics.seed import InventedMessage, InventedTraffic, Played
 from portfolio_ai.assistant.agent import TurnResult
 from portfolio_ai.db import analytics as analytics_db
 from portfolio_ai.db.analytics import ArticleUsage, FailedQuestion, Gap, GapCounts, Volume
+from portfolio_ai.evals.datasets import EvalCase
 from portfolio_ai.exceptions import AnalyticsError
 
 INVENTED = Path(__file__).resolve().parents[2] / seed.DEFAULT_PATH
@@ -293,6 +295,49 @@ def test_a_console_that_cannot_encode_a_character_prints_a_placeholder(
     assert raw.getvalue() == b"an API?led integration" + os.linesep.encode()
 
 
+def test_a_promoted_case_is_written_as_utf8_even_where_the_console_is_not(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The same redirected output as above, for the one command whose output goes
+    into a file in the repository. A "?" in a report is a blemish; in a case it is a
+    visitor's question changed on its way into a commit. So `promote-case` switches
+    its output to UTF-8, and the hyphen arrives as itself.
+
+    The command is run, on a console that is cp1251, and the bytes it wrote are
+    read. The first version of this test called the helper that makes the switch,
+    which proved the helper and would have passed with the command never calling it.
+    """
+    question = (
+        "an API\N{NON-BREAKING HYPHEN}led integration, "
+        "s'il vous pla\N{LATIN SMALL LETTER I WITH CIRCUMFLEX}t"
+    )
+
+    async def promoted(  # ruff: ignore[unused-async]
+        message_id: int, *, expected_docs: list[str], key: str | None, with_history: bool
+    ) -> EvalCase:
+        assert (message_id, key, with_history) == (812, None, False)
+        return EvalCase(
+            key="promoted-812",
+            question=question,
+            category="mihail_related",
+            expected_doc_ids=tuple(expected_docs),
+        )
+
+    monkeypatch.setattr(promote, "promote", promoted)
+
+    # charset is the encoding of the console the runner stands in for.
+    result = CliRunner(charset="cp1251").invoke(
+        app, ["promote-case", "812", "--expected-doc", "services"]
+    )
+
+    assert result.exit_code == 0, result.output
+    written = result.stdout_bytes.decode("utf-8")
+    # No line ending in what is looked for: these are the bytes as written, and on
+    # Windows a text stream ends its lines with a carriage return as well.
+    assert f"    question: {question}" in written
+    assert "?" not in written.split("# One case")[0], "nothing was replaced on the way out"
+
+
 # --- refresh-gaps -------------------------------------------------------------------
 
 DAY_RATE = "What does Mihail charge for a day of consulting?"
@@ -489,8 +534,13 @@ def test_gaps_lists_the_open_ones_with_the_questions_still_stored(
     assert "first asked 2026-09-22, last 2026-10-11" in output
     # Three examples at most, in the gap's own order, skipping the one that is gone.
     # Four of this gap's five are still stored, and the fourth is not printed.
+    # Each with its id, which is what `promote-case` takes once the article exists.
     examples = [line.strip() for line in output.splitlines() if line.startswith("      - ")]
-    assert examples == [f"- {DAY_RATE}", "- How much per day?", "- Is there a price list?"]
+    assert examples == [
+        f"- #11  {DAY_RATE}",
+        "- #15  How much per day?",
+        "- #17  Is there a price list?",
+    ]
     assert "What would a week cost?" not in output
     assert "Salary expectations" not in output
 
@@ -618,3 +668,100 @@ def test_a_status_that_does_not_exist_is_a_usage_error(
 
     assert code == 2, "Typer's own refusal, before the command runs"
     assert marking == []
+
+
+# --- promote-case -------------------------------------------------------------------
+
+
+@pytest.fixture
+def promoting(monkeypatch: pytest.MonkeyPatch) -> list[dict[str, object]]:
+    """Stand in for the database reads; record what each call was asked for."""
+    calls: list[dict[str, object]] = []
+
+    async def promoted(  # ruff: ignore[unused-async]
+        message_id: int, *, expected_docs: list[str], key: str | None, with_history: bool
+    ) -> EvalCase:
+        calls.append({"id": message_id, "docs": expected_docs, "key": key, "history": with_history})
+        # What the real reads do on the way: the pool logs a line when it opens. At
+        # the usual level that line would be printed above the case.
+        structlog.get_logger("portfolio_ai.db.pool").info("pool_opened", max_size=10)
+        return EvalCase(
+            key=key or "promoted-812",
+            question=DAY_RATE,
+            category="mihail_related",
+            expected_doc_ids=tuple(expected_docs),
+        )
+
+    monkeypatch.setattr(promote, "promote", promoted)
+    return calls
+
+
+def test_promote_case_prints_the_case_and_then_what_to_do_with_it(
+    promoting: list[dict[str, object]],
+) -> None:
+    code, output = _invoke("promote-case", "812", "--expected-doc", "services")
+
+    assert code == 0, output
+    assert promoting == [{"id": 812, "docs": ["services"], "key": None, "history": False}]
+    # The case is the first thing printed. The stand-in logged a line at INFO, as the
+    # pool does: the command runs at WARNING so that no such line comes before it, and
+    # all of the output can be pasted.
+    assert output.startswith("  - key: promoted-812\n")
+    assert "pool_opened" not in output
+    assert f"    question: {DAY_RATE}\n" in output
+    assert "    expected_doc_ids:\n    - services\n" in output
+    # Everything after the case is a comment, so the output can be pasted whole.
+    after = output[output.index("# One case") :]
+    assert all(line.startswith("#") for line in after.splitlines())
+    assert "to go under `cases:` in datasets/promoted.yaml" in after
+
+
+def test_every_flag_of_promote_case_reaches_the_function(
+    promoting: list[dict[str, object]],
+) -> None:
+    code, output = _invoke(
+        "promote-case",
+        "812",
+        "--expected-doc",
+        "services",
+        "--expected-doc",
+        "faq",
+        "--key",
+        "day-rate-pricing",
+        "--with-history",
+    )
+
+    assert code == 0, output
+    assert promoting == [
+        {"id": 812, "docs": ["services", "faq"], "key": "day-rate-pricing", "history": True}
+    ]
+    assert "  - key: day-rate-pricing\n" in output
+
+
+def test_promote_case_without_a_document_is_a_usage_error(
+    promoting: list[dict[str, object]],
+) -> None:
+    """A case promoted here names the article written to answer it. Typer refuses the
+    command before anything is read: exit code 2, which is a usage error's."""
+    code, output = _invoke("promote-case", "812")
+
+    assert code == 2
+    assert "--expected-doc" in output
+    assert promoting == []
+
+
+def test_a_promotion_that_is_refused_prints_no_case(monkeypatch: pytest.MonkeyPatch) -> None:
+    async def refused(  # ruff: ignore[unused-async]
+        message_id: int, *, expected_docs: list[str], key: str | None, with_history: bool
+    ) -> EvalCase:
+        asked = (expected_docs, key, with_history)
+        raise AnalyticsError(f"No answered question has the id {message_id} {asked}.")
+
+    monkeypatch.setattr(promote, "promote", refused)
+
+    code, output = _invoke("promote-case", "999", "--expected-doc", "services")
+
+    assert code == 1
+    assert "No answered question has the id 999" in output
+    assert "- key:" not in output
+    assert "# One case" not in output

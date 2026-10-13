@@ -299,8 +299,12 @@ async def delete_older_than(cutoff: dt.datetime) -> Purged:
     - ``reply_to_id`` cascades, so an answer goes with its question even when it
       was written a few seconds on the right side of the cutoff. Half a turn is not
       worth keeping.
-    - ``eval_cases.source_message_id`` is ``on delete set null``, so a question
-      promoted into the eval dataset survives the conversation it came from.
+
+    No other foreign key points at a message. ``content_gaps.example_message_ids``
+    holds ids that are not one: Postgres has no foreign keys from the elements of an
+    array, and an id whose message has gone simply finds nothing. A question promoted
+    into an eval case is not in the database at all: ``analytics promote-case`` prints
+    it, and it is kept in the repository.
 
     The counts are the rows each statement matched; rows removed by a cascade are
     not in them.

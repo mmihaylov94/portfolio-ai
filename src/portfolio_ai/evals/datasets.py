@@ -44,6 +44,13 @@ from portfolio_ai.exceptions import EvalError
 # root, like every other command in this project.
 DATASETS_DIR = Path("datasets")
 
+# The one dataset that is never run. `analytics promote-case` prints a visitor's
+# question as a case, and the cases wait in datasets/promoted.yaml until the next
+# golden dataset takes them in. It is a dataset so that `check` and the unit tests
+# read it like any other; it is never run because a complete run would freeze it,
+# and a file that exists to be added to cannot be frozen.
+HOLDING = "promoted"
+
 # "threadline-stack": lower-case words joined by hyphens, short enough to read in a
 # report column.
 Key = Annotated[str, StringConstraints(pattern=r"^[a-z0-9]+(?:-[a-z0-9]+)*$", max_length=60)]
@@ -173,6 +180,13 @@ def load(path: Path) -> Dataset:
         raw = strict_yaml.load(path.read_text(encoding="utf-8"))
     except OSError as exc:
         raise EvalError(f"Cannot read {path}: {exc.strerror or exc}") from exc
+    except UnicodeDecodeError as exc:
+        # A file that is not UTF-8. Most likely one made by redirecting a command's
+        # output in Windows PowerShell, which writes UTF-16 whatever the command wrote.
+        raise EvalError(
+            f"{path} is not UTF-8 text. If it came from redirecting a command in Windows "
+            "PowerShell, redirect in Command Prompt instead, or copy from the terminal."
+        ) from exc
     except yaml.YAMLError as exc:
         raise EvalError(f"{path} is not valid YAML: {exc}") from exc
 

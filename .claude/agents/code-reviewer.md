@@ -347,6 +347,29 @@ Look for these first; each one has cost real time here.
 - "Seven words" is a count. `len(label.split())`.
 - Nothing that calls a model in a loop over stored rows is bounded by the daily spending limit.
   Look for its own limit, and for a quadratic step beside it.
+- A helper tested by calling the helper says nothing about the command meant to call it.
+  Delete the call and run the test; drive the command with `CliRunner(charset=...)` and read
+  `stdout_bytes`.
+- UTF-8 written by Python is not UTF-8 in the file: Windows PowerShell 5.1 decodes a program's
+  output with the console's code page before `>` or `|`, and writes UTF-16. Reconfiguring
+  stdout does not help. Say which shells a redirect is right in.
+- PyYAML reads U+0085 as a line break and folds it. A round-trip claim is fuzzed over
+  everything the validator lets in, not a dozen chosen strings.
+- `TextIOWrapper.reconfigure(encoding=...)` puts `errors` back to `strict` unless it is given
+  too.
+- A test with no stand-in "so that nothing is read" hangs when the property breaks. Put in a
+  stand-in that raises, and give a mutation run a time limit.
+- pydantic quotes the failing field's value, not every value: `X not in str(error)` for
+  another field's value cannot fail.
+- `model_copy(update=...)` validates nothing; `dataclasses.replace` runs `__init__`.
+- "Months later" is two commit dates subtracted.
+- `drop column` takes every index and constraint the column is part of, multi-column ones
+  too.
+- A rule that keeps visitors' words out of one place (the email) is checked against every
+  later feature that takes them somewhere else, and against the sentence visitors are shown:
+  the chat's notice and the assistant's article say 90 days.
+- A sentence written from a reviewer's finding is checked against the finding's own output:
+  "six letters of Cyrillic and box drawing" was three Cyrillic letters.
 
 When a finding is a new kind of mistake, suggest a one-line entry for this list.
 

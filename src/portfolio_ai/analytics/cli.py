@@ -9,15 +9,14 @@
     refresh-gaps [--dry-run]     work the content gaps out again; prints no question
     gaps [--status open]         the writing queue, with example questions; for a terminal
     gap-status 7 written --doc faq    mark a gap written, wont_fix or open again
+    promote-case 812 --expected-doc faq    a visitor's question as an eval case, printed
     seed [--clear] [--dry-run]   invented conversations, into the development database only
 
-``report`` and ``gaps`` quote what visitors typed. They are for a person at a
-terminal and must never be put in the crontab: under supercronic a command's output
-is the container's log, and nothing a visitor types goes into a log. ``digest`` is
-the one that is scheduled; it refreshes the gaps and carries the counts and the
-gaps' names, without the words.
-
-``promote-case`` is the rest of build step 7.
+``report``, ``gaps`` and ``promote-case`` quote what visitors typed. They are for a
+person at a terminal and must never be put in the crontab: under supercronic a
+command's output is the container's log, and nothing a visitor types goes into a
+log. ``digest`` is the one that is scheduled; it refreshes the gaps and carries the
+counts and the gaps' names, without the words.
 """
 
 import io
@@ -31,7 +30,7 @@ import typer
 
 from portfolio_ai.analytics import digest as digests
 from portfolio_ai.analytics import gaps as gap_refresh
-from portfolio_ai.analytics import mail, retention, seed
+from portfolio_ai.analytics import mail, promote, retention, seed
 from portfolio_ai.analytics import report as reports
 from portfolio_ai.analytics.retention import RetentionReport
 from portfolio_ai.analytics.seed import InventedTraffic, Played, SeedReport
@@ -298,7 +297,9 @@ def show_gaps(
     ] = GapFilter.OPEN,
 ) -> None:
     """The writing queue, most asked first. Quotes visitors: terminal only."""
-    found: list[tuple[analytics_db.Gap, list[str]]] = []
+    # Each gap with up to three of its example questions, as (id, text): the id is
+    # what `promote-case` takes once the article is written.
+    found: list[tuple[analytics_db.Gap, list[tuple[int, str]]]] = []
 
     async def _run() -> None:
         try:
@@ -311,7 +312,9 @@ def show_gaps(
                 [i for gap in listed for i in gap.example_message_ids]
             )
             for gap in listed:
-                found.append((gap, [kept[i] for i in gap.example_message_ids if i in kept][:3]))
+                found.append(
+                    (gap, [(i, kept[i]) for i in gap.example_message_ids if i in kept][:3])
+                )
         finally:
             await _shutdown()
 
@@ -333,8 +336,8 @@ def show_gaps(
         # closed it. A gap decided against is expected to go on being asked.
         if gap.status == "written" and gap.failed_since_resolved:
             typer.echo("    asked again, and unanswered, since then")
-        for example in examples:
-            typer.echo(f"      - {' '.join(example.split())[:160]}")
+        for question_id, example in examples:
+            typer.echo(f"      - #{question_id}  {' '.join(example.split())[:160]}")
     raise typer.Exit(code=code)
 
 
@@ -378,6 +381,74 @@ def set_gap_status(
     code = run_async(_run, log_level="WARNING")
     if code == 0:
         typer.echo(f"Gap {gap_id} is now {status.value}" + (f", closed by {doc}." if doc else "."))
+    raise typer.Exit(code=code)
+
+
+# --- promote-case ---------------------------------------------------------------
+
+
+def _utf8_output() -> None:
+    """Write this command's output as UTF-8 bytes, whatever the console's encoding.
+
+    What `promote-case` prints is on its way into a YAML file in the repository,
+    which is UTF-8. On Windows, output redirected to a file is otherwise written in
+    the ANSI code page, and the callback above then prints "?" for every character
+    that page lacks. In a report that is a blemish. In a case about to be committed
+    it is a question quietly changed, and one saved in the wrong encoding besides.
+    An interactive console and a Linux container are UTF-8 already, so there this
+    changes nothing.
+
+    This decides the bytes Python writes, and no more. Command Prompt's `>` and
+    bash's put those bytes in the file as they are. Windows PowerShell's `>` and `|`
+    do not: it decodes a program's output with the console's own code page and
+    writes the result out again as UTF-16, so the file holds other characters, and
+    nothing here can prevent it. In PowerShell, copy the case from the terminal.
+
+    `errors` is given again because `reconfigure(encoding=...)` puts it back to
+    "strict" when it is left out, which would undo the callback's setting.
+    """
+    if isinstance(sys.stdout, io.TextIOWrapper):
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+
+
+@app.command("promote-case")
+def promote_case(
+    message_id: Annotated[
+        int, typer.Argument(help="A question's number, as `report` and `gaps` print it.")
+    ],
+    expected_doc: Annotated[
+        list[str],
+        typer.Option(
+            "--expected-doc", help="The doc_id of an article that answers it. Repeatable."
+        ),
+    ],
+    key: Annotated[
+        str | None,
+        typer.Option("--key", help="A name for the case: lower-case-with-hyphens."),
+    ] = None,
+    with_history: Annotated[
+        bool,
+        typer.Option("--with-history", help="Include the conversation before the question."),
+    ] = False,
+) -> None:
+    """Print a visitor's question as an eval case. Quotes visitors: terminal only."""
+    # A list with no default is how Typer is told an option is required: it refuses
+    # the command, with a usage error, before any of this runs.
+    printed: list[str] = []
+
+    async def _run() -> None:
+        try:
+            case = await promote.promote(
+                message_id, expected_docs=expected_doc, key=key, with_history=with_history
+            )
+            printed.extend([promote.as_yaml(case), promote.what_to_do(case)])
+        finally:
+            await _shutdown()
+
+    code = run_async(_run, log_level="WARNING")
+    _utf8_output()
+    for text in printed:
+        typer.echo(text)
     raise typer.Exit(code=code)
 
 

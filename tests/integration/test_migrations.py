@@ -66,7 +66,7 @@ async def test_alembic_recorded_the_latest_revision() -> None:
     # should not contain the pattern.
     rows = await _fetch_all("select version_num from alembic_version")
 
-    assert [row["version_num"] for row in rows] == ["0006"]
+    assert [row["version_num"] for row in rows] == ["0007"]
 
 
 async def test_chunks_cascade_when_a_document_is_deleted() -> None:
@@ -211,3 +211,63 @@ def test_the_content_gaps_migration_goes_down_and_comes_back(test_schema: str) -
         command.upgrade(config, "head")
 
     assert "example_message_ids" in _gap_columns(test_schema)
+
+
+# --- 0007: an eval case no longer points at a message ---------------------------------
+
+
+def _eval_case_columns(schema: str) -> set[str]:
+    with psycopg.connect(get_settings().database_url) as conn, conn.cursor() as cur:
+        cur.execute(
+            "select column_name from information_schema.columns "
+            "where table_schema = %s and table_name = 'eval_cases'",
+            (schema,),
+        )
+        return {name for (name,) in cur.fetchall()}
+
+
+def _references_messages(schema: str) -> list[tuple[str, str]]:
+    """The foreign keys from eval_cases to chat_messages: each constraint's name and
+    what it does when the message is deleted. In pg_constraint, ``confdeltype`` is one
+    letter: ``n`` for set null, ``c`` for cascade, ``a`` for no action."""
+    with psycopg.connect(get_settings().database_url) as conn, conn.cursor() as cur:
+        cur.execute(
+            """
+            select c.conname, c.confdeltype::text
+            from pg_constraint c
+            join pg_class child on child.oid = c.conrelid
+            join pg_class parent on parent.oid = c.confrelid
+            join pg_namespace n on n.oid = child.relnamespace
+            where c.contype = 'f' and n.nspname = %s
+              and child.relname = 'eval_cases' and parent.relname = 'chat_messages'
+            """,
+            (schema,),
+        )
+        return [(str(name), str(action)) for name, action in cur.fetchall()]
+
+
+def test_an_eval_case_has_no_column_for_the_message_it_came_from(test_schema: str) -> None:
+    """It could never be filled: eval cases are stored where evals run, and visitors'
+    messages are in another database. The constraint went with the column."""
+    assert "source_message_id" not in _eval_case_columns(test_schema)
+    assert _references_messages(test_schema) == []
+
+
+def test_the_migration_that_drops_it_goes_down_and_comes_back(test_schema: str) -> None:
+    """Down to 0006 the column is back as 0003 declared it, set to null when its
+    message is deleted and not cascading: the difference lesson 7 is about."""
+    root = Path(__file__).resolve().parents[2]
+    config = Config(root / "alembic.ini")
+    config.set_main_option("script_location", str(root / "migrations"))
+
+    command.downgrade(config, "0006")
+    try:
+        assert "source_message_id" in _eval_case_columns(test_schema)
+        [(_, on_delete)] = _references_messages(test_schema)
+        assert on_delete == "n", "on delete set null"
+    finally:
+        # Whatever the assertions said: every test after this one needs the schema
+        # back at head.
+        command.upgrade(config, "head")
+
+    assert "source_message_id" not in _eval_case_columns(test_schema)

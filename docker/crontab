@@ -46,8 +46,9 @@
 # `digest_skipped` and sends nothing.
 30 5 * * 1   python -m portfolio_ai.analytics digest
 
-# Never schedule `python -m portfolio_ai.analytics report`, or `gaps`. They print
-# what visitors typed, and everything a job here prints becomes this container's log.
+# Never schedule `python -m portfolio_ai.analytics report`, `gaps` or `promote-case`.
+# They print what visitors typed, and everything a job here prints becomes this
+# container's log.
 
 # Retention sweep. Chat messages and feedback older than CHAT_RETENTION_DAYS are
 # deleted, and so are sessions nobody has come back to; content gaps, aggregates
