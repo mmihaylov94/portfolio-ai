@@ -90,7 +90,7 @@ def _check_one(path: Path, root: Path, seen_doc_ids: dict[str, str]) -> list[Fin
     findings.extend(_check_dates(relative, meta))
     findings.extend(_check_structure(relative, body))
     findings.extend(_check_classifier_knows(relative, meta))
-    findings.extend(_check_names_no_model(relative, body))
+    findings.extend(_check_names_no_model(relative, meta, body))
 
     return findings
 
@@ -171,7 +171,7 @@ def _check_classifier_knows(relative: str, meta: DocumentMeta) -> list[Finding]:
     ]
 
 
-def _check_names_no_model(relative: str, body: str) -> list[Finding]:
+def _check_names_no_model(relative: str, meta: DocumentMeta, body: str) -> list[Finding]:
     """An article that names a model goes stale with the next one, and takes a test with it.
 
     The eval cases are written from these articles. While the assistant's own article
@@ -183,8 +183,11 @@ def _check_names_no_model(relative: str, body: str) -> list[Finding]:
 
     A warning, not an error. The article indexes fine, and a name can be right to
     write, in an article about work done with one particular model. The author decides.
+
+    The title is searched with the body. It is not in the body, and it is shown to the
+    model with every passage of the article, so it states whatever it states.
     """
-    named = model_names(body)
+    named = model_names(f"{meta.title}\n{body}")
     if not named:
         return []
 

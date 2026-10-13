@@ -9,8 +9,8 @@ cutover happened on 2026-10-09, and the site's chat runs on this service. golden
 baseline followed the same day. On 2026-10-10 the chat prompt, the eval judge and the model that
 writes the answers changed, each measured (docs/EVALS.md), and the model change was deployed.
 On 2026-10-13 the knowledge base stopped naming its models and golden_v3 replaced golden_v2, so
-that a change of model needs no new dataset; its baseline is still to run. n8n's workflows are
-retired after a week of watching; then step 7.
+that a change of model needs no new dataset; its baseline, `v3-baseline`, was run the same
+day. n8n's workflows are retired after a week of watching; then step 7.
 **Last updated:** 2026-10-13
 
 ---
@@ -464,7 +464,8 @@ ai_assistant/
 │       ├── judge.py              # the judge's brief and structured verdict
 │       ├── metrics.py            # document-level recall, precision, MRR; the rule checks
 │       ├── report.py             # a run's totals; tables and comparisons
-│       └── cli.py                # python -m portfolio_ai.evals: check | run | list | show | compare
+│       └── cli.py                # python -m portfolio_ai.evals: check | run | rejudge | list |
+│                                 #   show | compare
 ├── datasets/
 │   ├── golden_v1.yaml            # the first eval cases: frozen, kept for the runs made of it
 │   ├── golden_v2.yaml            # after the cutover: frozen too; it named the answer model
@@ -834,9 +835,10 @@ are what a lower effort saves), and cost per answer, with the judge's cost kept 
 ### Usage
 
 ```bash
-uv run python -m portfolio_ai.evals run --label v3-baseline --dry-run   # the plan; spends nothing
-uv run python -m portfolio_ai.evals run --label v3-baseline             # the settings in use, once
-uv run python -m portfolio_ai.evals run --label mini-answers --chat-model gpt-5-mini --chat-effort minimal
+uv run python -m portfolio_ai.evals run --label mini-answers \
+    --chat-model gpt-5-mini --chat-effort minimal --dry-run             # the plan; spends nothing
+uv run python -m portfolio_ai.evals run --label mini-answers \
+    --chat-model gpt-5-mini --chat-effort minimal                       # a model and its effort
 uv run python -m portfolio_ai.evals compare v3-baseline mini-answers    # a change of model, case by case
 uv run python -m portfolio_ai.evals rejudge v3-baseline --label v3-baseline-regraded   # after a new judge
 ```

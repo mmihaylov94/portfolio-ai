@@ -3,11 +3,11 @@
 ::
 
     check datasets/golden_v3.yaml           validate a dataset file; no database, no network
-    run --dataset golden_v3 --label baseline [--dry-run] [knobs]
-    rejudge baseline --label baseline-2     a stored run's answers, graded by the judge again
+    run --label my-run [--dry-run] [knobs]  golden_v3 unless --dataset names another
+    rejudge v3-baseline --label regraded    a stored run's answers, graded by the judge again
     list                                    every run so far
-    show baseline [--failures]              one run, case by case
-    compare baseline effort-low             two runs side by side, and what changed
+    show v3-baseline [--failures]           one run, case by case
+    compare v3-baseline my-run              two runs side by side, and what changed
 
 Local only. A run spends money and writes to the eval tables, and none of that
 belongs in production: the evals measure the code and the knowledge base, which are

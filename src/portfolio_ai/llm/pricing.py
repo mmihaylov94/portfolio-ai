@@ -66,33 +66,39 @@ PRICES: dict[str, ModelPrice] = {
 }
 
 # A model's name as it appears in running text: every name in the table above, and
-# anything shaped like an OpenAI chat model's ("gpt-7", "gpt-4o-mini", a dated
+# any name of the form "gpt-<number>..." ("gpt-7", "gpt-4o-mini", a dated
 # "gpt-6-luna-2026-09-15"). Two things look for one, and for the same reason: the
 # article checker (ingestion/validate.py) and the test that keeps model names out of
 # the eval cases. Neither the knowledge base nor a case may name what the evals exist
 # to compare, or the first change of model makes both false (docs/EVALS.md).
 #
 # After "gpt-" come digits, any letters written straight against them ("4o"), and then
-# pieces that are each a dot or a hyphen followed by word characters. So the full stop
-# that ends a sentence is not taken for part of the name. The lookbehind keeps
-# "chatgpt-5" out. The lookahead belongs to the table's names alone, which are not
-# all of that shape: it stops "text-embedding-3-small" matching inside a longer word.
+# pieces that are each a dot or a hyphen followed by letters or digits. So the full
+# stop that ends a sentence is not taken for part of the name. The lookbehinds keep
+# "chatgpt-5" and "non-gpt-5" out. The lookaheads belong to the table's names alone,
+# which are not all of that shape: they stop "text-embedding-3-small" matching inside
+# "text-embedding-3-smaller" or "text-embedding-3-small-v2".
 #
-# This is a net under a rule, and not the rule. It knows OpenAI's naming and this
-# project's price table. It reports "gpt-5-based" whole, because a hyphenated word
-# cannot be told from a name. And it does not know a nickname ("Luna"), a name written
-# without its hyphen ("GPT 5"), or another vendor's models.
+# This is a net under a rule, and not the rule. It reports "gpt-5-based" whole, because
+# a hyphenated word cannot be told from a name. And it does not know a nickname
+# ("Luna"), a name written without its hyphen ("GPT 5"), a name that does not start
+# "gpt-" and a number ("o3", "gpt-image-1"), or another vendor's models.
+#
+# _ALNUM is a letter or a digit. \w would do, but for the underscore it also takes,
+# which Markdown uses for emphasis: "_gpt-5-mini_" has to be found, and reported
+# without its underscores.
+_ALNUM = r"[^\W_]"
 MODEL_NAME = re.compile(
-    r"(?<![\w-])(?:gpt-\d+\w*(?:[.-]\w+)*|(?:"
+    rf"(?<!{_ALNUM})(?<!-)(?:gpt-\d+{_ALNUM}*(?:[.-]{_ALNUM}+)*|(?:"
     + "|".join(re.escape(name) for name in PRICES)
-    + r")(?![\w-]))",
+    + rf")(?!{_ALNUM})(?!-))",
     re.IGNORECASE,
 )
 
-# A model writes a name with non-breaking hyphens (U+2011) as readily as with plain
-# ones, and a name copied out of an answer arrives that way. Folded before the search,
-# as evals/metrics.py folds them for the phrase rules.
-_AS_TYPED = str.maketrans({"\N{NON-BREAKING HYPHEN}": "-", "\N{NO-BREAK SPACE}": " "})
+# A model writes a name with typographic hyphens as readily as with plain ones, and a
+# name copied out of an answer arrives that way. These are the two hyphens
+# evals/metrics.py folds for the phrase rules, folded here before the search.
+_AS_TYPED = str.maketrans({"\N{HYPHEN}": "-", "\N{NON-BREAKING HYPHEN}": "-"})
 
 
 def model_names(text: str) -> list[str]:

@@ -256,6 +256,20 @@ Look for these first; each one has cost real time here.
   `expected_doc_ids` by clause, not by article.
 - "Indexed" can be made "current": the dry run's fingerprint is a hash over each document's
   id and text, so it can be computed from the pushed commit and compared.
+- A count and the average it explains need one denominator: style was counted over 52
+  knowledge-base answers beside a mean over 56 graded ones.
+- "In every run" is a count over runs. Check the ones another judge graded, and the `--only`
+  runs that never asked the case.
+- `\w` includes the underscore, so a `(?<!\w)` lookbehind hides a word in Markdown
+  `_emphasis_`.
+- An article states what its frontmatter states: the title reaches the model with every
+  passage, and a check of the body alone misses it.
+- An image is a file as well as a picture. Read its metadata chunks, and treat text in its
+  pixels as copy that goes stale.
+- Staged deletions, an unstaged edit and untracked files make three different commits. Read
+  both columns of `git status` before committing a change that renames files.
+- "Each" and "one" in a summary of rationales are counts too: read every rationale the
+  sentence covers before writing it.
 
 When a finding is a new kind of mistake, suggest a one-line entry for this list.
 

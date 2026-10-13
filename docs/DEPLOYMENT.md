@@ -973,7 +973,8 @@ starts. So the `.env` changes first:
    `knowledgebase/projects/portfolio-ai-assistant.md` in the portfolio repository said
    `gpt-5-mini` wrote the answers. It names no model since 2026-10-13, so a change of model is
    no longer a change to the knowledge base (docs/EVALS.md, "golden_v3"). The project card's
-   image carried the name too, and is to be replaced by one without it.
+   image carried the name too. It was replaced on 2026-10-13 by one that names no model, under
+   a new file name, so that no cached copy of the old picture is served.
 
 To go back to the old model alone, set `CHAT_MODEL=gpt-5-mini` and
 `CHAT_REASONING_EFFORT=minimal` in `.env` and run `docker compose up -d`. No rollback of the

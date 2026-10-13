@@ -234,14 +234,18 @@ def _saying(sentence: str) -> str:
         ("It uses GPT-5 mini for answers.", "gpt-5"),
         # Letters written straight against the number.
         ("An earlier draft used gpt-4o-mini.", "gpt-4o-mini"),
-        # With the non-breaking hyphens a model writes, which a name copied out of an
+        # With the typographic hyphens a model writes, which a name copied out of an
         # answer still has. \N{...} names the character, so that it shows in the source.
         (
             "It runs on gpt\N{NON-BREAKING HYPHEN}5\N{NON-BREAKING HYPHEN}mini.",
             "gpt-5-mini",
         ),
+        ("It runs on gpt\N{HYPHEN}5\N{HYPHEN}mini.", "gpt-5-mini"),
         # At the start of a line, with nothing before it but the line break.
         ("The models, one to a line:\ngpt-6-luna\nand an embedding model.", "gpt-6-luna"),
+        # In Markdown's underscore emphasis. An underscore counts as a letter to \w, so
+        # a pattern written with \w saw this name as the middle of a longer word.
+        ("It uses _gpt-5-mini_ for answers.", "gpt-5-mini"),
     ],
     ids=[
         "answers",
@@ -252,7 +256,9 @@ def _saying(sentence: str) -> str:
         "as-a-name",
         "letters-on-the-number",
         "non-breaking-hyphens",
+        "typographic-hyphens",
         "start-of-a-line",
+        "underscore-emphasis",
     ],
 )
 def test_an_article_that_names_a_model_warns_but_passes(
@@ -281,6 +287,17 @@ def test_two_models_named_in_one_article_are_one_warning_naming_each_once(corpus
     assert "1 warning(s)" in result.output
 
 
+def test_a_model_named_in_the_title_is_found(corpus: Path) -> None:
+    """The title is frontmatter, not body, and it is shown to the model with every
+    passage of the article. A check of the body alone let it through."""
+    write(corpus, "models.md", GOOD.format(doc_id="models", title="How gpt-6-luna answers"))
+
+    result = runner.invoke(app, [str(corpus)])
+
+    assert result.exit_code == 0
+    assert "names a model (gpt-6-luna)" in result.output
+
+
 @pytest.mark.parametrize(
     "sentence",
     [
@@ -290,6 +307,11 @@ def test_two_models_named_in_one_article_are_one_warning_naming_each_once(corpus
         "PostgreSQL with pgvector, queried through psycopg 3.",
         # A name from the price table inside a longer word is not that name.
         "Nothing here is called text-embedding-3-smaller or my-text-embedding-3-small.",
+        # Nor with more hyphenated on after it, nor "gpt-5" with something hyphenated on
+        # before it.
+        "It is not text-embedding-3-small-v2, and a non-gpt-5 model is no name either.",
+        # What the pattern is documented not to know.
+        "Luna writes the answers; o3 and gpt-image-1 do not, and nor does GPT5.",
     ],
     ids=[
         "provider-only",
@@ -297,6 +319,8 @@ def test_two_models_named_in_one_article_are_one_warning_naming_each_once(corpus
         "says-so",
         "other-names-with-digits",
         "inside-a-longer-word",
+        "hyphenated-on",
+        "documented-as-unknown",
     ],
 )
 def test_an_article_that_names_no_model_is_not_warned_about(corpus: Path, sentence: str) -> None:

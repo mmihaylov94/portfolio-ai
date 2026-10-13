@@ -60,8 +60,9 @@ purpose, and sends a visitor who asks here.
 
 The runs the assistant has been judged by are recorded in [docs/EVALS.md](docs/EVALS.md): the
 first baseline, at the settings of the n8n version it replaced, with runs at lower reasoning
-effort beside it; the one on the knowledge base as it read after the switch; and the runs that
-chose the model in use. The current dataset's own baseline has not been run yet. Still to
+effort beside it; the one on the knowledge base as it read after the switch; the runs that
+chose the model in use; and the baseline of the current dataset, which names no model so that
+the next change of model is one run and one comparison. Still to
 build is the analytics reporting: what visitors ask and where answers fall short is captured
 already, and clustering it into content gaps and a weekly digest waits for real traffic. The
 build order is in [ARCHITECTURE.md](ARCHITECTURE.md) §12.

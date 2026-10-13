@@ -145,9 +145,10 @@ it. That is whatever `evals run` takes an option for (the models, their reasonin
 One item on that list has a check, a model's name, in two places. `portfolio-ai-validate`
 warns about one in an article, and a unit test fails on one anywhere in a case, in every
 dataset from golden_v3 on and in a draft. Both call `llm/pricing.model_names`, which knows
-every name in the price table and anything shaped like an OpenAI chat model's name, with the
-non-breaking hyphens a model writes folded first. It does not know a nickname ("Luna"), a name
-written without its hyphen, or another vendor's models. The warning does not fail the
+every name in the price table and any name of the form `gpt-<number>...`, with the typographic
+hyphens a model writes folded first and Markdown's emphasis marks left out of it. It does not
+know a nickname ("Luna"), a name written without its hyphen, a name of another form (`o3`,
+`gpt-image-1`), or another vendor's models. The warning does not fail the
 portfolio's CI, which runs the checker without `--strict`; that flag would also block a new
 project article until the classifier prompt here named it. Everything else on the list is the
 author's to keep, and a reviewer's to look for.
@@ -386,9 +387,10 @@ belongs in production.
 
 ```bash
 uv run python -m portfolio_ai.evals check datasets/golden_v3.yaml
-uv run python -m portfolio_ai.evals run --label v3-baseline --dry-run
-uv run python -m portfolio_ai.evals run --label v3-baseline
-uv run python -m portfolio_ai.evals run --label mini-answers --chat-model gpt-5-mini --chat-effort minimal
+uv run python -m portfolio_ai.evals run --label mini-answers \
+    --chat-model gpt-5-mini --chat-effort minimal --dry-run
+uv run python -m portfolio_ai.evals run --label mini-answers \
+    --chat-model gpt-5-mini --chat-effort minimal
 uv run python -m portfolio_ai.evals list
 uv run python -m portfolio_ai.evals show mini-answers --failures
 uv run python -m portfolio_ai.evals compare v3-baseline mini-answers --markdown ../compare.md
@@ -396,10 +398,11 @@ uv run python -m portfolio_ai.evals rejudge v3-baseline --label v3-baseline-regr
 ```
 
 A label is used once, and a comparison means something only when one setting differs.
-`v3-baseline` is the run of the settings in use on golden_v3. It is made once, and it has not
-been made yet ("golden_v3" in Results says what it waits for). After it, a change of model is
-the fourth line and the seventh: one run, with the effort that model takes, and one comparison.
-No article, case or baseline changes, which is what golden_v3 is for. A run costs about $0.55.
+`v3-baseline` is the stored run of the settings in use on golden_v3 ("golden_v3" in Results).
+A change of model is one run, with the effort that model takes, and one comparison against it.
+No article, case or baseline changes, which is what golden_v3 is for. A run costs about $0.55
+with `gpt-6-luna` answering and about $0.63 with `gpt-5-mini`, as in the example: the judge is
+$0.51 of either.
 
 `run` uses golden_v3 unless `--dataset` names another; golden_v1 and golden_v2 are named only
 to add to the runs already made of them. `rejudge` is for the day the judge changes ("The
@@ -1129,7 +1132,8 @@ dataset's size.
 - **Two checks**, described under "The dataset", watch for a model's name and for nothing else
   on that list.
 
-**Half of it was found by a review before the first run.** A complete run freezes a dataset,
+**Seven of the sixteen were found by a review before the first run.** A complete run freezes a
+dataset,
 so the `code-reviewer` agent read golden_v3 while it could still be changed. Nine cases had
 changed before it and sixteen after. It found the search-round limit, in the article and in
 `assistant-how`'s reference: `--max-search-rounds` is an option of `evals run`, so "up to three
@@ -1162,35 +1166,89 @@ it use?", with the provider. It does not answer "is this chat built with n8n?", 
 listed it. Five listings rest on judgement, and each of those cases' notes names the sentence
 that decided it.
 
-**What the two checks do not cover.** The name check knows OpenAI's `gpt-` names and the price
-table. It does not know a nickname ("Luna"), a name written without its hyphen, or another
-vendor's models. On an article it is a warning, and the portfolio's CI does not fail on a
+**What the two checks do not cover.** The name check knows OpenAI's `gpt-<number>` names and the
+price table. It does not know a nickname ("Luna"), a name written without its hyphen, a name
+of another form (`o3`, `gpt-image-1`), or another vendor's models. On an article it reads the
+title and the body, it is a warning, and the portfolio's CI does not fail on a
 warning. The efforts, `top_k`, the search rounds, the judge and the dataset's size have no
 check at all: the search-round limit was found by a reader.
 
-**No run of golden_v3 has been made.** Its baseline, `v3-baseline`, is the settings in use
-(`gpt-6-luna` answering, `gpt-5-mini` routing), and two things come before it:
+**The rewritten cases were tried before the freeze.** `projects-page-link` was a case no
+answer could pass, found only after golden_v2 froze. And "which model?" now has a right answer
+that is partly "not named": an answer worded "I don't have the exact model names in my
+knowledge base, but..." would be taken for a fallback by `postprocess.is_fallback`, sent without
+its sources and filed as a gap in the knowledge base that is in fact deliberate. So the four
+rewritten cases were asked five times each, with the judge, by a throwaway script that stores
+nothing and so freezes nothing ($0.22).
 
-- **The index has to be current.** The first article edit was pushed and ingested into the
-  development database on 2026-10-13 (123 chunks, fingerprint `a7316f4ee9f6`). The search-round
-  sentence changed after that, and has to be pushed and ingested as well. A dataset written
-  against edited articles has to be run against them, and the prepare step can check only that
-  each expected article is indexed. The dry run prints the fingerprint, which moves with the
-  ingest.
-- **The rewritten cases have never been answered on the new articles.** `projects-page-link`
-  was a case no answer could pass, found only after golden_v2 froze. "Which model?" now has a
-  right answer that is partly "not named", and an answer worded "I don't have the exact model
-  names in my knowledge base, but..." would be taken for a fallback by
-  `postprocess.is_fallback`: sent without its sources, and filed as a gap in the knowledge base
-  that is in fact deliberate. So the four rewritten cases are asked five times each first,
-  with the judge, from a throwaway file that freezes nothing.
+| | faithfulness | completeness | style | taken for a fallback | names a model |
+|---|---|---|---|---|---|
+| `assistant-models` | 5, all five | 3 to 4 | 5 | 0 of 5 | 0 of 5 |
+| `assistant-quality` | 5, all five | 4 to 5 | 5 | 0 of 5 | 0 of 5 |
+| `assistant-how` | 5, all five | 3 to 4 | 5 | 0 of 5 | 0 of 5 |
+| `projects-page-link` | 5, all five | 3 to 4 | 5 four times, 3 once | 0 of 5 | 0 of 5 |
+
+`projects-page-link` had scored 2 for faithfulness in all four full runs of golden_v2 graded
+by this judge. Completeness is held down by what an answer leaves out, not by anything it gets
+wrong. Each answer scored 3 or 4 gives the main point and omits between one and three details
+of a longer reference: where the models in use are listed, that Threadline has no page of its
+own, that the assistant writes its own search queries. The rubric's 3 is "the main point,
+missing a detail", and an answer held to two to four sentences does not carry every detail of
+a longer reference. The same is to be expected of any model held to that length, though only
+one was tried, so the references were left as they are.
+
+**The baseline, `v3-baseline`**, was run after that, from commit `7e62e0a`, on the index with
+both article edits (123 chunks, fingerprint `1bbe4f6a93c9`): `gpt-6-luna` at `none` answering,
+`gpt-5-mini` at `minimal` routing, chat prompt version 2, `top_k` 20 and up to three searches,
+judged by `gpt-6.1-sol` with rubric 2.
+
+| | v3-baseline |
+|---|---|
+| classification | 1.000 |
+| retrieval hit rate / recall / precision / MRR | 1.000 / 0.981 / 0.444 / 0.963 |
+| faithfulness | 4.98 |
+| completeness | 4.17 |
+| style | 4.89 |
+| declined when expected | 1.000 |
+| phrase match agrees with the judge | 1.000 |
+| cases breaking a rule | 1 |
+| first word, median / p95 | 3.2s / 4.1s |
+| whole answer, median / p95 | 3.9s / 5.2s |
+| cost per answer | $0.0006 |
+| run cost, answers + judge | $0.04 + $0.51 |
+
+- **Every route is right**, every question the knowledge base cannot answer was declined, and
+  no answerable one was.
+- **Faithfulness:** 48 of the 49 answers graded for it scored 5, and `team-leadership` 4.
+- **Completeness:** 20 answers at 5, 15 at 4 and 12 at 3, none lower. It is the score with room
+  in it, and the one a comparison of models will mostly be read on. By the judge's reasons the
+  twelve at 3 give the main point and leave out one, two or three details, four answers each.
+- **Style:** 53 of the 56 answers graded for it scored 5, and three scored 3
+  (`assistant-privacy`, `projects-page-link`, `everything`). The count is over more answers
+  than the two above because the four small-talk answers were graded for style alone.
+- **One rule broken:** `everything`, at twelve sentences. "Tell me everything" still runs long.
+- **No answer names a model**, in 62.
+- **The fallback match agrees with the judge on all 52 knowledge-base answers.** It is the
+  first run recorded with the match as widened on 2026-10-10; `luna-mini`, recorded with the
+  old one, agreed on 48 of 51.
+
+These figures are not golden_v2's to compare with: sixteen cases differ and two articles have
+changed. They are what the next change is measured against.
 
 **The stored runs.** golden_v2's six runs stay as they are. A run of golden_v3 cannot be
 compared with them. None of the runs made before 2026-10-13 can be graded again either:
-`rejudge` reads the passages back from the knowledge base, which has changed since. Until
-`v3-baseline` exists, a change of judge has nothing to re-grade.
+`rejudge` reads the passages back from the knowledge base, which has changed since. A change
+of judge re-grades `v3-baseline`, for as long as the articles stay as they are.
 
 From here a change of model is `run --label x --chat-model … --chat-effort …` and `compare
 v3-baseline x`. golden_v3 will still need a successor when the knowledge base's own facts
 change, as golden_v1 did at the cutover. That is the knowledge base moving, which a dataset
 written from it has to follow, and not this mistake again.
+
+**One note in the frozen file overstates.** `projects-page-link`'s says the judge marked every
+golden_v2 answer that placed Threadline in the projects section as unsupported. That is true
+of the four runs this judge graded; the first judge gave `v2-baseline`'s answer 4. A note is
+hashed with its case, so correcting it would take a golden_v4, which it is not worth.
+
+Spend on 2026-10-13: about $0.77. The repetitions cost $0.22 and the baseline $0.55; the three
+ingests came to a hundredth of a cent between them.

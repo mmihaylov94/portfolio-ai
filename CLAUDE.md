@@ -289,9 +289,10 @@ uv run python -m portfolio_ai.api                     # the API as production ru
 uv run python -m portfolio_ai.analytics purge --dry-run   # retention sweep, counting only
 
 uv run python -m portfolio_ai.evals check datasets/golden_v3.yaml     # no DB, no network
-uv run python -m portfolio_ai.evals run --label v3-baseline --dry-run         # the plan; spends nothing
-uv run python -m portfolio_ai.evals run --label v3-baseline                   # the settings in use, once
-uv run python -m portfolio_ai.evals run --label mini-answers --chat-model gpt-5-mini --chat-effort minimal
+uv run python -m portfolio_ai.evals run --label mini-answers \
+    --chat-model gpt-5-mini --chat-effort minimal --dry-run          # the plan; spends nothing
+uv run python -m portfolio_ai.evals run --label mini-answers \
+    --chat-model gpt-5-mini --chat-effort minimal                    # a model and its effort
 uv run python -m portfolio_ai.evals show mini-answers --failures
 uv run python -m portfolio_ai.evals compare v3-baseline mini-answers          # a change of model
 uv run python -m portfolio_ai.evals rejudge v3-baseline --label v3-baseline-regraded --dry-run   # a new judge
@@ -352,7 +353,7 @@ it compares git blob SHAs and stops.
 - **Embedding dimension changes are migrations.** Changing `EMBEDDING_DIMENSIONS` or the
   embedding model invalidates every stored vector and requires a full re-embed.
 - **Evals cost money.** A full run of the golden dataset is about $0.55, nearly all of it the
-  `gpt-6.1-sol` judge (`--no-judge` about 3 cents). Say what a run or a sweep will cost before
+  `gpt-6.1-sol` judge (`--no-judge` about 4 cents). Say what a run or a sweep will cost before
   starting it.
 - **Evals run locally, against the dev database.** `run` and `rejudge` refuse
   `ENVIRONMENT=production`. A run inherits whatever the dev `.env` sets, so read the dry run's
@@ -442,10 +443,11 @@ ARCHITECTURE.md §13).
   article named it. The change of model made the article false, and correcting it would have
   made the case false. The knowledge base now states no model, effort setting, search-round
   limit, judge or dataset size, and golden_v3 is golden_v2 with sixteen cases corrected, seven
-  of them found by the review before its first run (docs/EVALS.md). **Its baseline,
-  `v3-baseline`, has not been run.** Two things come first: the last article edit pushed and
-  ingested into the dev database, and the four rewritten cases asked a few times each from a
-  throwaway file, because nothing has answered them on the new articles yet.
+  of them found by the review before its first run (docs/EVALS.md). **`v3-baseline` is its
+  baseline, and what the next change is compared with**: the settings in use (`gpt-6-luna`
+  answering, `gpt-5-mini` routing), every route right, faithfulness 4.98, completeness 4.17,
+  style 4.89, the first word at 3.2s median and $0.0006 an answer. No answer names a model.
+  Its figures cannot be set beside golden_v2's: sixteen cases and two articles differ.
 
 **Step 6**, the front end and cutover, is in phases:
 1. the Express proxy in the portfolio repo: built, with tests, and switched on at cutover;
@@ -459,11 +461,9 @@ ARCHITECTURE.md §13).
 
 After the week of watching, analytics reporting (7). Still open from the evals:
 - "tell me everything" runs long on every model and wording tried;
-- golden_v3's baseline, `v3-baseline` (about $0.55), after the last article edit is ingested
-  locally and the rewritten cases have been tried. Nothing can be compared on golden_v3 until
-  it exists, and no earlier run can be re-graded: the knowledge base has changed under them.
-- the project card's image on the site still shows the old model's name; the owner is
-  replacing it with a screenshot that names none.
+- completeness is the score with room in it on golden_v3 (4.17): twelve answers at 3, each
+  giving the main point and leaving out one to three details of its reference. It is where a
+  comparison of models will show.
 
 Analytics reporting is last on purpose — it needs real traffic to be worth writing. The
 *capture* (feedback, `top_score`, `fallback_used`, where a conversation came from) shipped with
