@@ -117,12 +117,22 @@ class Search:
     hits: int
     top_score: float | None
     duration_ms: int
+    # Where each of those passages came from, in the same order: its article's doc_id
+    # and its section's slug. A chunk id is good only until its article is indexed
+    # again, which gives every section a new one, and an article is indexed again
+    # whenever it is edited. These two still say which article an answer was shown
+    # months later, which is what the analytics count. Recorded here because, like
+    # the score, they cannot be worked out afterwards.
+    doc_ids: list[str]
+    sections: list[str | None]
 
     def as_record(self) -> dict[str, object]:
         return {
             "name": retrieval.TOOL_NAME,
             "query": self.query,
             "chunk_ids": self.chunk_ids,
+            "doc_ids": self.doc_ids,
+            "sections": self.sections,
             "hits": self.hits,
             "top_score": self.top_score,
             "duration_ms": self.duration_ms,
@@ -286,6 +296,8 @@ async def _run_search(
             hits=result.hits,
             top_score=result.top_score,
             duration_ms=result.duration_ms,
+            doc_ids=[chunk.doc_id for chunk in result.chunks],
+            sections=[chunk.section for chunk in result.chunks],
         )
     )
     turn.chunks.extend(result.chunks)

@@ -245,6 +245,23 @@ class Settings(BaseSettings):
     # the purge off, which the purge then says loudly every night.
     chat_retention_days: int = Field(default=90, ge=0)
 
+    # --- Analytics ------------------------------------------------------------
+    # Both are provisional. They were set from invented conversations and from the
+    # eval runs' stored scores, because there were no visitors to set them from, and
+    # `analytics report` prints the two distributions they should be set again from
+    # once there are (docs/ANALYTICS.md has the figures behind each).
+    #
+    # A knowledge-base answer whose best passage scored under this found nothing
+    # close. Of 31 questions the knowledge base cannot answer (26 invented, five in
+    # the eval baseline), 23 scored under it; of 103 it can answer, five did. It errs
+    # towards listing too much: what it draws is a list a person reads.
+    low_score_threshold: float = Field(default=0.35, ge=0.0, le=1.0)
+    # Two questions in a row, in one conversation, whose embeddings are at least this
+    # alike count as one question asked again in other words. Of eight invented pairs
+    # written to be that, four reached it; of 56 other pairs, none did. It errs the
+    # other way: a pair wrongly called a rephrase says an answer failed when it had not.
+    rephrase_similarity: float = Field(default=0.60, ge=0.0, le=1.0)
+
     log_level: Literal["DEBUG", "INFO", "WARNING", "ERROR"] = "INFO"
 
     @field_validator(

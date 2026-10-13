@@ -3,8 +3,9 @@
 Context for Claude Code working in this repository. Read [ARCHITECTURE.md](ARCHITECTURE.md) for
 the full design; this file is the short version plus the working agreements.
 [docs/INGESTION.md](docs/INGESTION.md), [docs/ASSISTANT.md](docs/ASSISTANT.md),
-[docs/API.md](docs/API.md) and [docs/EVALS.md](docs/EVALS.md) walk through the code of the four
-built flows, module by module -- update them in the same change as the code they describe.
+[docs/API.md](docs/API.md), [docs/EVALS.md](docs/EVALS.md) and
+[docs/ANALYTICS.md](docs/ANALYTICS.md) walk through the code of the five flows, module by
+module -- update them in the same change as the code they describe.
 API.md also holds the contract the Express proxy has to meet in step 6.
 
 ## What this project is
@@ -118,7 +119,7 @@ learn Python and Python-for-AI properly. That changes how to work here:
 
 ```
 src/portfolio_ai/
-  config.py      logging.py
+  config.py      logging.py      strict_yaml.py (a repeated YAML key is an error)
   db/            pool, documents, chat, feedback, analytics, evals  (raw SQL lives here only)
   llm/           client, embeddings, pricing, responses (the Responses API adapter)
   ingestion/     github, frontmatter, chunking, pipeline, cli
@@ -126,7 +127,7 @@ src/portfolio_ai/
                  postprocess (link filter, fallback), memory, cli, prompts/*.md + loader
   api/           main (app + lifespan), __main__ (the server), deps (admission), turns (answers in
                  flight), security, errors, schemas, middleware, routers/
-  analytics/     retention, cli; later signals, clustering, digest
+  analytics/     retention, signals, report, seed, cli; later mail, clustering
   evals/         datasets, runner, judge, metrics, report, cli
 migrations/      datasets/      tests/unit  tests/integration      docker/
 ```
@@ -221,7 +222,10 @@ migrations/      datasets/      tests/unit  tests/integration      docker/
   `chat_messages` row. The first and the last cannot be backfilled; `fallback_used` can be
   worked out again only while the answer's text is kept. Build these in with the API, not
   later. A reply marked as a fallback is also sent without its sources, which is the one
-  place a visitor sees the signal.
+  place a visitor sees the signal. Each search also records, beside its chunk ids, the
+  `doc_id` and section slug of every passage it returned (`tool_calls`). **Count by those,
+  never by chunk id:** a chunk id is replaced whenever its article is indexed again, which is
+  every time it is edited.
 - **The feedback loop has a point:** low-score and fallback questions cluster into
   `content_gaps` rows, which become knowledge base articles, and the original question becomes
   an eval case via `analytics promote-case`. Failures turn into permanent regression tests.
@@ -297,11 +301,14 @@ uv run python -m portfolio_ai.evals show mini-answers --failures
 uv run python -m portfolio_ai.evals compare v3-baseline mini-answers          # a change of model
 uv run python -m portfolio_ai.evals rejudge v3-baseline --label v3-baseline-regraded --dry-run   # a new judge
 
-uv run analytics report --since 7d                    # digest to stdout
-uv run analytics digest                               # build + email it (Gmail SMTP)
-uv run analytics gaps --status open                   # ranked content-writing queue
-uv run analytics promote-case <message_id> --expected-doc <doc_id>
+uv run python -m portfolio_ai.analytics report --since 7d   # quotes visitors: terminal only
+uv run python -m portfolio_ai.analytics seed --dry-run      # invented chats: the plan
+uv run python -m portfolio_ai.analytics seed                # about $0.10; local only
+uv run python -m portfolio_ai.analytics seed --clear        # take them out again
 ```
+
+Still to build in step 7, as commands of the same module: `digest` (the weekly email),
+`refresh-gaps` and `gaps` (the content gaps), and `promote-case`.
 
 Production schedules live in `docker/crontab`, run by the `worker` container with
 `TZ=Europe/London`: ingest hourly on the hour, purge daily at 03:00, and -- once step 7 builds
@@ -350,6 +357,16 @@ it compares git blob SHAs and stops.
 - **No test chats through the production API.** Every turn it answers is stored. Check a
   deployment with the non-writing calls in docs/DEPLOYMENT.md §8 (health, readiness, a 401, a
   feedback 404) and check OpenAI with the terminal chat's `--no-save`.
+- **`analytics report` prints what visitors typed.** Run it in a terminal and read it there.
+  Never put it in the crontab, where its output would be the worker's log, and never paste it
+  anywhere. On the server it is `docker compose exec`, whose output goes to the terminal and
+  not to the log. What may leave the database's side is the other form,
+  `report.render(verbatim=False)`: counts and article titles, with a unit test that searches it
+  for every question, answer and comment.
+- **Invented conversations go into the development database only.** `analytics seed` refuses
+  any other `ENVIRONMENT`, its dry run included. A stored turn does not say where it came
+  from, so in production an invented one would be counted as a visitor for good. Locally they
+  are told apart by a session id starting `invented-`, and `seed --clear` removes them by it.
 - **Embedding dimension changes are migrations.** Changing `EMBEDDING_DIMENSIONS` or the
   embedding model invalidates every stored vector and requires a full re-embed.
 - **Evals cost money.** A full run of the golden dataset is about $0.55, nearly all of it the
@@ -459,12 +476,31 @@ ARCHITECTURE.md §13).
    watching follows, and then n8n's workflows are retired (steps 6 and 7 there);
 5. golden_v2 and its baseline: done on 2026-10-09.
 
-After the week of watching, analytics reporting (7). Still open from the evals:
+Still open from the evals:
 - "tell me everything" runs long on every model and wording tried;
 - completeness is the score with room in it on golden_v3 (4.17): twelve answers at 3, each
   giving the main point and leaving out one to three details of its reference. It is where a
   comparison of models will show.
 
-Analytics reporting is last on purpose — it needs real traffic to be worth writing. The
-*capture* (feedback, `top_score`, `fallback_used`, where a conversation came from) shipped with
-the API, because none of it can be reconstructed after the fact.
+**Step 7, analytics reporting, is being built in four stages, without visitors.** It was
+planned for after the site had traffic. It has none, and none is expected for months, so it is
+built against 28 invented conversations (`datasets/traffic/invented.yaml`) that `analytics seed`
+plays through the real assistant on the development database (docs/ANALYTICS.md). The
+*capture* it reads (feedback, `top_score`, `fallback_used`, where a conversation came from)
+shipped with the API, because none of it can be reconstructed after the fact.
+
+1. the report and the invented conversations: built (`analytics report`, `analytics seed`);
+2. the weekly email, with counts and gap names and nothing a visitor typed: not built;
+3. content gaps, clustered from the questions that failed: not built;
+4. `promote-case`, which prints a YAML case for a holding file (`datasets/promoted.yaml`,
+   checked and never run) until the next golden dataset: not built.
+
+What the first seeding showed (2026-10-13):
+- **`fallback_used` is a floor.** On 26 new questions the knowledge base cannot answer it was
+  set on 11. The other 15 answers declined in words the phrase match does not know. The
+  match's 41 of 43 on the eval answers was over the same handful of questions asked in every
+  run.
+- **`LOW_SCORE_THRESHOLD` (0.35) and `REPHRASE_SIMILARITY` (0.60) are provisional**, set from
+  invented questions and eval cases. Every report ends with the two distributions to set them
+  again from. A low score is not a bad answer: "Who is Mihail anyway?" scores 0.23 and is
+  answered well.

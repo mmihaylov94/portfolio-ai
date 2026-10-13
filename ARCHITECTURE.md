@@ -164,7 +164,7 @@ correcting either way — and it is a neat illustration of the drift deliverable
 | DB access | **psycopg 3 async** with a connection pool; raw SQL | SQL is part of what is being learned here; an ORM hides the vector query |
 | Migrations | **Alembic** against a dedicated `portfolio_rag` schema | Old n8n tables untouched, so both can run in parallel during cutover |
 | Evals | **Custom harness + LLM-as-judge** | Control over metrics; swapping models is the whole point |
-| Analytics | **SQL views + a CLI digest**, no dashboard | Right-sized for the traffic; see §10 |
+| Analytics | **SQL queries + a CLI report and digest**, no dashboard | Right-sized for the traffic; see §10 |
 | Scheduling | **Dedicated `ingest` container** running supercronic | Isolated from the API, own logs, `docker compose run` for manual runs |
 | Browser → API path | **Existing Express API proxies to FastAPI** | Smallest diff; reuses working rate-limit and reCAPTCHA code; no change to how the site renders or deploys; keeps FastAPI off the public internet |
 | Chat UI | **New Vue component, redesigned from scratch** | `@n8n/chat` cannot do feedback, citations or a custom endpoint. No obligation to reproduce its UX |
@@ -299,8 +299,11 @@ complete, with `reply_to_id` pointing from the answer back to its question. Memo
 `MEMORY_WINDOW_TURNS` exchanges (default 25, so 50 rows), which is what n8n's setting meant too.
 `llm_calls` holds one record per OpenAI call behind the answer -- step, model, prompt version,
 tokens, latency, cost -- so "what did this cost" and "where did the time go" are both answerable
-afterwards. `first_token_ms` is how long the visitor waited for words, as opposed to `latency_ms`
-for the whole answer; with streaming those are very different numbers.
+afterwards. `tool_calls` holds one record per search: the query, the best score, and the
+passages it returned, best first, as chunk ids with the `doc_id` and section slug of each
+beside them. The analytics count by the last two, because a chunk id changes every time its
+article is indexed again (§10). `first_token_ms` is how long the visitor waited for words, as
+opposed to `latency_ms` for the whole answer; with streaming those are very different numbers.
 `session_id` is an opaque string minted by the browser (`crypto.randomUUID()` in `localStorage`).
 Existing `@n8n/chat` conversations are **not** migrated — a clean break was accepted, so the old
 `mihaylov_chat_histories` table is simply dropped when n8n's workflows are retired.
@@ -371,11 +374,14 @@ eval_results  (id, run_id fk, case_id fk, answer, classification,
                error)
 ```
 
-`eval_cases.source_message_id` is the join that closes the loop: a real question that retrieved
-badly becomes a permanent regression test once the missing content is written. Migration 0003 laid
-these tables out; 0005 added what building the harness showed they lacked (keys, history, the
-expected fallback, accepted routes, unique labels, first-word time, the assistant's signals, and
-every OpenAI call behind a result with its reasoning tokens).
+`eval_cases.source_message_id` was meant as the join that closes the loop: a real question that
+retrieved badly becomes a permanent regression test once the missing content is written. It
+cannot be filled. Evals run only against the development database and visitors' messages are
+only in production, so `promote-case` prints the case instead (§10), and the column goes when
+that command is built. Migration 0003 laid these tables out; 0005 added what building the
+harness showed they lacked (keys, history, the expected fallback, accepted routes, unique
+labels, first-word time, the assistant's signals, and every OpenAI call behind a result with
+its reasoning tokens).
 
 ---
 
@@ -402,6 +408,7 @@ ai_assistant/
 │   ├── config.py                 # Settings (pydantic-settings), single source of env truth
 │   ├── logging.py                # structlog JSON logging
 │   ├── exceptions.py             # PortfolioAIError root + the errors we raise on purpose
+│   ├── strict_yaml.py            # YAML in which a key written twice is an error
 │   ├── db/
 │   │   ├── pool.py               # async psycopg pool lifecycle
 │   │   ├── documents.py          # upsert doc, replace chunks, purge stale
@@ -437,7 +444,7 @@ ai_assistant/
 │   │       ├── out_of_scope_reply.md
 │   │       ├── daily_limit_reply.md  # what the API says once the day's spend cap is reached
 │   │       ├── judge.md          # the eval judge's rubric (step 5)
-│   │       └── cluster_namer.md  # names question clusters for the digest (step 7)
+│   │       └── gap_label.md      # names a content gap (step 7; not built yet)
 │   ├── api/
 │   │   ├── main.py               # app factory, lifespan (startup checks, shutdown order)
 │   │   ├── __main__.py           # python -m portfolio_ai.api: uvicorn, JSON logs, event loop
@@ -452,12 +459,12 @@ ai_assistant/
 │   │       ├── feedback.py       # POST /v1/messages/{id}/feedback
 │   │       └── health.py         # GET /healthz, /readyz
 │   ├── analytics/
-│   │   ├── signals.py            # gap detection, rephrase detection, dead-content scan
-│   │   ├── clustering.py         # embed + cluster questions, name the clusters
-│   │   ├── digest.py             # build the weekly report
-│   │   ├── mail.py               # smtplib + Gmail app password; falls back to disk on failure
+│   │   ├── signals.py            # cosine similarity, questions asked again, medians, bands
+│   │   ├── report.py             # the window, the report as data, and its two forms as text
+│   │   ├── seed.py               # invented conversations, into the development database only
 │   │   ├── retention.py          # the 90-day purge
-│   │   └── cli.py                # report | digest | refresh-gaps | gaps | promote-case | purge
+│   │   └── cli.py                # purge | report | seed; to come: digest, refresh-gaps, gaps,
+│   │                             #   promote-case, with mail.py and clustering.py
 │   └── evals/
 │       ├── datasets.py           # the YAML format, its validation, the hash that freezes it
 │       ├── runner.py             # prepare (every check) and execute (the run), a few cases at once
@@ -469,7 +476,9 @@ ai_assistant/
 ├── datasets/
 │   ├── golden_v1.yaml            # the first eval cases: frozen, kept for the runs made of it
 │   ├── golden_v2.yaml            # after the cutover: frozen too; it named the answer model
-│   └── golden_v3.yaml            # the current ones, and the default of `evals run`
+│   ├── golden_v3.yaml            # the current ones, and the default of `evals run`
+│   └── traffic/
+│       └── invented.yaml         # invented conversations for `analytics seed`; not an eval dataset
 └── tests/
     ├── unit/
     └── integration/              # real Postgres, throwaway schema
@@ -868,46 +877,75 @@ negative. The automatic signals carry far more information.
 
 | Signal | How it is computed | What it tells you |
 |---|---|---|
-| **Low top score** | `chat_messages.top_score` below a threshold | The question found nothing close. **The primary content-gap signal.** |
-| **Fallback rate** | `fallback_used = true` | Questions the docs should answer and do not — a ready-made writing list |
-| **Rephrase-and-retry** | Two questions in one session with cosine similarity above a threshold, within a short window | Implicit "that answer was bad". Far more plentiful than thumbs-down |
-| **Question clusters** | Embed all questions, cluster, name each cluster with an LLM | The ranked list of what people actually care about |
-| **Dead content** | Chunks never in any `retrieved_chunk_ids` | Content nobody reaches — wrong topic, or badly titled |
-| **Classification errors** | In-scope questions routed `out_of_scope` | Lost conversations; a classifier prompt bug |
+| **Fallback** | `fallback_used = true` | Questions the docs should answer and do not. A floor: it is a phrase match, and misses a decline in other words |
+| **Low top score** | `chat_messages.top_score` below `LOW_SCORE_THRESHOLD`, with no fallback | Nothing came close, and an answer was written anyway |
+| **Asked again** | Two questions in a row in one conversation, within ten minutes, with cosine similarity of at least `REPHRASE_SIMILARITY` | Implicit "that answer was bad". Far more plentiful than thumbs-down |
+| **Content gaps** | The failed questions (a fallback, or a low score), embedded and clustered, each cluster named by an LLM | The ranked list of what to write next |
+| **Articles** | For each article, the answers that had one of its sections among the five best passages of their first search, counted by `doc_id` and section slug | What answers are written from, and the content nobody reaches |
+| **Classification errors** | Questions routed `out_of_scope`, each with the score of its nearest passage | Lost conversations; a classifier prompt bug |
 | **Explicit feedback** | `message_feedback` | Low volume, but unambiguous when present |
 | **Cost/latency** | Aggregates over `chat_messages` | Budget and UX health |
 
-Question clustering reuses the existing embedding pipeline, so the marginal cost is close to
-zero. Cluster naming is one cheap LLM call per cluster per week.
+Questions are embedded when a report is built and the vectors are dropped afterwards. The cost
+is close to zero, and there is no second copy of visitors' words to keep in step with the purge.
+Naming a gap is one cheap LLM call per new gap.
+
+Only the failed questions are clustered. Clustering every question into topics was the first
+plan; "what people ask about" is answered by the article counts instead, with no model call.
+
+"Never retrieved" was the first plan for dead content, and finds nothing: a search returns
+twenty passages of about 120, so nearly every section is retrieved by something. The best five
+of the first search is what the count uses. And it counts by `doc_id` and section slug, which
+each search records (a change of 2026-10-13), because a chunk id is replaced whenever its
+article is edited: counted by chunk id, a rewritten article lost every earlier answer that drew
+on it. Answers stored by the code before that change are left out of the count.
 
 ### The loop
 
 ```
 visitor asks something
-  -> low top score / fallback / rephrase / thumbs-down
+  -> fallback / low top score / asked again / thumbs-down
       -> clustered into a content_gaps row ("people keep asking about X")
           -> write or extend a knowledgebase/*.md article
               -> the hourly ingest picks it up
-                  -> analytics promote-case turns the original question into an eval case
-                      -> future model/prompt changes are measured against it
+                  -> analytics promote-case prints the original question as an eval case
+                      -> it joins the next golden dataset, and model and prompt changes
+                         are measured against it
 ```
 
 The last step is what makes this more than a dashboard. A real failure becomes a permanent
 regression test, so the assistant cannot silently get worse at something it was fixed for.
 
+**`promote-case` prints; it does not write.** Evals run only against the development database
+(§9) and visitors' messages are only in production, so a promoted question cannot be inserted
+beside the eval cases. The command prints a YAML case. It waits in `datasets/promoted.yaml`,
+which is checked and never run, and joins the next golden dataset when the knowledge base has
+changed enough to need one. A change of model still needs no change of dataset.
+
 ### Interface
 
 ```bash
-uv run analytics report --since 7d           # the weekly digest
-uv run analytics refresh-gaps                # recluster, update content_gaps
-uv run analytics gaps --status open          # the writing queue, ranked
-uv run analytics promote-case <message_id> --expected-doc project-threadline
+python -m portfolio_ai.analytics report --since 7d    # built: quotes visitors; terminal only
+python -m portfolio_ai.analytics seed                 # built: invented conversations; local only
+python -m portfolio_ai.analytics digest               # the weekly email: counts and gap names
+python -m portfolio_ai.analytics refresh-gaps         # recluster, update content_gaps
+python -m portfolio_ai.analytics gaps --status open   # the writing queue, ranked
+python -m portfolio_ai.analytics promote-case 812 --expected-doc project-threadline
 ```
 
-The digest is a Markdown summary: volume, top clusters, unanswered questions verbatim, worst
-retrievals, dead content, feedback tallies, cost. Run weekly by the same supercronic container
-as ingestion, and **emailed via Gmail SMTP** using `smtplib` from the standard library — no
-third-party mail vendor, no SDK dependency.
+As of 2026-10-13 the first two are built, with `purge`; the rest is decided and not built.
+docs/ANALYTICS.md walks through what exists.
+
+**One report, two forms.** `report` prints what visitors typed: unanswered questions, the pairs
+asked again, thumbs-down with their comments. It is for the owner at a terminal, and is never
+scheduled, because under supercronic a command's output is the container's log. The weekly
+email is the other form: the same counts, the article titles and the gaps' names, and not one
+word a visitor wrote. The chat tells visitors their conversations are kept for 90 days, and a
+question quoted into a mailbox would outlive that.
+
+The email is run weekly by the same supercronic container as ingestion, and **sent via Gmail
+SMTP** using `smtplib` from the standard library — no third-party mail vendor, no SDK
+dependency.
 
 Gmail specifics worth knowing up front: it needs an **app password**, not the account password
 (ordinary password auth was withdrawn), which in turn requires 2FA on the account. Host
@@ -915,8 +953,23 @@ Gmail specifics worth knowing up front: it needs an **app password**, not the ac
 irrelevant at four emails a month. The recipient is `DIGEST_TO_EMAIL` in the environment —
 **never hardcoded**, since this repository is public.
 
-If a send fails the digest is still written to disk and the failure logged, so a broken app
-password never silently loses a week of analysis.
+A week in which nobody asked anything sends nothing. If a send fails, nothing is lost and
+nothing is written to disk: the questions are in the database for 90 days, and the command is
+run again. (The first design wrote the digest to a file on failure. A file of visitors'
+questions on a container's disk would sit outside the purge.)
+
+### Built without visitors
+
+The step was planned for after the site had traffic. It had none, so it is built against 28
+invented conversations (`datasets/traffic/invented.yaml`), which `analytics seed` plays through
+`assistant/conversation.chat` on the development database: the routes, scores, fallbacks and
+costs are real, and only the questions are made up. It refuses any other environment, because a
+stored turn does not say where it came from.
+
+That proves the code. It cannot calibrate it, so `LOW_SCORE_THRESHOLD` and
+`REPHRASE_SIMILARITY` are provisional, and every report ends with the two distributions they
+should be set again from. The first seeding also showed the fallback flag to be a floor: of 26
+new questions the knowledge base cannot answer, it was set on 11 (docs/ANALYTICS.md).
 
 ### Deliberately not building
 
@@ -948,7 +1001,9 @@ This stores real visitors' typed input, and on a portfolio site people volunteer
 - A short notice in the chat UI that conversations are kept for 90 days to improve the
   assistant, and a line in the site's privacy policy. The site has no privacy page yet, so until
   it does, the notice is the disclosure.
-- The digest is for the site owner only; it is not published.
+- The digest is for the site owner only; it is not published. It carries nothing a visitor
+  typed: an email outlives the 90 days, so the questions themselves are read from the database,
+  in a terminal.
 
 ---
 
@@ -1111,7 +1166,8 @@ config rather than failing on the first request.
 | `AGENT_MAX_SEARCH_ROUNDS` | default `3`; the first search is always made |
 | `RETRIEVAL_TOP_K` | default `20` |
 | `MEMORY_WINDOW_TURNS` | default `25`, counted in exchanges (50 messages), as n8n counts it |
-| `LOW_SCORE_THRESHOLD` | cosine score below which a question counts as a content gap |
+| `LOW_SCORE_THRESHOLD` | default `0.35`: a knowledge-base answer whose best passage scored under it "found nothing close". Provisional (§10) |
+| `REPHRASE_SIMILARITY` | default `0.60`: two questions in a row at least this alike are one question asked again. Provisional (§10) |
 | `SESSION_RATE_LIMIT` / `SESSION_RATE_WINDOW_MINUTES` | `20` / `15`; the per-IP limit (60 / 15 min) is Express's own setting |
 | `MAX_CONCURRENT_TURNS` | default `10`: answers being written at once, across all visitors |
 | `DAILY_SPEND_CAP_USD` | default `1.00`, over a rolling 24 hours; on breach the API returns a polite refusal, not an error; `0` turns the chat off |
@@ -1124,8 +1180,8 @@ config rather than failing on the first request.
 
 `.env.example` has an entry for every variable the code reads today, with placeholders and never a
 real value: this repository is public. The others in the table arrive with the step that uses
-them: `LOW_SCORE_THRESHOLD`, the `SMTP_*` settings and `DIGEST_TO_EMAIL` with the analytics
-reporting. `TZ` is the container's, not the app's. `extra="forbid"` means none of them can be
+them: the `SMTP_*` settings and `DIGEST_TO_EMAIL` with the weekly email. `TZ` is the
+container's, not the app's. `extra="forbid"` means none of them can be
 listed in `.env.example` before `Settings` knows them.
 
 ---
@@ -1155,12 +1211,14 @@ listed in `.env.example` before `Settings` knows them.
    project, planned on its own: the proxy ships first, switched off, and the UI and the rewritten
    article ship together at cutover. **Cut over on 2026-10-09**; the week of watching and
    retiring n8n remain.
-7. **Analytics reporting** — signals, clustering, digest, `promote-case`. Deliberately last:
-   analytics on zero traffic tells you nothing, and the queries will be better designed after
-   seeing a few hundred real questions.
+7. **Analytics reporting** — signals, clustering, digest, `promote-case`. Last, and planned
+   for after a few hundred real questions. The site had no traffic and expected none for
+   months, so it is being built against invented conversations played through the real
+   assistant (§10), in four stages: the report (built), the weekly email, the content gaps,
+   and `promote-case`. Its thresholds are provisional until there are visitors to set them from.
 
 Step 5 sits before cutover because the baseline is what proves parity. Step 7 sits after it
-because it needs traffic — but step 4 must already be recording the data it will read.
+because it reads what visitors asked — and step 4 must already be recording the data it will read.
 
 Also in step 6, independent of the code: **rewrite `knowledgebase/projects/portfolio-ai-assistant.md`**,
 which describes the n8n-based system. (Its claims of feedback capture and reCAPTCHA-protected
@@ -1230,6 +1288,11 @@ Non-negotiable from the first commit, because git history is published too:
 | Eval judge | `gpt-6.1-sol` with rubric version 2 since 2026-10-10 (`gpt-5` before), pinned apart from the chat model; a change of judge re-grades the stored baseline | §9 |
 | Retention | 90 days raw; derived data kept indefinitely | §10 |
 | Digest delivery | Gmail SMTP via `smtplib`, recipient in env | §10 |
+| What the digest carries | Counts, article titles and gap names; nothing a visitor typed. Their words are read with `analytics report`, in a terminal | §10 |
+| Analytics without traffic | Built against invented conversations played through the real assistant, on the development database only; thresholds provisional | §10 |
+| Which questions are clustered | The failed ones only (a fallback, or a low score). "What people ask about" is the article counts | §10 |
+| Promoted eval cases | `promote-case` prints a YAML case; it waits in a holding file and joins the next golden dataset. Evals and visitors' messages are in different databases | §10 |
+| Vector arithmetic in Python | `math.sumprod`; no numpy for a few hundred comparisons | §10 |
 | Ingestion schedule | Hourly, on the hour | §11 |
 | Environments | Two: local (LAN server, dev-only) and production (EC2) | §11 |
 | Postgres access (prod) | Existing EC2 instance, same Docker network, by service name | §11 |
@@ -1244,6 +1307,7 @@ Non-negotiable from the first commit, because git history is published too:
 Not blocking, and no code depends on them:
 
 - The exact `DAILY_SPEND_CAP_USD` figure — pick one once there is a week of real cost data.
-- The `LOW_SCORE_THRESHOLD` cutoff — needs real retrieval scores to calibrate; start at a guess
-  and tune from the first digest.
+- The `LOW_SCORE_THRESHOLD` cutoff — needs real retrieval scores to calibrate. It starts at
+  0.35, from invented questions and eval cases (§10), and `analytics report` ends with the
+  distribution to set it again from. `REPHRASE_SIMILARITY` likewise.
 - Whether the site's privacy policy needs new wording or just a sentence added.

@@ -476,10 +476,12 @@ least two values, which `report._percentiles` handles.
 every problem (`cases.12.category`). Tuples rather than lists, together with `frozen=True`,
 mean nothing can change a case halfway through a run.
 
-**A loader subclass for the repeated key.** `datasets._StrictLoader` is `yaml.SafeLoader` with
+**A loader subclass for the repeated key.** `strict_yaml._Loader` is `yaml.SafeLoader` with
 one constructor replaced: the one that builds a mapping, which now refuses a key it has already
-seen. Subclassing keeps the change local. Registering the constructor on `SafeLoader` itself
-would change `yaml.safe_load` for every caller in the process, the prompt loader's included.
+seen. It lives in a module of its own since the invented conversations are read through it too
+(docs/ANALYTICS.md). Subclassing keeps the change local. Registering the constructor on
+`SafeLoader` itself would change `yaml.safe_load` for every caller in the process, the prompt
+loader's included.
 
 **What the content hash leaves out.** `model_dump(mode="json", exclude_defaults=True)` dumps
 only the fields that differ from their defaults. Without it, the hash would depend on the code as

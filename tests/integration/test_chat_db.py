@@ -39,6 +39,8 @@ def _result(**overrides: object) -> TurnResult:
                 hits=20,
                 top_score=0.62,
                 duration_ms=310,
+                doc_ids=["tech-stack", "tech-stack"],
+                sections=["php-laravel", None],
             )
         ],
         "retrieved_chunk_ids": [7, 8],
@@ -125,6 +127,8 @@ async def test_the_searches_and_the_calls_are_stored_as_json() -> None:
     assert isinstance(llm_calls, list)
     assert tool_calls[0]["query"] == "Laravel PHP experience"
     assert tool_calls[0]["chunk_ids"] == [7, 8]
+    assert tool_calls[0]["doc_ids"] == ["tech-stack", "tech-stack"]
+    assert tool_calls[0]["sections"] == ["php-laravel", None], "a null survives as a null"
     assert llm_calls[0]["step"] == "classify"
     assert llm_calls[0]["prompt"] == "classifier@1"
     # Cost as a string inside JSON: a float would round, and these get summed.

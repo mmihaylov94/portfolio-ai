@@ -33,10 +33,13 @@
 # just published something and do not want to wait for the hour.
 0 * * * *    python -m portfolio_ai.ingestion
 
-# The weekly digest: what visitors asked, what the assistant could not answer,
-# which content gaps are worth writing. Monday morning, before the week starts.
-# Lands with build step 7, once there is traffic worth a digest.
+# The weekly digest: how much was asked, how much of it the assistant could not
+# answer, which content gaps are worth writing. Monday morning, before the week
+# starts. Not built yet: the second stage of build step 7.
 # 30 5 * * 1   python -m portfolio_ai.analytics digest
+#
+# Never schedule `python -m portfolio_ai.analytics report`. It prints what visitors
+# typed, and everything a job here prints becomes this container's log.
 
 # Retention sweep. Chat messages and feedback older than CHAT_RETENTION_DAYS are
 # deleted, and so are sessions nobody has come back to; content gaps, aggregates

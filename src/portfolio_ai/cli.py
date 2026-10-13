@@ -27,8 +27,15 @@ _EXIT_INTERRUPTED = 130
 _EXIT_FAILED = 1
 
 
-def run_async(main: Callable[[], Coroutine[Any, Any, None]]) -> int:
+def run_async(
+    main: Callable[[], Coroutine[Any, Any, None]], *, log_level: str | None = None
+) -> int:
     """Run an async ``main`` as a program, and return the exit code.
+
+    ``log_level`` is for a command whose output is read by a person at a terminal:
+    ``"WARNING"`` keeps the lines about pools opening and embeddings being made out
+    of a report. Left alone, it is the settings' level, which is what a scheduled
+    job wants.
 
     Note what gets passed in: the function itself, **not** the result of calling
     it. ``run_async(main)``, never ``run_async(main())``.
@@ -49,7 +56,7 @@ def run_async(main: Callable[[], Coroutine[Any, Any, None]]) -> int:
             raise SystemExit(run_async(main))
     """
     try:
-        configure_logging()
+        configure_logging(log_level)
         asyncio.run(main())
     except KeyboardInterrupt:
         # Ctrl-C is a decision, not a malfunction. A twenty-line traceback showing

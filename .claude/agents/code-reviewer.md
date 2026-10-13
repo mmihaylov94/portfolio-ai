@@ -270,6 +270,30 @@ Look for these first; each one has cost real time here.
   both columns of `git status` before committing a change that renames files.
 - "Each" and "one" in a summary of rationales are counts too: read every rationale the
   sentence covers before writing it.
+- A command that prints what visitors typed is safe at a terminal and a leak in the crontab,
+  where output is the container's log. Check where each new command's output goes, and that
+  the form meant to leave the database is tested for holding no question, answer or comment.
+- A count taken from numbers printed to two decimals is a guess: 0.348 prints as 0.35 and is
+  under 0.35. Count with a query.
+- "About fifty times faster" is a measurement somebody has to have made. The first draft of
+  `signals.cosine` said it of `math.sumprod`; timed, it was four.
+- In a `like` pattern an underscore matches any character. A prefix that must match only
+  itself is `starts_with`, and an empty prefix matches every row.
+- `itertools.groupby` groups neighbours only. Look for the sort before it, on the same key.
+- A count of what "can still be traced" is "any of" or "all of". Hide one article's ids with a
+  CTE that shadows the table and see whether the caveat's number moves. Better: check that
+  nothing is counted by an id that ingestion replaces. `doc_id` is stable; a chunk id is not.
+- A test named for a property has to fail without it. Break the property in memory with a
+  pytest plugin (`-p`) and run the test. `sorted(fake.embedded)` cannot count requests.
+- A command run at WARNING drops the INFO line that recorded its OpenAI spend. Print the cost
+  or keep the line.
+- "One call" through a helper that batches is a claim about input size. Read the batch size
+  before writing "one".
+- A guard that sits behind a file read gives the wrong refusal where the file is missing.
+  Check the image's contents, not the repository's.
+- A claim about what a code page lacks is checked by encoding the character: cp1251 has the
+  curly apostrophe and does not have U+2011.
+- When a function gains a field, grep the docs for every table that lists what it records.
 
 When a finding is a new kind of mistake, suggest a one-line entry for this list.
 

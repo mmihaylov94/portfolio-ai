@@ -89,6 +89,15 @@ class EvalError(PortfolioAIError):
     """
 
 
+class AnalyticsError(PortfolioAIError):
+    """An analytics command was refused before it wrote or spent anything.
+
+    Seeding invented conversations anywhere but the development database, seeding
+    twice, a file of them that does not hold together, a ``--since`` that is not a
+    number of days. Each is something to fix and run again, with nothing half done.
+    """
+
+
 class PurgeSafetyError(PortfolioAIError):
     """A run would have deleted an implausible share of the knowledge base.
 

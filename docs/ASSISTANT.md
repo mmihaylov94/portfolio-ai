@@ -315,7 +315,7 @@ analytics in step 7, which can only use what was recorded when the answer was gi
 | `top_score` | answer | the best similarity of any search; empty if nothing was searched |
 | `fallback_used` | answer | whether the reply said the knowledge base does not have what was asked |
 | `retrieved_chunk_ids` | answer | every chunk shown to the model |
-| `tool_calls` | answer | each search: query, hits, best score, duration |
+| `tool_calls` | answer | each search: query, hits, best score, duration, and the passages it returned, best first, as three lists in one order: chunk ids, the `doc_id` of each one's article, and its section's slug. The last two are what the analytics count by: a chunk id changes whenever its article is indexed again |
 | `model` | answer | the model that wrote the answer, as the API names it (`gpt-5-mini-2025-08-07`) |
 | `prompt_tokens`, `completion_tokens` | answer | summed over the chat calls |
 | `cost_usd` | answer | everything, embeddings included |

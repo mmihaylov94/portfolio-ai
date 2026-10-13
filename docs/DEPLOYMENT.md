@@ -493,11 +493,13 @@ knowing about before you need them:
   (10) are the API's other limits. The per-IP limit is the Express API's.
 - **`CHAT_RETENTION_DAYS`** (90) is how long chat is kept; the nightly purge enforces it.
 
-> **`ENVIRONMENT=production` matters more than it looks.** Two guards in this codebase key off it:
-> the port validator in `config.py` (which would reject a 5432 URL if this said `local`), and the
-> integration-test fixture, which refuses to create and drop schemas anywhere that is not `local`.
-> Getting this wrong in the safe direction fails at boot. Getting it wrong in the other direction
-> is why the second guard exists.
+> **`ENVIRONMENT=production` matters more than it looks.** Five guards in this codebase key off
+> it. The port validator in `config.py` would reject a 5432 URL if this said `local`. The other
+> four refuse to do something that belongs in development only: the integration-test fixture
+> (creating and dropping schemas), the terminal chat without `--no-save`, `evals run` and
+> `rejudge`, and `analytics seed`. Getting this wrong in the safe direction fails at boot.
+> Getting it wrong in the other direction is why those four exist, and they are only as good as
+> this line: the setting's default is `local`.
 
 > **Never `COPY` this file into an image.** A Docker layer is immutable: a secret copied in and
 > deleted later is still in the earlier layer, extractable by anyone who can pull the image. This
@@ -1262,6 +1264,24 @@ delete without deleting it:
 ```bash
 docker compose run --rm worker python -m portfolio_ai.analytics purge --dry-run
 ```
+
+### The chat report
+
+`python -m portfolio_ai.analytics report` prints what visitors asked and where the answers fell
+short (docs/ANALYTICS.md). **It quotes visitors.** Run it by hand, read it in the terminal, and
+paste it nowhere:
+
+```bash
+docker compose exec worker python -m portfolio_ai.analytics report --since 30d
+```
+
+`exec`, and not `run` or a line in the crontab. A scheduled command's output is the worker's
+log, and so is the output of a container started with `run`, for as long as that container
+exists. `exec` runs the command inside the worker that is already there, and its output goes to
+the terminal that asked and nowhere else. It embeds the window's questions, a fraction of a
+cent that the report's last line under "Cost and speed" states, and writes nothing.
+
+`analytics seed`, in the same module, is for development and refuses to run here.
 
 ### Asking the assistant something, on the server
 

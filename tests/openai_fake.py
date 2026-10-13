@@ -120,8 +120,10 @@ class FakeOpenAI:
         # The read timeout each of those requests was sent with, in the same order.
         # The SDK passes it to httpx as a request extension, not in the body.
         self.read_timeouts: list[float | None] = []
-        # Every text sent to /v1/embeddings.
+        # Every text sent to /v1/embeddings, and how many each request carried: the
+        # first is a flat list, so only the second can say how many requests there were.
         self.embedded: list[str] = []
+        self.embedding_batches: list[int] = []
         # Tests that care which chunks a query finds set vectors here.
         self.vectors: dict[str, list[float]] = {}
 
@@ -262,6 +264,7 @@ class FakeOpenAI:
     def _embeddings(self, body: dict[str, Any]) -> httpx2.Response:
         texts = body["input"]
         self.embedded += texts
+        self.embedding_batches.append(len(texts))
         default = [1.0] + [0.0] * (DIMENSIONS - 1)
         return httpx2.Response(
             200,

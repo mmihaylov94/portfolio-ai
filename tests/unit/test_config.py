@@ -247,6 +247,30 @@ def test_limits_and_retention_default_to_the_documented_values() -> None:
     assert settings.chat_retention_days == 90
 
 
+def test_the_analytics_thresholds_default_to_the_documented_values() -> None:
+    """Provisional figures, and written down in four places: here, config.py,
+    .env.example and docs/ANALYTICS.md. This is the one that fails when they part."""
+    settings = _settings()
+
+    assert settings.low_score_threshold == pytest.approx(0.35)
+    assert settings.rephrase_similarity == pytest.approx(0.60)
+
+
+@pytest.mark.parametrize("name", ["low_score_threshold", "rephrase_similarity"])
+@pytest.mark.parametrize("value", [-0.1, 1.1])
+def test_a_threshold_is_a_similarity_between_nought_and_one(name: str, value: float) -> None:
+    with pytest.raises(ValidationError):
+        _settings(**{name: value})
+
+
+@pytest.mark.parametrize("name", ["low_score_threshold", "rephrase_similarity"])
+@pytest.mark.parametrize("value", [0.0, 1.0])
+def test_nought_and_one_themselves_are_allowed(name: str, value: float) -> None:
+    """Each end switches a list off or fully on: no answer scores under 0, and no two
+    questions are more alike than 1."""
+    assert getattr(_settings(**{name: value}), name) == pytest.approx(value)
+
+
 # --- the port guard from lesson 3 -------------------------------------------
 #
 # Written as one test per case rather than a loop, so a failure names the case

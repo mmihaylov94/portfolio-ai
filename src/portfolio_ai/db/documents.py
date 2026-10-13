@@ -257,8 +257,9 @@ class RetrievedChunk:
     content: str
     # Cosine similarity to the query: 1 means pointing the same way, 0 unrelated.
     # In practice this corpus scores in a narrow band -- the best hit for a good
-    # question lands around 0.5-0.7 -- which is why nothing here uses a fixed cutoff
-    # yet. The analytics step calibrates one from real traffic.
+    # question lands around 0.5-0.7 -- which is why retrieval uses no cutoff: it
+    # returns the top_k and lets the model read them. The analytics do have one,
+    # LOW_SCORE_THRESHOLD, for listing answers written with nothing close.
     score: float
 
 

@@ -35,6 +35,7 @@ from pydantic import (
     model_validator,
 )
 
+from portfolio_ai import strict_yaml
 from portfolio_ai.assistant.classifier import Classification
 from portfolio_ai.assistant.memory import HistoryMessage
 from portfolio_ai.exceptions import EvalError
@@ -158,34 +159,6 @@ class Dataset(BaseModel):
         return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
 
-class _StrictLoader(yaml.SafeLoader):
-    """``yaml.safe_load``'s loader, except that a key written twice is an error.
-
-    Plain YAML keeps the last of two equal keys without a word, so a case with
-    ``expected_doc_ids`` written twice would quietly be scored on the second, and
-    ``extra="forbid"`` never sees the first. In a file edited by hand, that is a
-    matter of time.
-    """
-
-
-def _mapping_without_repeats(loader: yaml.SafeLoader, node: yaml.Node) -> dict[object, object]:
-    if not isinstance(node, yaml.MappingNode):  # pragma: no cover - registered for mappings
-        raise yaml.constructor.ConstructorError(None, None, "expected a mapping", node.start_mark)
-    keys = [loader.construct_object(key) for key, _ in node.value]
-    repeated = sorted({key for key in keys if isinstance(key, str) and keys.count(key) > 1})
-    if repeated:
-        raise yaml.constructor.ConstructorError(
-            None, None, f"the key {repeated[0]!r} appears twice", node.start_mark
-        )
-    return loader.construct_mapping(node)
-
-
-# Every mapping this loader builds goes through the check above.
-_StrictLoader.add_constructor(
-    yaml.resolver.BaseResolver.DEFAULT_MAPPING_TAG, _mapping_without_repeats
-)
-
-
 def path_for(dataset: str) -> Path:
     """``golden_v1`` -> ``datasets/golden_v1.yaml``; a path is used as given."""
     if dataset.endswith((".yaml", ".yml")) or "/" in dataset or "\\" in dataset:
@@ -196,10 +169,8 @@ def path_for(dataset: str) -> Path:
 def load(path: Path) -> Dataset:
     """Read and validate a dataset file. Any problem is an ``EvalError`` naming it."""
     try:
-        text = path.read_text(encoding="utf-8")
-        # ruff cannot see that _StrictLoader is a SafeLoader, so it warns as it would
-        # for the unsafe loader that can build arbitrary Python objects. It cannot.
-        raw = yaml.load(text, Loader=_StrictLoader)  # ruff: ignore[unsafe-yaml-load]
+        # Strictly: a key written twice is an error and not the last one winning.
+        raw = strict_yaml.load(path.read_text(encoding="utf-8"))
     except OSError as exc:
         raise EvalError(f"Cannot read {path}: {exc.strerror or exc}") from exc
     except yaml.YAMLError as exc:

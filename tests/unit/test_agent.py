@@ -220,6 +220,16 @@ async def test_a_second_search_does_not_repeat_the_first_ones_chunks(fake: FakeO
 
     assert [search.chunk_ids for search in result.searches] == [[1, 2, 3], []]
     assert result.retrieved_chunk_ids == [1, 2, 3], "each chunk is shown once"
+
+    # Beside each chunk id, the article and section it came from, in the same order.
+    # The ids stop meaning anything when an article is indexed again; these do not.
+    first, second = result.searches
+    assert first.doc_ids == ["tech-stack", "tech-stack", "hiring"]
+    assert first.sections == ["php-laravel", "javascript", "freelance"]
+    assert (second.doc_ids, second.sections) == ([], [])
+    record = first.as_record()
+    assert record["doc_ids"] == first.doc_ids
+    assert record["sections"] == first.sections
     assert "No new results" in fake.requests[3]["input"][-1]["output"]
 
 

@@ -1,4 +1,5 @@
-"""Reading and writing the chat tables. Every statement that touches them is here.
+"""Writing the chat tables, and the reads an answer needs. The analytics read them
+back from ``db/analytics.py``.
 
 Two rows per turn -- the question and the answer -- written together in one
 transaction, after the answer is complete. Writing the question first, as it

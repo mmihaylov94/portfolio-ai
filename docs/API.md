@@ -486,9 +486,10 @@ with this sweep in mind:
 off, and the job then logs a warning every night, since the privacy policy is quietly not being
 kept.
 
-The CLI has a Typer callback that does nothing, and the crontab depends on it. A Typer app with a
-single command and no callback runs that command directly, so `purge` would be rejected as an
-unexpected argument.
+The CLI has a Typer callback, and the crontab depended on it while `purge` was the only command.
+A Typer app with a single command and no callback runs that command directly, so `purge` would
+be rejected as an unexpected argument. There are three commands now (docs/ANALYTICS.md), and
+the callback also makes a console that cannot encode a character print `?` instead of stopping.
 
 ## How it is tested
 
