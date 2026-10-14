@@ -12,8 +12,8 @@ writes the answers changed, each measured (docs/EVALS.md), and the model change 
 On 2026-10-13 the knowledge base stopped naming its models and golden_v3 replaced golden_v2, so
 that a change of model needs no new dataset; its baseline, `v3-baseline`, was run the same
 day. Step 7, the analytics reporting, was built that day too. Step 8 followed: the site's
-contact form, written into this service (§8, docs/CONTACT.md). Switching the form over is a
-deploy of both repositories, in the order DEPLOYMENT.md §12 gives.
+contact form, written into this service (§8, docs/CONTACT.md) and switched over on 2026-10-14.
+Nothing on the site depends on n8n any more.
 **Last updated:** 2026-10-14
 
 ---
@@ -1368,8 +1368,9 @@ the app's. `extra="forbid"` means a variable cannot be listed in `.env.example` 
    deactivate the n8n workflows and drop `mihaylov_chat_histories`, and `mihaylov_rag_documents`
    once the new ingestion has a month of clean runs behind it (DEPLOYMENT.md §12). This is the largest chunk of portfolio-repo work in the
    project, planned on its own: the proxy ships first, switched off, and the UI and the rewritten
-   article ship together at cutover. **Cut over on 2026-10-09**; the week of watching and
-   retiring n8n remain.
+   article ship together at cutover. **Cut over on 2026-10-09**; n8n's chat workflows were
+   switched off and `mihaylov_chat_histories` dropped on 2026-10-13, and
+   `mihaylov_rag_documents` is what remains.
 7. **Analytics reporting** — signals, clustering, digest, `promote-case`. Last, and planned
    for after a few hundred real questions. The site had no traffic and expected none for
    months, so it was built against invented conversations played through the real
@@ -1380,9 +1381,9 @@ the app's. `extra="forbid"` means a variable cannot be listed in `.env.example` 
 8. **The contact form** — not in the original plan. Once the chat had moved, the form's
    workflow was the last thing the site needed n8n for, so it was ported the same way: the
    workflow as the specification (§2.4), its rules held to the original by a fixture, its
-   prompts carried over and versioned. **Built on 2026-10-13**, in both repositories. The
-   switch is three steps in DEPLOYMENT.md §12: this service, the portfolio's API, then the
-   workflow is switched off.
+   prompts carried over and versioned. **Built on 2026-10-13, in both repositories, and live
+   since 2026-10-14**, by the runbook in DEPLOYMENT.md §12: this service, the portfolio's
+   API, a message through the form, then the workflow deactivated.
 
 Step 5 sits before cutover because the baseline is what proves parity. Step 7 sits after it
 because it reads what visitors asked — and step 4 must already be recording the data it will read.

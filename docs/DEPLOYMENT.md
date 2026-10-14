@@ -1409,10 +1409,12 @@ cd ~/docker/portfolio-ai
 docker compose up -d api
 ```
 
-**Before the release that brings the contact form**, check the address settings already in
-`.env`. That release refuses an address setting that is not one plain address as the mail
-library reads it, and a refused setting stops every command, the hourly ingestion included.
-The running worker can say whether yours pass. It prints setting names, never their values:
+**Before the release that brought the contact form** (deployed on 2026-10-14), the address
+settings already in `.env` were checked. That release refuses an address setting that is not
+one plain address as the mail library reads it, and a refused setting stops every command, the
+hourly ingestion included. The check is kept for a deploy forward again after a rollback past
+that release, when the running worker is an older image. It prints setting names, never their
+values:
 
 ```bash
 docker compose exec -T worker python - <<'EOF'
@@ -1420,8 +1422,8 @@ import os
 from email.message import EmailMessage
 from email.utils import getaddresses
 
-# The release's own check (_one_address in config.py), written out, because the
-# running image does not have it yet.
+# The release's own check (_one_address in config.py), written out, because an
+# image from before it does not have it.
 def one_address(value):
     header = EmailMessage()
     try:
@@ -2033,10 +2035,15 @@ the fact-check of 2026-09-23.)
 
 ### The contact form (build step 8)
 
-**Not yet done when this was written, on 2026-10-13.** The form's workflow, "Portfolio |
-Contact Form -> Email", is the last thing the site calls n8n for. Its replacement is built in
-both repositories (docs/CONTACT.md). Until the steps below, the form goes on posting to n8n
-exactly as before.
+**Switched on 2026-10-14.** The form's workflow, "Portfolio | Contact Form -> Email", was the
+last thing the site called n8n for. The form now posts to this service (docs/CONTACT.md). That
+day the owner reported steps 1, 3 and 5 done: both deployed, the workflow deactivated (it is
+kept, not archived), and the `N8N_*` lines taken out of the portfolio's `.env`. **Step 4, the
+message through the form, had not been reported when this was written**, and it is still the
+check that the switch works. Whether step 2's digest was kept is not recorded here; without it,
+the rollback at the end needs the portfolio's last API image from before 2026-10-14 another
+way: each one is also tagged with the commit it was built from, on the package's page on
+GitHub. The runbook stays below for the record and for that rollback.
 
 The order matters. The portfolio's new API calls `/v1/contact`, which only the new image of
 this service has. Deployed the other way round, the form would tell every visitor that their

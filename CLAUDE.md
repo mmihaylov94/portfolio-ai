@@ -54,10 +54,10 @@ prerendered with no Nitro runtime in production; the conversation lives in
 `mihaylov_chat_histories` on 2026-10-13 (step 7 there), so the old widget is no longer a
 rollback. **The old widget had no feedback**, despite what the old README claimed.
 
-The contact form is the next switch (build step 8, 2026-10-13). `api/src/contact.js` there now hands
-each message to this service's `/v1/contact` in place of an n8n webhook. It is built and tested
-in both repositories and **live only once both are deployed, this one first**; the n8n workflow
-is switched off after that (docs/DEPLOYMENT.md §12, "The contact form").
+The contact form switched over on 2026-10-14 (build step 8). `api/src/contact.js` there hands
+each message to this service's `/v1/contact`, in place of the n8n webhook it used to call, and
+n8n's contact workflow is deactivated and kept as the rollback (docs/DEPLOYMENT.md §12, "The
+contact form"). **Nothing on the site depends on n8n any more.**
 
 Settled cross-repo decisions:
 
@@ -408,8 +408,8 @@ in a week when nobody asked anything and while the mail settings are not in `.en
   database. (Locally, `portfolio_rag` shares a database with other things —
   the schema is what isolates it there, and production is stricter.)
 - **n8n itself stays, and almost none of it is this project's.** It runs the owner's other
-  workflows; touch none of them. The contact form's is switched off on the owner's word,
-  after the form has been seen working, and never deleted: it is the rollback.
+  workflows; touch none of them. The contact form's was deactivated on 2026-10-14 and is
+  kept, never deleted: it is the rollback.
 - **Do not commit secrets.** `OPENAI_API_KEY`, `DATABASE_URL`, `PORTFOLIO_AI_API_KEY` and
   `SMTP_APP_PASSWORD` come from `.env`, which is gitignored. The repo is public, so a leaked
   secret is leaked to everyone, permanently, in history.
@@ -626,15 +626,15 @@ shipped with the API, because none of it can be reconstructed after the fact.
 
 With that every step of the original build order is built.
 
-**Step 8, the contact form, is built and not yet live** (2026-10-13, docs/CONTACT.md). It was
+**Step 8, the contact form, is live since 2026-10-14** (docs/CONTACT.md). It was
 not in the plan: once the chat had moved, the form's workflow was the last thing the site
 called n8n for. Here: `contact/` (the ported rules, the classifier, the reply, the emails, the
 flow, the desk), `POST /v1/contact`, `mail.py` moved up out of `analytics/`, eight prompts, and
 `python -m portfolio_ai.contact try`. In the portfolio: `api/src/contact.js` hands each message
-to this service, and the form's three typed fields have a `maxlength`. What is left is the
-owner's, in this order: deploy this service with `CONTACT_TO_EMAIL` set, deploy the portfolio,
-send a message through the form, and have the n8n workflow switched off
-(docs/DEPLOYMENT.md §12).
+to this service, and the form's three typed fields have a `maxlength`. The owner deployed
+both, deactivated the n8n workflow and took its settings out of `.env` on 2026-10-14
+(docs/DEPLOYMENT.md §12). **A message sent through the form had not been reported when this
+was written**: it is the check that the switch works, step 4 of that runbook.
 
 What its trial showed (2026-10-13), on eight invented submissions: one of each of the five
 reasons was accepted and acknowledged, and a sales pitch, an attempt to dictate the reply and a
@@ -652,8 +652,8 @@ Since then, the replies are hardened against use of the form to write to other p
 (2026-10-14): one per inbox a day, ten a day in all, a fixed subject, no phone numbers, and a
 line for whoever never wrote. The worst case went from about 720 unwanted emails a day to ten.
 
-What is left besides is not building: dropping `mihaylov_rag_documents` in November, and
-setting the thresholds again once there are visitors.
+What is left besides is not building: that message through the form, dropping
+`mihaylov_rag_documents` in November, and setting the thresholds again once there are visitors.
 
 What the first seeding showed (2026-10-13):
 - **`fallback_used` is a floor.** On 26 new questions the knowledge base cannot answer it was

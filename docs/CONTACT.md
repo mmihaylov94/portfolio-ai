@@ -2,8 +2,8 @@
 
 How a message typed into the contact form on mihaylov.io becomes two emails: the checks it meets,
 what two models are asked about it, what is sent to whom, and what happens when any of that
-fails. It takes over from an n8n workflow, the last thing on the site that depended on n8n,
-and was built in October 2026. It is the one flow in this service that has nothing to do with the knowledge base: no
+fails. It took over from an n8n workflow on 2026-10-14, the last thing on the site that
+depended on n8n. It is the one flow in this service that has nothing to do with the knowledge base: no
 retrieval, no table, nothing stored.
 
 The way in is private, like the rest of the API. The form posts to the portfolio's Express API,
@@ -505,7 +505,7 @@ three optional things for it: an HTML version, a `Reply-To`, and a name beside t
 | Limit | Where | What it stops |
 |---|---|---|
 | 5 messages per visitor (by IP address) per 15 minutes | Express | one visitor flooding the form |
-| reCAPTCHA v3, score at least 0.5 | Express | scripts |
+| reCAPTCHA v3: a token made on mihaylov.io, for the action `contact`, scoring at least 0.5 | Express | scripts |
 | the four fields' lengths: 254, 300, 5,000 and 40 characters | Express, then here | a message that costs a lot to read twice |
 | `CONTACT_MAX_PER_HOUR`, 30 by default | here | everything else |
 | one automatic reply per inbox per 24 hours | here | one person written to again and again |
@@ -773,6 +773,7 @@ what `try` is for. The second is the form itself, after a deploy.
 
 ## Going live
 
-[DEPLOYMENT.md](DEPLOYMENT.md) §11, "The contact form", has the setting and how to check it,
-and §12 the order of the switch from n8n: this service first, then the portfolio's API, then
-the workflow is switched off.
+Switched on 2026-10-14. [DEPLOYMENT.md](DEPLOYMENT.md) §11, "The contact form", has the setting
+and how to check it, and §12 the runbook of the switch from n8n, with which of its steps were
+reported done, and its rollback: this service first, then the portfolio's API, a message through
+the form, then the workflow deactivated.
