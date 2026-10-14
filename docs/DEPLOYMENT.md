@@ -2037,10 +2037,11 @@ the fact-check of 2026-09-23.)
 
 **Switched on 2026-10-14.** The form's workflow, "Portfolio | Contact Form -> Email", was the
 last thing the site called n8n for. The form now posts to this service (docs/CONTACT.md). That
-day the owner reported steps 1, 3 and 5 done: both deployed, the workflow deactivated (it is
-kept, not archived), and the `N8N_*` lines taken out of the portfolio's `.env`. **Step 4, the
-message through the form, had not been reported when this was written**, and it is still the
-check that the switch works. Whether step 2's digest was kept is not recorded here; without it,
+day the owner reported steps 1, 3, 4 and 5 done: both deployed, the workflow deactivated (it
+is kept, not archived), and the `N8N_*` lines taken out of the portfolio's `.env`. The first
+message through the form was answered 200 in 7.4 seconds, and a later one, after the
+portfolio's reCAPTCHA change, in 3.8 and reported fine. Whether step 2's digest was kept is
+not recorded here; without it,
 the rollback at the end needs the portfolio's last API image from before 2026-10-14 another
 way: each one is also tagged with the commit it was built from, on the package's page on
 GitHub. The runbook stays below for the record and for that rollback.

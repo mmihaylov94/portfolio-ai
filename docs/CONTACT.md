@@ -46,7 +46,8 @@ The n8n workflow had this the other way round. Its webhook answered the form str
 did the work afterwards, so the form said thank you before anything had happened. A run that
 then failed, because OpenAI was down or Gmail refused, lost the message, and nobody was told.
 Here the request waits for the work, which is two model calls and two emails. That wait is the
-price: several seconds between pressing the button and the thank you.
+price: several seconds between pressing the button and the thank you, 7.4 and 3.8 for the
+first two real messages.
 
 Two things keep the notification safe from a caller that stops waiting:
 

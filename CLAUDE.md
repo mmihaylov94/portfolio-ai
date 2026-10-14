@@ -633,15 +633,17 @@ flow, the desk), `POST /v1/contact`, `mail.py` moved up out of `analytics/`, eig
 `python -m portfolio_ai.contact try`. In the portfolio: `api/src/contact.js` hands each message
 to this service, and the form's three typed fields have a `maxlength`. The owner deployed
 both, deactivated the n8n workflow and took its settings out of `.env` on 2026-10-14
-(docs/DEPLOYMENT.md §12). **A message sent through the form had not been reported when this
-was written**: it is the check that the switch works, step 4 of that runbook.
+(docs/DEPLOYMENT.md §12). Messages sent through the form that day were answered 200, which
+means the owner's email had gone, and the last of them, after the portfolio's reCAPTCHA
+change, was reported fine.
 
 What its trial showed (2026-10-13), on eight invented submissions: one of each of the five
 reasons was accepted and acknowledged, and a sales pitch, an attempt to dictate the reply and a
 one-line "seo role" were blocked by the classifier. About $0.0008 for a message that is
-acknowledged. **How long the form waits has not been measured**: the first real message's
-`request` line is the measurement. The rules' faults are listed in docs/CONTACT.md and left
-alone on purpose.
+acknowledged. **The form waited 7.4 s and 3.8 s** for the first two real messages
+(2026-10-14, their `request` lines), against the 30 the service allows itself. A message with
+no reply skips a model call and an email, which may be the difference; the `request` line does
+not say. The rules' faults are listed in docs/CONTACT.md and left alone on purpose.
 
 The image takes `python:3.12-slim-bookworm` at whatever patch level it is built on, and the
 development machine runs 3.12.3. By the review's reading of CPython's source, a fix to the
@@ -651,9 +653,11 @@ is written out. The header checks above do not depend on it.
 Since then, the replies are hardened against use of the form to write to other people
 (2026-10-14): one per inbox a day, ten a day in all, a fixed subject, no phone numbers, and a
 line for whoever never wrote. The worst case went from about 720 unwanted emails a day to ten.
+The same day the portfolio's API began checking all of reCAPTCHA's answer: a token made on
+mihaylov.io, for the action `contact`, scoring at least 0.5.
 
-What is left besides is not building: that message through the form, dropping
-`mihaylov_rag_documents` in November, and setting the thresholds again once there are visitors.
+What is left besides is not building: dropping `mihaylov_rag_documents` in November, and
+setting the thresholds again once there are visitors.
 
 What the first seeding showed (2026-10-13):
 - **`fallback_used` is a floor.** On 26 new questions the knowledge base cannot answer it was
