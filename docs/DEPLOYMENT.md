@@ -112,8 +112,8 @@ the host part of `DATABASE_URL`. §5a finds it and §5g proves it resolves.
   more importantly, a heartbeat — a webhook that stops firing looks exactly like a repository
   nobody has committed to, while a scheduled run that stops succeeding says so in the logs.
 - **Postgres** — already on the box and already shared with n8n. This project only ever writes to
-  its own `portfolio_rag` schema. The `mihaylov_rag_documents` and `mihaylov_chat_histories`
-  tables belong to n8n and are not touched until n8n is retired (§12, step 7).
+  its own `portfolio_rag` schema. n8n's tables for the old chat, `mihaylov_rag_documents` and
+  `mihaylov_chat_histories`, were dropped by the owner in October 2026 (§12, step 7).
 - **One image, two services.** One build, one tag, one thing to roll back.
 
 ---
@@ -168,7 +168,8 @@ step depends on the one before.
 **Why a database of its own rather than a schema inside n8n's database.** A schema is a
 naming convention; a database is a boundary. Postgres cannot query across databases, so no bug and
 no wrong `search_path` in this project can reach n8n's tables, and `drop extension vector` here
-cannot cascade into n8n's live vector column. It also makes `pg_dump portfolio_ai` the whole of
+could not cascade into the old chat's vectors in n8n's database (dropped on 2026-10-14). It
+also makes `pg_dump portfolio_ai` the whole of
 this project. The one cost: extensions are per database, so `vector` has to be installed into the
 new one, by a superuser — which is 5f.
 
@@ -199,7 +200,9 @@ docker exec -it <postgres-container> psql -U <POSTGRES_USER> -d <POSTGRES_DB>
 No password prompt is normal: inside the container, over the local socket, the official image
 trusts connections. That same trust is why 5g cannot be tested this way.
 
-n8n's database is the place that proves the pgvector files are installed on this server:
+n8n's database was the place that proved the pgvector files are installed on this server,
+because the old chat's vectors lived there. That table was dropped on 2026-10-14, which leaves
+the extension in place, but `\dx` in `portfolio_ai` is the surer check now:
 
 ```sql
 \c <n8n-database>
@@ -209,7 +212,9 @@ select version();               -- the server's major version
 
 If `vector` is listed, the extension files exist and 5f will work. Development runs PostgreSQL 18.6
 with pgvector 0.8.6, and CI pins `pgvector/pgvector:0.8.6-pg18`; if production is materially older,
-record it, because index behaviour is where pgvector versions differ.
+record it, because index behaviour is where pgvector versions differ. Production runs PostgreSQL
+16 (`pgvector/pgvector:pg16-bookworm`, §11), and the `vector` extension in `portfolio_ai` was at
+0.8.6 on 2026-10-14, the same as development and CI.
 
 ### 5c. Generate a password
 
@@ -239,7 +244,7 @@ container and, if statement logging is on, to the server log.
 **Grant it nothing else** — not superuser, not `createdb`, not `createrole`.
 
 > **Do not reuse n8n's database role.** A shared role means this project's credentials being
-> rotated, leaked or revoked takes the live chat down with it, and it removes the only thing
+> rotated, leaked or revoked takes n8n down with it, and it removes the only thing
 > stopping a mistake here from writing to n8n's tables.
 
 ### 5e. Create the database, owned by that role
@@ -248,14 +253,12 @@ container and, if statement logging is on, to the server log.
 create database portfolio_ai
     owner portfolio_ai
     template template0
-    encoding 'UTF8'
-    locale_provider builtin
-    builtin_locale 'C.UTF-8';
+    encoding 'UTF8';
 
 revoke connect on database portfolio_ai from public;
 ```
 
-**`template template0` and the builtin locale are not decoration** — the obvious
+**`template template0` is not decoration** — the obvious
 `create database portfolio_ai owner portfolio_ai` failed on this server:
 
 ```
@@ -267,15 +270,24 @@ DETAIL:  The template database was created using collation version 2.41, but the
 The Postgres data directory was initialised under glibc 2.41 (Debian 13) and the container now runs
 on glibc 2.36 (Debian 12). Text sorting rules come from glibc, so Postgres refuses to copy a
 template whose recorded rules no longer match the running ones. That is a property of the server,
-not of this project — see *Collation version mismatch* in §11.
+not of this project — see *Collation version mismatch* in §11, where `template1` was repaired on
+2026-10-14. Since then the plain statement should work too. `template0` stays in the one above
+because it works whether or not `template1` is in step.
 
 `template0` records no collation version at all — it is stipulated to contain nothing
 collation-dependent — so the check does not apply to it, and nothing shared (`template1`) is
-modified to get past it. `locale_provider builtin` then makes the new database's text rules
-Postgres's own rather than glibc's, so a future image change cannot put *this* database into the
-same state. Nothing in this project sorts human-language text in SQL: `doc_id` lookups are
-equality and chunk order is an integer, so byte-order `C.UTF-8` is both correct and faster. It
-needs PostgreSQL 17 or later; on 15 or 16, use `locale 'C'` in place of the last two lines.
+modified to get past it. The new database takes the server's default text rules, glibc's
+`en_US.utf8`, like every other database on it (checked on 2026-10-14), and so depends on glibc
+like them. What protects it is the image's tag, pinned to a bookworm one (§11).
+
+This section used to add `locale_provider builtin` and `builtin_locale 'C.UTF-8'`, Postgres's
+own rules, which no change of image can touch. They need PostgreSQL 17, and this server runs
+16 (`pgvector/pgvector:pg16-bookworm`), so production's database was created without them.
+Nothing in this project sorts human-language text in SQL (`doc_id` lookups are equality, and
+chunk order is an integer), so either set of rules is correct for it. On 16, `lc_collate 'C'`
+would be the choice whose sort order does not depend on glibc, which is the part a collation
+version tracks. Character classes and case (`lc_ctype`) still come from glibc whatever it is
+set to, and this project uses neither `lower()`, `upper()` nor `ilike` in SQL.
 
 **Owned by the app role, deliberately.** Since PostgreSQL 15 the `public` schema in a new database
 belongs to `pg_database_owner` — whoever owns the database — so ownership gives the role everything
@@ -326,8 +338,8 @@ So if this step is skipped, the very first migration fails with
 
 > **Never drop this extension to "reinstall it cleanly."** It cascades to every `vector` column in
 > the database. In `portfolio_ai` that is only our own embeddings — re-creatable, but a full
-> re-embed — and keeping that mistake away from n8n's table is one of the reasons for a separate
-> database.
+> re-embed — and keeping that mistake away from n8n's vector table, while there was one, was one
+> of the reasons for a separate database.
 
 ### 5g. Prove it, as the new role, over the network
 
@@ -1673,8 +1685,7 @@ corrupt dump and is not.
 ```bash
 q "$SU" postgres <<SQL
 drop database if exists $SCRATCH with (force);
-create database $SCRATCH owner $ROLE template template0
-    encoding 'UTF8' locale_provider builtin builtin_locale 'C.UTF-8';
+create database $SCRATCH owner $ROLE template template0 encoding 'UTF8';
 revoke connect on database $SCRATCH from public;
 SQL
 echo "create extension vector with schema public" | q "$SU" "$SCRATCH"
@@ -1816,6 +1827,11 @@ It lists the tables it takes with it.
 > **Not rehearsed:** everything that stops or starts production's containers, the
 > `alembic current` check among it.
 >
+> **Changed since:** step 1's `create database` named the builtin locale, which the
+> development server has and production's Postgres 16 does not, so on production it would
+> have stopped at that line. It takes the server's default now, as the real database does
+> (2026-10-14).
+>
 > The first run also tried the command this section used to give, `pg_restore -U postgres` with
 > `--schema=portfolio_rag`, into a database that already held the schema. It failed with 65
 > errors and changed nothing. Its comment said "into a scratch schema first", which no flag of
@@ -1828,10 +1844,12 @@ under **glibc 2.41** (Debian 13, "trixie") and the container now runs on **glibc
 12, "bookworm"). The image was switched to an older base at some point — a `…-bookworm` tag in
 place of a trixie one, or a floating tag that resolved differently.
 
-`portfolio_ai` is unaffected: it was created from `template0` with Postgres's own builtin
-locale (§5e), which glibc does not touch. **The other databases on the server are affected**,
-including n8n's, and this is worth looking at separately, soon. To see every database's recorded
-version against what the OS now provides:
+The query below, run on 2026-10-14, found four databases recorded under 2.41, the server's
+own `postgres` and `template1` among them, and three that already match 2.36: n8n's, one
+other, and `portfolio_ai`, created from `template0` after the switch. Every database on the
+server, this one included, uses glibc's `en_US.utf8` (§5e says why this one is not on
+Postgres's own rules), so a change of base affects them all alike. To see every database's
+recorded version against what the OS now provides:
 
 ```sql
 select datname,
@@ -1847,17 +1865,32 @@ now compares text — lookups that miss rows that exist, unique constraints that
 For mostly-ASCII data it is often harmless in practice, but nothing guarantees it, and Postgres logs
 a warning on every connection to an affected database for that reason.
 
-The fixes, in order of preference:
+**The fix is to stay on bookworm and repair each database recorded under 2.41**, in a session
+connected to that database (`psql -d` with its name), because `reindex database` rebuilds only
+the one it is connected to: `reindex database <name>;` to rebuild text indexes under the
+current rules, then `alter database <name> refresh collation version;`. Refreshing *without*
+reindexing only silences the warning. `template1` is one of them, and repairing it is what lets
+a plain `create database` work again. **Done on 2026-10-14** for all four, in one loop over
+them, which the owner reported ran cleanly.
 
-1. **Run the Postgres container on an image matching the data** — a trixie-based tag of the same
-   Postgres and pgvector version. The mismatch disappears for every database at once, with no data
-   touched. This is a change to the Postgres container, which n8n depends on, so back up first.
-2. **Or stay on bookworm and repair each affected database**: `reindex database <name>;` to rebuild
-   text indexes under the current rules, then `alter database <name> refresh collation version;`.
-   Refreshing *without* reindexing only silences the warning.
+Running the container on a trixie-based image instead was this section's first choice while it
+looked as if every database was affected. With three already matching 2.36, n8n's among them,
+it would only move the mismatch onto those.
 
-Do not `alter database template1 refresh collation version` as a shortcut — if option 1 is taken
-later, it would put `template1` out of step in the other direction.
+**The image is pinned to `pgvector/pgvector:pg16-bookworm`**, since 2026-10-14. Until then it
+was the floating `pg16` tag, which that day was the same image, but pgvector also publishes
+`pg16-trixie`. Now that every database records 2.36, an image on trixie would put all of them
+out of step at once, `portfolio_ai` included, and the floating tag could have become one at any
+pull. Keep a tag that names its Debian release.
+
+**Upgrading Postgres does not remove the dependency on glibc**, and is not needed for this. A
+major version cannot read another's data directory: the upgrade is either `pg_upgrade`, which
+carries the recorded versions across and in Docker needs an image with both versions'
+binaries, or a dump and restore of every database on the server, which rebuilds every index
+under the new server's glibc. Either way it means downtime for everything on the server. 16 is
+supported until November 2028. When it happens, a tag that names its Debian release, and
+`locale_provider builtin` for a database that does not sort human-language text, keep the same
+thing from happening on the new server.
 
 ### Cost
 
@@ -1893,9 +1926,12 @@ docker compose -f ~/docker/my-portfolio/docker-compose.yml up -d api
 
 **Done on 2026-10-09, through step 5.** The site's chat runs on this service. Step 8, golden_v2,
 was done the same day. On 2026-10-13 the owner did step 7's first half: the chat workflows were
-switched off and `mihaylov_chat_histories` dropped, which ends the rollback in step 6. What
-follows is the runbook as it was followed, kept as the record. The contact form's own switch
-is at the end of this section.
+switched off and `mihaylov_chat_histories` dropped, which ends the rollback in step 6. The
+rest followed on 2026-10-14, earlier than the month planned: `mihaylov_rag_documents` was
+dropped, with both workflows that used it inactive, and the portfolio's
+`NUXT_PUBLIC_N8N_CHAT_WEBHOOK_PATH` secret was found already gone. What follows is the runbook
+as it was followed, kept as the record. The contact form's own switch is at the end of this
+section.
 
 Until cutover, **both systems run side by side and neither notices the other.** n8n keeps serving
 the live chat from `mihaylov_rag_documents`; this project writes only to `portfolio_rag`. That is

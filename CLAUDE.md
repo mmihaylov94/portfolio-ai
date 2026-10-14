@@ -376,9 +376,9 @@ in a week when nobody asked anything and while the mail settings are not in `.en
 ## Guardrails
 
 - **Two environments, two machines.** Local is a LAN server holding nothing live — purge, drop
-  and re-ingest there freely. Production is an EC2 instance that also runs the live site, n8n and
-  n8n's `mihaylov_rag_documents` table. **Never point a dev
-  command at production**; check which `DATABASE_URL` is loaded before anything that writes.
+  and re-ingest there freely. Production is an EC2 instance that also runs the live site and
+  n8n. **Never point a dev command at production**; check which `DATABASE_URL` is loaded
+  before anything that writes.
 - **Port 5433, not 5432.** Only 5433 has pgvector. A wrong port connects fine and then fails at
   the first migration with `type "vector" does not exist`, which reads like a broken migration
   rather than a wrong host.
@@ -399,14 +399,14 @@ in a week when nobody asked anything and while the mail settings are not in `.en
   it stops protecting as the corpus grows, since a floor of 8 guards 11 documents and guards
   nothing at 50. Checked twice: optimistically after discovery, before anything is fetched or
   spent, and exactly at the purge itself.
-- **n8n's `mihaylov_rag_documents` table is not this project's to touch.**
-  `mihaylov_chat_histories` went on 2026-10-13, with the chat workflows. The documents table
-  stays until the new ingestion has a month of clean runs behind it, about 9 November, and
-  dropping it is the owner's step (docs/DEPLOYMENT.md §12, step 7). In production it lives in
-  n8n's database; this project has its **own database**, `portfolio_ai`, on the same Postgres
-  instance, with the `portfolio_rag` schema inside it. Never point this project at n8n's
-  database. (Locally, `portfolio_rag` shares a database with other things —
-  the schema is what isolates it there, and production is stricter.)
+- **This project has its own database, and n8n's is not its business.** n8n's tables for the
+  old chat are gone: `mihaylov_chat_histories` on 2026-10-13, with the chat workflows, and
+  `mihaylov_rag_documents` on 2026-10-14, earlier than the month of clean ingestion planned,
+  by the owner's choice (docs/DEPLOYMENT.md §12, step 7). In production this project has its
+  **own database**, `portfolio_ai`, on the same Postgres instance as n8n's, with the
+  `portfolio_rag` schema inside it. Never point this project at n8n's database. (Locally,
+  `portfolio_rag` shares a database with other things — the schema is what isolates it there,
+  and production is stricter.)
 - **n8n itself stays, and almost none of it is this project's.** It runs the owner's other
   workflows; touch none of them. The contact form's was deactivated on 2026-10-14 and is
   kept, never deleted: it is the rollback.
@@ -656,8 +656,7 @@ line for whoever never wrote. The worst case went from about 720 unwanted emails
 The same day the portfolio's API began checking all of reCAPTCHA's answer: a token made on
 mihaylov.io, for the action `contact`, scoring at least 0.5.
 
-What is left besides is not building: dropping `mihaylov_rag_documents` in November, and
-setting the thresholds again once there are visitors.
+What is left besides is not building: setting the thresholds again once there are visitors.
 
 What the first seeding showed (2026-10-13):
 - **`fallback_used` is a floor.** On 26 new questions the knowledge base cannot answer it was

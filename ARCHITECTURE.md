@@ -1172,7 +1172,7 @@ This stores real visitors' typed input, and on a portfolio site people volunteer
 | Host | Lenovo server on the LAN | EC2 instance |
 | Postgres | Docker container, **port 5433** (pgvector) | Existing instance, reached by Docker service name |
 | Also there | port 5432 — plain Postgres, **no pgvector** | the portfolio site, n8n and its live databases |
-| Contains | nothing live; brand new | `mihaylov_rag_documents`, `mihaylov_chat_histories` |
+| Contains | nothing live; brand new | the live `portfolio_ai` database (n8n's two tables for the old chat were dropped in October 2026) |
 | App runs | on the dev machine via `uv` | in containers on the EC2 box |
 
 Isolation is at the machine level — two separate boxes, no shared database — so no schema or
@@ -1369,8 +1369,8 @@ the app's. `extra="forbid"` means a variable cannot be listed in `.env.example` 
    once the new ingestion has a month of clean runs behind it (DEPLOYMENT.md §12). This is the largest chunk of portfolio-repo work in the
    project, planned on its own: the proxy ships first, switched off, and the UI and the rewritten
    article ship together at cutover. **Cut over on 2026-10-09**; n8n's chat workflows were
-   switched off and `mihaylov_chat_histories` dropped on 2026-10-13, and
-   `mihaylov_rag_documents` is what remains.
+   switched off and `mihaylov_chat_histories` dropped on 2026-10-13, and `mihaylov_rag_documents`
+   on 2026-10-14.
 7. **Analytics reporting** — signals, clustering, digest, `promote-case`. Last, and planned
    for after a few hundred real questions. The site had no traffic and expected none for
    months, so it was built against invented conversations played through the real
