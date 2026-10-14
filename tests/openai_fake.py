@@ -161,6 +161,37 @@ class FakeOpenAI:
         """A structured reply in the shape of a content gap's label."""
         self._replies.append(_Reply("structured", text=json.dumps({"label": text})))
 
+    def verdict(  # ruff: ignore[too-many-arguments] -- one per field of the verdict, all named
+        self,
+        *,
+        is_spam: bool = False,
+        spam_confidence: float = 0.05,
+        detected_reason: str = "project",
+        reason_confidence: float = 0.9,
+        should_auto_reply: bool = True,
+        explanation: str = "A clear project inquiry.",
+    ) -> None:
+        """A structured reply in the shape of the contact form classifier's verdict.
+
+        The defaults are a message that is let through and may be acknowledged; a
+        test names the field its case is about.
+        """
+        verdict = {
+            "is_spam": is_spam,
+            "spam_confidence": spam_confidence,
+            "detected_reason": detected_reason,
+            "reason_confidence": reason_confidence,
+            "should_auto_reply": should_auto_reply,
+            "explanation": explanation,
+        }
+        self._replies.append(_Reply("structured", text=json.dumps(verdict)))
+
+    def paragraphs(self, *paragraphs: str) -> None:
+        """A structured reply in the shape of the contact form's acknowledgement."""
+        self._replies.append(
+            _Reply("structured", text=json.dumps({"paragraphs": list(paragraphs)}))
+        )
+
     def say(self, text: str, *, usage: Usage | None = None) -> None:
         self._replies.append(_Reply("text", text=text, usage=usage or Usage()))
 

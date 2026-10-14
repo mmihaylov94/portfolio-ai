@@ -495,6 +495,12 @@ knowing about before you need them:
 - **`CHAT_RETENTION_DAYS`** (90) is how long chat is kept; the nightly purge enforces it.
 - **`SMTP_USER`**, **`SMTP_APP_PASSWORD`** and **`DIGEST_TO_EMAIL`** switch on the weekly email
   (§11, "The weekly email"). Left out, the Monday job logs one warning and sends nothing.
+- **`CONTACT_TO_EMAIL`**, with the same two `SMTP_*` lines, switches on the contact form's
+  endpoint (§11, "The contact form"). Left out, the endpoint answers 503 and the site's form
+  tells the visitor that the message was not sent. **`CONTACT_MAX_PER_HOUR`** (30) is how
+  many messages the whole service takes in an hour, and **`CONTACT_MAX_REPLIES_PER_DAY`** (10)
+  how many automatic replies it sends in any 24 hours. 0 for the second switches the replies
+  off; the messages still come in.
 
 > **`ENVIRONMENT=production` matters more than it looks.** Five guards in this codebase key off
 > it. The port validator in `config.py` would reject a 5432 URL if this said `local`. The other
@@ -1348,6 +1354,8 @@ anything it logs `digest_skipped` and sends nothing.
      worker was not recreated in step 3.
    - `command_failed` with "rejected the login (code 535)" is the name or the password. The
      usual cause is the account's own password where the app password belongs.
+   - `command_failed` with "could not be built (a header was refused)" is a recipient that
+     is not one plain address: a comma, angle brackets, or a name before it.
    - "Configuration is invalid: DIGEST_TO_EMAIL" (or `SMTP_USER`) is a value that is not an
      address. **Fix it before leaving.** Every command reads the settings, so until it is
      fixed the hourly ingestion and the nightly sweep fail the same way, and so would the API
@@ -1377,6 +1385,153 @@ docker compose exec worker python -m portfolio_ai.analytics digest --since 14d
 ```
 
 To switch it off, take the three lines out and recreate the worker.
+
+### The contact form
+
+The site's contact form is this service's work too. The portfolio's API posts each message to
+`POST /v1/contact`, and the `api` container checks it, acknowledges it and emails it to you
+(docs/CONTACT.md). Nothing a visitor typed is stored or logged here: the emails are the record.
+
+**It sends from the account the weekly email uses** (`SMTP_USER` and `SMTP_APP_PASSWORD`,
+above), and needs one line of its own in `~/docker/portfolio-ai/.env`:
+
+```bash
+# Who is emailed each message. Also where a visitor's answer to the automatic
+# acknowledgement goes, as its Reply-To. Your own address, not the sending account's.
+CONTACT_TO_EMAIL=
+```
+
+Add it with an editor, then recreate the **api** container, which is the one that sends these.
+The worker has nothing to do with it:
+
+```bash
+cd ~/docker/portfolio-ai
+docker compose up -d api
+```
+
+**Before the release that brings the contact form**, check the address settings already in
+`.env`. That release refuses an address setting that is not one plain address as the mail
+library reads it, and a refused setting stops every command, the hourly ingestion included.
+The running worker can say whether yours pass. It prints setting names, never their values:
+
+```bash
+docker compose exec -T worker python - <<'EOF'
+import os
+from email.message import EmailMessage
+from email.utils import getaddresses
+
+# The release's own check (_one_address in config.py), written out, because the
+# running image does not have it yet.
+def one_address(value):
+    header = EmailMessage()
+    try:
+        header["To"] = value
+    except (ValueError, LookupError):
+        return False
+    return [found for _, found in getaddresses([str(header["To"])])] == [value]
+
+names = ("SMTP_USER", "DIGEST_TO_EMAIL", "CONTACT_TO_EMAIL")
+values = {name: os.environ.get(name, "").strip() for name in names}
+refused = [name for name, value in values.items() if value and not one_address(value)]
+print("would be refused:", refused or "nothing")
+EOF
+```
+
+`would be refused: nothing` is the answer wanted. A name there is a value with a comma,
+angle brackets, quotes or a trailing dot in it: make it one plain address before deploying.
+
+**Check it without sending anything.** From another container on the network, as §8 does. A
+body with fields missing is refused before anything starts, so these two lines prove the route
+is there and the key is accepted, and nothing is sent, spent or counted:
+
+```bash
+docker compose run --rm --no-deps -T worker python - <<'EOF'
+import json, os, urllib.error, urllib.request
+
+def status(body, key=None):
+    request = urllib.request.Request(
+        "http://portfolio-ai:8000/v1/contact",
+        data=json.dumps(body).encode(),
+        headers={"Content-Type": "application/json"},
+    )
+    if key:
+        request.add_header("Authorization", "Bearer " + key)
+    try:
+        with urllib.request.urlopen(request, timeout=10) as response:
+            return response.status
+    except urllib.error.HTTPError as error:
+        return error.code
+
+incomplete = {"email": "check@example.com"}
+print("without the key ", status(incomplete), "(expect 401)")
+print("with the key    ", status(incomplete, os.environ["PORTFOLIO_AI_API_KEY"]), "(expect 422)")
+EOF
+```
+
+A 404 on both lines means the image is older than the contact form.
+
+Those two cannot see whether the mail settings are complete: a body that does not validate is
+turned away before the flow looks. This can, and it prints the names of settings and nothing
+else:
+
+```bash
+docker compose exec -T api python -c "from portfolio_ai import mail; from portfolio_ai.config import get_settings; print('not set:', mail.missing_settings('CONTACT_TO_EMAIL', get_settings().contact_to_email) or 'nothing')"
+```
+
+`not set: nothing` is the answer wanted. Anything named there is a line the `api` container
+cannot see.
+
+**Read what it would write**, for one made-up message. This asks the two models, so it costs a
+fraction of a cent, and it prints both emails and sends neither:
+
+```bash
+docker compose exec api python -m portfolio_ai.contact try --reason project --subject "A warehouse tool" --message "We track stock in spreadsheets and would like a small web tool for our team."
+```
+
+**The real test is the form itself**, on the site, because no command sends. Afterwards:
+
+```bash
+docker compose logs --since 10m api | grep -E 'contact_|/v1/contact'
+```
+
+One `contact_handled` line says what was decided, in counts and flags: `status`, `acknowledged`,
+`spam_score`, `rule_hits`, the two reasons, the two confidences and `cost_usd`. The `request`
+line for `/v1/contact` has the status and how long the form waited.
+
+**When the portfolio's API reports a failure** (its `contact_submission` lines, by
+`upstream_status`):
+
+- **429**: more than `CONTACT_MAX_PER_HOUR` messages (30) in the last hour, from everybody
+  together. Either real traffic, in which case raise it, or a flood, in which case it is
+  working.
+- **503**: the message did not reach you, and the visitor was told so. This service's
+  `request_failed` line says why. "Not set: ..." names a line the `api` container cannot see:
+  missing, misspelt (which is not refused on this box, §6), or added without recreating the
+  container. "could not be sent (...)" is the mail server, by kind of failure and code, or
+  "it took too long" when an email had not gone after six seconds. "could not be built" is a
+  header the mail library would not send as given, which for the owner's own email means
+  `CONTACT_TO_EMAIL` is not one plain address.
+- **500**: "rejected the login (code 535)", the sending account's name or app password. The
+  weekly email fails the same way, so `digest --test` is the quick check.
+- A `contact_classifier_failed` or `contact_reply_failed` warning is not a failure of the
+  form: OpenAI was down or slow, and the message was passed on without a verdict or without
+  a reply.
+
+**The automatic replies have limits of their own**: one per inbox a day, and
+`CONTACT_MAX_REPLIES_PER_DAY` (10) in all (docs/CONTACT.md, "Using the form to write to
+somebody else"). A message over either still reaches you, and the notification says which
+limit stopped the reply. The log has a `contact_reply_limited` warning for each, with
+`"limit":"recipient"` or `"limit":"daily"` and no address. Daily ones day after day mean
+either real traffic or somebody using the form to write to other people. Read a few of the
+notifications to tell which. To stop the replies at once, set `CONTACT_MAX_REPLIES_PER_DAY=0`
+and recreate `api`.
+
+**What it costs**: about $0.0008 for a message that is acknowledged, less for one that is
+not, and nothing for one the fixed rules block. `DAILY_SPEND_CAP_USD` does not count these
+calls. `CONTACT_MAX_PER_HOUR` is what bounds them, at about two and a half cents an hour.
+
+To switch the form off, take `CONTACT_TO_EMAIL` out and recreate `api`. The site's form then
+tells each visitor that the message could not be sent.
 
 ### The content gaps
 
@@ -1704,7 +1859,7 @@ later, it would put `template1` out of step in the other direction.
 
 ### Cost
 
-Two things spend money, and neither is bounded by anything in Docker:
+Three things spend money, and none is bounded by anything in Docker:
 
 - **Ingestion** re-embeds only what changed, so a normal day is effectively free. A `--force` run
   re-embeds all eleven documents, which is fractions of a cent.
@@ -1714,6 +1869,9 @@ Two things spend money, and neither is bounded by anything in Docker:
   Behind it,
   set a monthly budget on the OpenAI project itself: the one limit that holds even if this code
   is wrong.
+- **The contact form** asks a model twice about a message, for under a tenth of a cent. The
+  daily cap does not count it; `CONTACT_MAX_PER_HOUR` bounds it instead ("The contact form",
+  above).
 
 ### Rotating the API key
 
@@ -1731,10 +1889,11 @@ docker compose -f ~/docker/my-portfolio/docker-compose.yml up -d api
 
 ## 12. Cutover from n8n
 
-**Done on 2026-10-09, through step 5.** The site's chat runs on this service. Step 6, the week of
-watching, is under way, and step 7 retires n8n after it. Step 8, golden_v2, was done the same
-day. What follows is the runbook as it was followed, kept as the record and for the rollback in
-step 6.
+**Done on 2026-10-09, through step 5.** The site's chat runs on this service. Step 8, golden_v2,
+was done the same day. On 2026-10-13 the owner did step 7's first half: the chat workflows were
+switched off and `mihaylov_chat_histories` dropped, which ends the rollback in step 6. What
+follows is the runbook as it was followed, kept as the record. The contact form's own switch
+is at the end of this section.
 
 Until cutover, **both systems run side by side and neither notices the other.** n8n keeps serving
 the live chat from `mihaylov_rag_documents`; this project writes only to `portfolio_rag`. That is
@@ -1872,6 +2031,70 @@ assistant describes itself inaccurately to the people asking about it. (Its clai
 up/down feedback, reCAPTCHA and an Express proxy, none of which the n8n bot has, were removed in
 the fact-check of 2026-09-23.)
 
+### The contact form (build step 8)
+
+**Not yet done when this was written, on 2026-10-13.** The form's workflow, "Portfolio |
+Contact Form -> Email", is the last thing the site calls n8n for. Its replacement is built in
+both repositories (docs/CONTACT.md). Until the steps below, the form goes on posting to n8n
+exactly as before.
+
+The order matters. The portfolio's new API calls `/v1/contact`, which only the new image of
+this service has. Deployed the other way round, the form would tell every visitor that their
+message could not be sent, until the second deploy.
+
+1. **This service first.** This release checks each address setting more strictly: it has to
+   be one plain address, as the mail library reads it, or nothing starts, the hourly
+   ingestion included. So before deploying, run the address check in §11, "The contact form",
+   and expect `would be refused: nothing`.
+
+   Then add `CONTACT_TO_EMAIL` to `~/docker/portfolio-ai/.env` and run
+   `deploy-portfolio-ai`. Then make the checks in §11, "The contact form": 401 without the
+   key, 422 with it, and `not set: nothing` for the mail settings. Nothing calls the endpoint
+   yet, and nothing has changed for a visitor.
+2. **Record which image the portfolio's API is running**, because that is the rollback. In
+   the portfolio's directory:
+
+   ```bash
+   docker image inspect "$(docker inspect --format '{{.Image}}' "$(docker compose ps -q api)")" --format '{{index .RepoDigests 0}}'
+   ```
+
+3. **Then the portfolio.** Push its `main` and wait for both images: the change touches
+   `api/` and the form's component. In the portfolio's directory,
+   `docker compose pull && docker compose up -d`. The API's start line now says
+   `"contact":"enabled"` beside `"chat":"enabled"`.
+4. **Send yourself a message through the form**, on the site, from an address of yours that
+   is not `CONTACT_TO_EMAIL`. What should happen:
+
+   - the form says thank you, after several seconds and not at once;
+   - an acknowledgement arrives at the address you typed, under your name and the subject
+     "Your message to Mihail Mihaylov", ending with the two lines that say it is automatic and
+     that whoever did not write can ignore it; pressing reply on it addresses
+     `CONTACT_TO_EMAIL`;
+   - the notification arrives at `CONTACT_TO_EMAIL`, with `VALID` and `[AUTO-REPLIED]` in its
+     subject and the acknowledgement quoted at the end;
+   - this service's log has one `contact_handled` line and a `request` line for
+     `/v1/contact`, whose `duration_ms` is the first real measurement of how long the form
+     waits;
+   - n8n shows no new execution of the workflow;
+   - a second message from the same address within a day reaches you without a reply, by
+     design, and its notification says so.
+5. **Then switch the workflow off** in n8n. Deactivate it; do not delete it. Take the three
+   `N8N_*` lines out of the portfolio's server `.env`: the new API reads none of them.
+
+**Rollback, before step 5:** set the portfolio's `api` service `image:` to the digest from
+step 2 and `docker compose up -d api`. That image still posts to the webhook, which is why the
+workflow stays active and the `N8N_*` lines stay in `.env` until the form has been seen
+working. After step 5 a rollback also means activating the workflow and putting the lines back.
+
+**From step 3 on, this service cannot go back past this release alone.** An image from before
+it has no `/v1/contact`, and the portfolio's API would turn every message into "could not be
+sent". If `rollback-portfolio-ai` is ever needed that far back, roll the portfolio's API back
+first, as above.
+
+**A deploy of the portfolio's API can cut a message in flight.** Its container exits eight
+seconds after it is told to stop, and a contact message takes several. The visitor then sees
+an error for a message that arrives, the same as a timeout. Deploy it when the form is quiet.
+
 ---
 
 ## 13. Gotcha index
@@ -1914,6 +2137,20 @@ the fact-check of 2026-09-23.)
 - **`TZ=Europe/London` on the worker.** Without it every crontab time is an hour out for half the
   year, and nothing reports it.
 - **`PORTFOLIO_AI_API_KEY` lives in two `.env` files.** Rotate both, restart both.
+- **`CONTACT_TO_EMAIL` is read by the `api` container**, not the worker. `docker compose up -d
+  api` after adding it. Without it the site's contact form tells visitors their message was
+  not sent. §11.
+- **This service before the portfolio's API**, whenever the portfolio starts calling an
+  endpoint that is new here. The other way round, the feature fails until the second deploy.
+  §12, the contact form.
+- **The contact form waits on two timeouts that have to agree**: 35 seconds in the
+  portfolio's API, and 30 here, which is two model deadlines and two for the emails. A test
+  on each side holds its number.
+- **Do not roll this service back past the contact form's release** while the portfolio's API
+  still calls `/v1/contact`. Roll that back first. §12.
+- **The contact form's reply limits are forgotten on a restart.** They are kept in memory,
+  so after one an inbox can be sent one more reply, and the day's count starts again. A
+  deploy, a changed setting, a crash and a reboot of the server each restart the service.
 - **`TRUST_PROXY=2` on the portfolio's API only once Traefik trusts Cloudflare.** Before that,
   every visitor arrives from a Cloudflare address and the per-visitor limits are per edge. §12
   step 3 checks it with the rate-limit headers.

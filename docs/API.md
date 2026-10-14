@@ -6,6 +6,10 @@ Express API has to meet when it starts calling this in build step 6. The assista
 described in [ASSISTANT.md](ASSISTANT.md), and the reasoning behind the design in
 [ARCHITECTURE.md](../ARCHITECTURE.md) §8. This document is about the code.
 
+One endpoint here is not about answers at all: `POST /v1/contact` takes the messages of the
+site's contact form. Its contract is in this document with the others, and what happens behind
+it is in [CONTACT.md](CONTACT.md).
+
 The API is private. Nothing outside the Docker network can reach it, and the only caller it
 expects is the portfolio's Express API, which holds the bearer key server-side. The browser talks
 to Express; Express talks to this.
@@ -144,6 +148,7 @@ in it.
 | `POST /v1/chat` | bearer | answers a message, returns the whole answer as JSON |
 | `POST /v1/chat/stream` | bearer | the same answer as server-sent events |
 | `POST /v1/messages/{message_id}/feedback` | bearer | a thumbs up or down on an answer |
+| `POST /v1/contact` | bearer | takes one contact form message, and answers once the owner has been emailed |
 | `GET /healthz` | none | the process is up |
 | `GET /readyz` | none | the database answers (503 if not) |
 | `GET /docs` | none | the OpenAPI schema, browsable |
@@ -156,6 +161,9 @@ in it.
 
 // POST /v1/messages/4812/feedback
 { "session_id": "3f0c9a52-8d1e-4b7a-9c2f-6e5d4c3b2a10", "rating": -1, "comment": "Not what I asked." }
+
+// POST /v1/contact
+{ "email": "visitor@example.com", "subject": "A tool for our warehouse", "message": "We would like a small web tool for our team.", "reason": "project" }
 ```
 
 - `session_id`: 8 to 100 characters from `A-Z a-z 0-9 _ -`. The browser mints it with
@@ -172,6 +180,12 @@ in it.
 - Unknown fields are a 422 (`extra="forbid"`). The only caller is our own proxy, so a misspelt field
   should fail loudly in development. The proxy refuses them itself, with a 400, rather than
   dropping them, for the same reason.
+- The contact form's four fields are each trimmed, not empty, free of the same control
+  characters, and within a length: `email` 254 characters, `subject` 300, `message` 5,000 and
+  `reason` 40. That is all this API checks. Whether the address is an address, and the reason
+  one of the five the form offers, is for the rules behind the endpoint to decide, and a
+  submission that fails those is not refused: it is reported to the owner as blocked and
+  answered 200.
 
 Where the visitor came from travels in headers the proxy sets, which are trusted because only the
 key holder can send them:
@@ -209,6 +223,11 @@ spending limit has been reached, the reply is the fixed text from `prompts/daily
 `message_id`, `classification` and `usage` are `null`. Nothing was stored, so there is nothing to
 rate, and a chat UI should hide the thumbs.
 
+`POST /v1/contact` returns `{"status": "received"}` and nothing else, whatever was decided about
+the message. 200 means the owner has been emailed, which takes several seconds: two model calls
+and two emails come first. A message blocked as spam is a 200 too, because the owner was told
+of it.
+
 `POST /v1/chat/stream` sends these events, in this order:
 
 | Event | Data | When |
@@ -234,21 +253,22 @@ Errors before a stream starts are ordinary responses with a JSON `{"detail": ...
 | 404 | feedback: no such answer in this conversation. A missing id, a question's id and another conversation's answer all look the same |
 | 409 | this conversation's previous answer is still being written |
 | 422 | the request did not validate. The body says where, but never echoes what was sent |
-| 429 | this conversation's rate limit; `Retry-After` in seconds |
-| 503 | OpenAI or the database is unavailable, or the service is busy or restarting |
-| 500 | a bug, or a configuration problem such as OpenAI rejecting the key |
+| 429 | this conversation's rate limit, or the contact form's hourly one; `Retry-After` in seconds |
+| 503 | OpenAI or the database is unavailable, or the service is busy or restarting. For the contact form: mail is not set up, or the owner's email could not be sent |
+| 500 | a bug, or a configuration problem such as OpenAI rejecting the key, or the mail server rejecting the login |
 
 ### What the proxy has to do (build step 6)
 
-The proxy is the portfolio site's Express API, `api/src/chat.js` in `mmihaylov94/my-portfolio`, with
-tests in `api/tests/`. The browser sees two routes:
+The proxy is the portfolio site's Express API, `api/src/chat.js` and `api/src/contact.js` in
+`mmihaylov94/my-portfolio`, with tests in `api/tests/`. The browser sees three routes:
 
 | Browser | Here | Body forwarded |
 |---|---|---|
 | `POST /api/chat` | `POST /v1/chat/stream`, always: the UI streams, and `/v1/chat` is not exposed | exactly `{session_id, message}` |
 | `POST /api/chat/feedback` | `POST /v1/messages/{message_id}/feedback` | exactly `{session_id, rating, comment?}`; `message_id` travels in the browser's body and only the checked integer reaches the URL |
+| `POST /api/contact` | `POST /v1/contact` | exactly `{email, subject, message, reason}`, trimmed; the reCAPTCHA token is checked in Express and goes no further |
 
-It validates both bodies the way this API does before anything is sent, so a request this API would
+It validates every body the way this API does before anything is sent, so a request this API would
 refuse never costs a round trip, and a 422 from here is logged there as drift between the two. These
 are the things it must get right, and how it does:
 
@@ -290,6 +310,18 @@ are the things it must get right, and how it does:
 - **Keep a body size limit in front of this API**, which has none of its own. FastAPI reads a whole
   body before any check runs, the key included. The proxy limits its chat routes to 32 kB, room for
   2,000 characters even written entirely as escaped emoji.
+- **For the contact form: wait, and say only whether it went.** `/v1/contact` answers once the
+  owner's email has been sent, so the proxy waits up to 35 seconds. That has to stay longer than
+  this API allows itself: `CLASSIFY_SECONDS`, `REPLY_SECONDS` and `SEND_SECONDS` twice in
+  `contact/service.py`, 30 seconds in all. A test on each side holds its number. A 200 becomes `{"ok": true}`, and this API's body
+  is not read. A 429 or a 503 is passed on with its `Retry-After`, a 422 becomes a 400 and is
+  logged as drift between the two sides, and anything else is a 502. **None of this API's
+  `detail` sentences is passed on for this route**: they are written about the assistant, and
+  somebody using a contact form needs to hear one thing, whether the message went. The reason
+  it did not is in this API's `request_failed` line. No `X-Visitor-*` headers are sent, because nothing about who wrote
+  a contact message is stored. A timeout in the proxy does not stop the message here, so a
+  visitor who is told it failed may send it twice, and the owner then has it twice. That is
+  the right way round for a contact form.
 
 ## Which piece does what
 
@@ -299,6 +331,7 @@ are the things it must get right, and how it does:
 | `api/__main__.py` | `python -m portfolio_ai.api`, the production entry point: uvicorn with JSON logging, the event loop, graceful shutdown and keep-alive, all set in code |
 | `api/routers/chat.py` | the two answer endpoints. They take nothing but the admission and translate events into JSON or SSE |
 | `api/routers/feedback.py` | the rating endpoint |
+| `api/routers/contact.py` | the contact form's endpoint: the hourly limit, the task that does the work, and the shield it is awaited through ([CONTACT.md](CONTACT.md)) |
 | `api/routers/health.py` | `/healthz` and `/readyz` |
 | `api/deps.py` | `admit_turn`: validation, the two reads, the checks in order, and the start |
 | `api/turns.py` | `Turns`, the registry of running turns, and the task that drives one to the end |
@@ -437,6 +470,9 @@ it fails to start.
   slot for several minutes.
 - `asyncio.wait(tasks, timeout=...)`, then `cancel()` and `gather(..., return_exceptions=True)`, is
   how shutdown drains: wait a while, cancel the rest, then wait for the cancellations to land.
+- `asyncio.shield` is how the contact endpoint awaits its task without passing a cancellation
+  down to it. A turn has events to hand over as they happen, hence its queue. A contact message
+  has one result, so awaiting the task through a shield is enough (CONTACT.md).
 
 ### The standard library
 
@@ -463,6 +499,9 @@ it fails to start.
 | No raw IP is ever stored | `security.hash_ip`; `db/chat.py` is never handed one |
 | No visitor text in the logs | the middleware logs method, route template and status only; tested by a canary |
 | Chat older than `CHAT_RETENTION_DAYS` is deleted nightly | `analytics/retention.py`, `docker/crontab` |
+| A contact form message is answered 200 only once the owner has been emailed, and is seen through if the caller leaves | `routers/contact.py`, `contact/desk.py`, `contact/service.py` |
+| Nothing typed into the contact form is stored or logged | `contact/service.py`; tested with a recorder on the log |
+| An inbox is sent at most one automatic reply a day, and the service at most `CONTACT_MAX_REPLIES_PER_DAY` in all | `contact/replies.py`, asked by `contact/service.py` before a reply is written |
 
 Failed turns are the one gap. A turn that fails part-way stores nothing, so what it had already
 spent counts against neither limit. Failures are rare and usually mean nothing was spent, and the
@@ -504,6 +543,9 @@ the callback also makes a console that cannot encode a character print `?` inste
   - the `X-Request-ID` header, and a request log line that names the route rather than the path;
   - keep-alive pings, feedback;
   - the lifespan refusing to start without its secrets, and shutting down in order.
+- **`tests/unit/test_contact_api.py`** does the same for `POST /v1/contact`, with the flow behind
+  it replaced: the key, the body's rules, the hourly limit, each failure's status, a caller that
+  hangs up, and shutdown. The flow has its own tests (CONTACT.md, "How it is tested").
 - **A disconnect test drives the ASGI app by hand.** It sends a scope shaped as uvicorn sends it,
   delivers the body, then a disconnect as soon as the first event arrives. The request returns, the
   turn is still running, and after it is released, it finishes. httpx cannot hang up halfway, so

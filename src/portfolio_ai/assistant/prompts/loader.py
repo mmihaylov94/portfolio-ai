@@ -14,7 +14,8 @@ changes measured that helped without breaking something else. Three are new: the
 reply sent once the daily spending limit is reached (n8n had no limit), the eval
 judge's rubric, itself at version 2 since the first baseline showed two faults in
 how it graded, and the instructions for naming a content gap, which the analytics
-use and no answer depends on.
+use and no answer depends on. The contact form's eight came from a second n8n
+workflow, and each file lists what was changed on the way in.
 
 **The version is recorded with every answer** (``chat_messages.llm_calls``) and with
 every eval run (``eval_runs.config``), so a score can always be traced to the prompt
@@ -129,4 +130,25 @@ ALL = (
 # the rest, through EVERY.
 GAP_LABEL = load("gap_label")
 
-EVERY = (*ALL, GAP_LABEL)
+# The contact form's (contact/). Ported from the n8n workflow that ran the form until
+# October 2026: what classifies a message, what writes the acknowledgement to the
+# visitor, and one brief for each reason a message can have. The lines about Mihail
+# that four of the briefs carry are one prompt of their own, so that they are
+# written once. Kept out of ALL for the reason GAP_LABEL is: none of them writes or
+# grades an answer the evals measure.
+CONTACT_CLASSIFIER = load("contact_classifier")
+CONTACT_REPLY = load("contact_reply")
+CONTACT_CONTEXT = load("contact_context")
+CONTACT_BRIEFS = {
+    reason: load(f"contact_brief_{reason}")
+    for reason in ("project", "collaboration", "job", "consultation", "other")
+}
+
+EVERY = (
+    *ALL,
+    GAP_LABEL,
+    CONTACT_CLASSIFIER,
+    CONTACT_REPLY,
+    CONTACT_CONTEXT,
+    *CONTACT_BRIEFS.values(),
+)

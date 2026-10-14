@@ -2,7 +2,8 @@
 
 Python replacement for the two n8n workflows that powered the AI chat box on
 [mihaylov.io](https://mihaylov.io) until 2026-10-09, plus an evaluation harness and an
-analytics/feedback loop.
+analytics/feedback loop. Since October 2026 it also takes the messages of the site's contact
+form, the last thing n8n did for the site.
 
 **Status:** build steps 1-5 done (foundations, ingestion, assistant core, API, evals). Step 6: the
 cutover happened on 2026-10-09, and the site's chat runs on this service. golden_v2 and its
@@ -10,8 +11,10 @@ baseline followed the same day. On 2026-10-10 the chat prompt, the eval judge an
 writes the answers changed, each measured (docs/EVALS.md), and the model change was deployed.
 On 2026-10-13 the knowledge base stopped naming its models and golden_v3 replaced golden_v2, so
 that a change of model needs no new dataset; its baseline, `v3-baseline`, was run the same
-day. n8n's workflows are retired after a week of watching; then step 7.
-**Last updated:** 2026-10-13
+day. Step 7, the analytics reporting, was built that day too. Step 8 followed: the site's
+contact form, written into this service (§8, docs/CONTACT.md). Switching the form over is a
+deploy of both repositories, in the order DEPLOYMENT.md §12 gives.
+**Last updated:** 2026-10-14
 
 ---
 
@@ -23,6 +26,7 @@ day. n8n's workflows are retired after a week of watching; then step 7.
 | 2 | **Assistant** — RAG chat API answering questions about the documentation | Authenticated HTTP endpoint called by the portfolio site |
 | 3 | **Evals** — measure assistant quality across models/configs | Ad-hoc CLI, results persisted for comparison |
 | 4 | **Analytics & feedback** — track what is asked, what fails, and what the docs are missing | Captured continuously, reported weekly |
+| 5 | **Contact form** (added 2026-10-13) — check each message from the site's form, acknowledge it, and email it to the owner | Authenticated HTTP endpoint called by the portfolio site |
 
 Secondary goal, explicitly stated by the owner: **learn Python and Python-for-AI properly.**
 That biases every choice toward transparent, readable code over framework magic.
@@ -30,7 +34,8 @@ That biases every choice toward transparent, readable code over framework magic.
 ### Non-goals
 
 - Multi-tenant / multi-user support. One knowledge base, one site.
-- Replacing n8n entirely — only these two workflows.
+- Replacing n8n entirely — only the workflows behind the site: these two, and later the
+  contact form's (§2.4). n8n itself stays, with the owner's other workflows on it.
 - Real-time (webhook-on-push) ingestion. Hourly is sufficient; the repo changes rarely, and a
   run with nothing to do costs nothing.
 - A live analytics dashboard. See §10 — traffic does not justify it yet.
@@ -153,6 +158,38 @@ correcting either way — and it is a neat illustration of the drift deliverable
 
 ---
 
+### 2.4 `Portfolio | Contact Form -> Email`
+
+Not in the original scope. It was the last workflow the site depended on once the chat had
+moved, and it was ported in October 2026 (step 8). Its export is gitignored like the others, so
+what mattered in it is transcribed here, and docs/CONTACT.md walks through the port.
+
+Trigger: a webhook the portfolio's Express API posted the form's four fields to (`email`,
+`subject`, `message`, `reason`). **The webhook answered at once**, before any of the following
+had run.
+
+1. **A Code node of fixed rules.** Clean the fields, validate them (all present, a known
+   reason, an address shaped like one), and score the message for spam: disposable domains,
+   length, links, repetition, special characters, capitals, 18 keywords. 5 or more is spam, 3
+   or more is "suspicious". Ported line for line as `contact/rules.py`.
+2. **An AI classifier** (`gpt-5-mini`), for what the rules let through: spam or not, the real
+   reason, whether a reply is safe, each with a confidence. Its prompt is
+   `prompts/contact_classifier.md`.
+3. **An AI-written reply to the visitor**, from one of five briefs chosen by the detected
+   reason, sent only when the classifier allowed it, was at least 0.6 sure of the reason and at
+   most 0.3 sure of spam, and the rules had not found the message suspicious. The model wrote
+   the email as HTML, greeting and signature included.
+4. **An email to the owner for every submission**, in three formats: accepted (with the reply,
+   if one went), blocked by the rules, blocked by the classifier. The visitor's message was
+   pasted into the HTML as typed.
+
+Three things about it shaped the port. A run that failed after the webhook had answered lost
+the message silently. The reply went, as HTML a model wrote, to whatever address had been typed
+into the form. And the lines describing Mihail in the briefs used role labels the knowledge
+base no longer gives him.
+
+---
+
 ## 3. Decisions
 
 | Area | Decision | Why |
@@ -232,7 +269,9 @@ correcting either way — and it is a neat illustration of the drift deliverable
 
 The browser never holds the API key. The Express API already sits at `mihaylov.io/api` behind
 Traefik and already holds server-side secrets for contact; chat and feedback become two more
-routes there, forwarding to FastAPI with the bearer header attached.
+routes there, forwarding to FastAPI with the bearer header attached. Since step 8 the contact
+form takes the same road: `/api/contact` forwards to `POST /v1/contact`, and this service
+sends the emails.
 
 ---
 
@@ -418,6 +457,7 @@ ai_assistant/
 │   ├── logging.py                # structlog JSON logging
 │   ├── exceptions.py             # PortfolioAIError root + the errors we raise on purpose
 │   ├── strict_yaml.py            # YAML in which a key written twice is an error
+│   ├── mail.py                   # smtplib: STARTTLS, an app password, one message; two callers
 │   ├── db/
 │   │   ├── pool.py               # async psycopg pool lifecycle
 │   │   ├── documents.py          # upsert doc, replace chunks, purge stale
@@ -453,7 +493,9 @@ ai_assistant/
 │   │       ├── out_of_scope_reply.md
 │   │       ├── daily_limit_reply.md  # what the API says once the day's spend cap is reached
 │   │       ├── judge.md          # the eval judge's rubric (step 5)
-│   │       └── gap_label.md      # names a content gap; pinned, and in no eval run's record
+│   │       ├── gap_label.md      # names a content gap; pinned, and in no eval run's record
+│   │       └── contact_*.md      # the contact form's eight: classifier, reply, five briefs,
+│   │                             #   and the lines about Mihail; pinned, in no eval run's record
 │   ├── api/
 │   │   ├── main.py               # app factory, lifespan (startup checks, shutdown order)
 │   │   ├── __main__.py           # python -m portfolio_ai.api: uvicorn, JSON logs, event loop
@@ -466,12 +508,21 @@ ai_assistant/
 │   │   └── routers/
 │   │       ├── chat.py           # POST /v1/chat, POST /v1/chat/stream
 │   │       ├── feedback.py       # POST /v1/messages/{id}/feedback
+│   │       ├── contact.py        # POST /v1/contact
 │   │       └── health.py         # GET /healthz, /readyz
+│   ├── contact/
+│   │   ├── rules.py              # n8n's fixed rules, ported: clean, validate, score for spam
+│   │   ├── classifier.py         # one call: spam or not, about what, safe to answer
+│   │   ├── reply.py              # one call: the acknowledgement's paragraphs, checked like input
+│   │   ├── emails.py             # the acknowledgement and the notifications, as text and HTML
+│   │   ├── service.py            # the flow: prepare (decide) and handle (decide, then send)
+│   │   ├── replies.py            # one reply per inbox a day, and so many a day in all
+│   │   ├── desk.py               # the hour's count, the messages in hand, the reply count
+│   │   └── cli.py                # python -m portfolio_ai.contact try: prints, sends nothing
 │   ├── analytics/
 │   │   ├── signals.py            # cosine similarity, questions asked again, medians, bands
 │   │   ├── report.py             # the window, the report as data, and its two forms as text
 │   │   ├── digest.py             # the weekly email as a subject and a body, from a report
-│   │   ├── mail.py               # smtplib: STARTTLS, an app password, one plain-text message
 │   │   ├── clustering.py         # vectors grouped by their centres; no library
 │   │   ├── gaps.py               # the content-gap refresh: cluster, match, name, write
 │   │   ├── promote.py            # a stored question as an eval case, printed as YAML
@@ -618,6 +669,50 @@ already paid for uncounted, and the daily cap is only a bound if everything spen
 to be an answer: a question's id, a missing id and someone else's conversation are all the same
 404, so a caller learns nothing by guessing. Re-voting updates the existing row rather than
 inserting. The check and the write are one SQL statement.
+
+### `POST /v1/contact`
+
+```jsonc
+{ "email": "visitor@example.com", "subject": "A tool for our warehouse", "message": "...", "reason": "project" }
+```
+
+Added in step 8, for the site's contact form. `{"status": "received"}` on success, and
+**success means the owner has been emailed**: the request waits for the fixed rules, two model
+calls and two emails. docs/CONTACT.md walks through it. What was decided here, and why:
+
+- **In this service, not in Express.** The flow needs the OpenAI client with its cost
+  recording, versioned prompts, and tests with a fake model and a fake mail server, all of
+  which exist here. Express stays the public door: its rate limit, reCAPTCHA, and the key.
+- **The request waits.** n8n answered the form first and worked afterwards, so a failed run
+  was silent. Here a failure to notify the owner is an error the visitor sees. The work runs
+  in a task the request awaits through `asyncio.shield`, so a caller that gives up does not
+  stop a message between its two emails.
+- **OpenAI is optional to the outcome.** Each model call has a deadline (8 and 10 seconds),
+  and so has each email (6), 30 in all against the 35 Express waits. Each optional step may
+  fail in any way at all: they catch `Exception`, which this project does nowhere else. Without
+  a verdict the message is passed on marked "not classified"; without a reply it is passed on
+  unacknowledged.
+- **The reply is treated as input.** It goes to an address anyone could have typed, in the
+  owner's name. A model writes plain paragraphs; the code refuses one that is too long, not
+  plain text, or holds a link or an address, and adds the greeting, the signature and a line
+  saying the reply is automatic.
+- **The rules are n8n's, ported as they were**, and held to n8n's own JavaScript by a fixture
+  of 81 submissions. Their known faults are listed in docs/CONTACT.md and left for a change
+  that can be measured.
+- **A header is checked after the mail library has parsed it.** `EmailMessage` decodes
+  encoded words (`=?utf-8?q?...?=`) in any header it is handed and refuses anything
+  `str.splitlines` splits on, so an address that read as one mailbox could be sent to two, and
+  a subject with U+0085 in it lost the message. A visitor's subject is made header-safe on the
+  way in, and `mail.py` compares the built headers with what was asked for before any server
+  is reached. Found by the review, by sending.
+- **A reply to an address nobody verified is bounded.** The form takes any address, so a reply
+  can go to somebody who never wrote. One reply per inbox a day, and
+  `CONTACT_MAX_REPLIES_PER_DAY` (10) for the whole service, both asked before the reply is
+  written. Its subject and closing lines are fixed, the last telling someone who never wrote
+  that they can ignore it, and a phone number in it is refused like a link.
+- **Nothing is stored.** No table. A message leaves two emails and one log line of counts.
+- **A limit of its own**: `CONTACT_MAX_PER_HOUR` (30) for the whole service, kept in memory.
+  The daily spending limit counts chat answers and does not see these calls.
 
 ### Health
 
@@ -1237,6 +1332,9 @@ config rather than failing on the first request.
 | `IP_HASH_SALT` | the key visitors' IPs are HMAC-hashed with, at least 32 characters. The API will not start without it |
 | `SMTP_HOST` / `SMTP_PORT` / `SMTP_USER` / `SMTP_APP_PASSWORD` | `smtp.gmail.com` / `587` / the Gmail address, no default / **app password, not the account password**, no default |
 | `DIGEST_TO_EMAIL` | digest recipient — env only, never committed. With it, `SMTP_USER` or the password unset, the digest warns and sends nothing |
+| `CONTACT_TO_EMAIL` | who is emailed each contact form message, and the `Reply-To` of the acknowledgement — env only, never committed. Unset, `/v1/contact` answers 503 |
+| `CONTACT_MAX_PER_HOUR` | default `30`: contact form messages taken in an hour, by the whole service |
+| `CONTACT_MAX_REPLIES_PER_DAY` | default `10`: automatic replies sent in any 24 hours, by the whole service; `0` switches them off |
 | `TZ` | `Europe/London`, so the crontab times mean what they say |
 | `LOG_LEVEL` / `ENVIRONMENT` | |
 
@@ -1279,6 +1377,13 @@ the app's. `extra="forbid"` means a variable cannot be listed in `.env.example` 
    `promote-case`. **Built on 2026-10-13.** Its thresholds are provisional until there are
    visitors to set them from.
 
+8. **The contact form** — not in the original plan. Once the chat had moved, the form's
+   workflow was the last thing the site needed n8n for, so it was ported the same way: the
+   workflow as the specification (§2.4), its rules held to the original by a fixture, its
+   prompts carried over and versioned. **Built on 2026-10-13**, in both repositories. The
+   switch is three steps in DEPLOYMENT.md §12: this service, the portfolio's API, then the
+   workflow is switched off.
+
 Step 5 sits before cutover because the baseline is what proves parity. Step 7 sits after it
 because it reads what visitors asked — and step 4 must already be recording the data it will read.
 
@@ -1296,7 +1401,7 @@ Non-negotiable from the first commit, because git history is published too:
 - **No personal email addresses** anywhere in code or docs, except Mihail's two published ones:
   the hiring address on his CV and the one for projects and general inquiries (the site lists both),
   public by his choice, which the eval dataset checks answers against. The digest recipient is
-  `DIGEST_TO_EMAIL`, because it is configuration.
+  `DIGEST_TO_EMAIL` and the contact form's is `CONTACT_TO_EMAIL`, because they are configuration.
 - **No IPs or hostnames in committed files** — not the LAN address of the dev server, not the
   EC2 host, not container names. They belong in `.env` only. A private-range address is low risk
   by itself, but it maps out your network for anyone reading, and it accretes: one IP in a README
@@ -1363,6 +1468,15 @@ Non-negotiable from the first commit, because git history is published too:
 | What a promoted case holds | The question rewritten in the owner's words, never the visitor's sentence: a commit is for good and the chat promises 90 days | §10 |
 | `eval_cases.source_message_id` | Dropped by migration 0007: nothing could fill it. A promoted case says where it came from in its notes | §5 |
 | Vector arithmetic in Python | `math.sumprod`; no numpy for a few hundred comparisons | §10 |
+| Where the contact form's flow lives | In this service, behind `/v1/contact`; Express stays the public door. n8n keeps the owner's other workflows | §8 |
+| When the form says thank you | Once the owner's email has been sent. The request waits, and a caller that leaves does not stop the message | §8 |
+| The automatic reply | Kept. A model writes plain paragraphs; the code adds the greeting, the signature and a line saying it is automatic, and refuses a reply that is long, not plain, or holds a link or an address | §8 |
+| The contact form's spam rules | n8n's, ported as they were and held to n8n's own code by a fixture. Their faults are listed, not fixed in passing | §8 |
+| What a contact message leaves behind | Two emails and a log line of counts. No table | §8 |
+| What bounds the contact form | 30 messages an hour for the whole service, and a deadline on each model call and each email, 30 seconds in all. The daily spending limit does not cover it | §8 |
+| A visitor's text in a mail header | Made header-safe on the way in, and the built header compared with what was asked for: the mail library decodes and refuses things no check on the typed text can see | §8 |
+| An optional step of the contact flow | May fail in any way, `except Exception`: the owner's notification is the one step that must happen | §8 |
+| Replies to addresses nobody verified | One per inbox a day and 10 a day in all, kept in memory as keyed hashes; a fixed subject and a line for whoever never wrote; 0 switches them off | §8 |
 | Ingestion schedule | Hourly, on the hour | §11 |
 | Environments | Two: local (LAN server, dev-only) and production (EC2) | §11 |
 | Postgres access (prod) | Existing EC2 instance, same Docker network, by service name | §11 |

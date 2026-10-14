@@ -10,6 +10,7 @@ and every one of them passed locally for the whole of step 3, then failed on the
 first push with ``DATABASE_URL: Field required``.
 """
 
+import smtplib
 from collections.abc import Iterator
 
 import pytest
@@ -52,3 +53,28 @@ def _fixed_settings(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
     get_settings.cache_clear()
     yield
     get_settings.cache_clear()
+
+
+@pytest.fixture(autouse=True)
+def _no_mail_server(monkeypatch: pytest.MonkeyPatch) -> None:
+    """No unit test reaches a mail server, whatever it forgets.
+
+    ``smtplib.SMTP`` is replaced, for every test, by something that fails the test.
+    A test of anything that sends installs ``tests/smtp_fake.py`` over it. Fixtures
+    with ``autouse`` run before a test's own, so the fake put in by the test is the
+    one in place when the test body runs.
+
+    It happened. The first test of the contact form's flow that left the fake out
+    was not stopped by anything: it opened a connection to the real mail server
+    named in the default settings, with a made-up account, and failed only because
+    the server hung up. Nothing was sent. A unit test that can reach the network is
+    one that passes or fails on the weather, and one day sends something.
+    """
+
+    def refuse(*args: object, **kwargs: object) -> None:
+        raise AssertionError(
+            f"a unit test tried to connect to a mail server ({args}, {kwargs}). "
+            "Install tests/smtp_fake.py."
+        )
+
+    monkeypatch.setattr(smtplib, "SMTP", refuse)

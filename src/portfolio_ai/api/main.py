@@ -14,6 +14,7 @@ Development::
 Production runs ``python -m portfolio_ai.api`` instead; see ``__main__.py``.
 """
 
+import asyncio
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 
@@ -22,20 +23,27 @@ from fastapi import FastAPI
 
 from portfolio_ai.api import errors
 from portfolio_ai.api.middleware import RequestLogMiddleware
-from portfolio_ai.api.routers import chat, feedback, health
+from portfolio_ai.api.routers import chat, contact, feedback, health
 from portfolio_ai.api.security import require_api_secrets
 from portfolio_ai.api.turns import Turns
 from portfolio_ai.config import get_settings
+from portfolio_ai.contact.desk import Desk
 from portfolio_ai.db.pool import close_pool, get_pool
 from portfolio_ai.llm.client import close_client
 from portfolio_ai.logging import configure_logging
 
 log = structlog.get_logger(__name__)
 
-# How long shutdown waits for answers still being written before cancelling them.
+# How long shutdown waits for answers still being written, and for contact form
+# messages in hand, before cancelling them.
 # It runs after the server has stopped taking requests and has waited for open
 # ones -- 30 s, set in __main__.py -- and the whole of it has to fit inside the
-# 45 s Docker allows before it kills the container (docker-compose.yml).
+# 45 s Docker allows before it kills the container (docker-compose.yml). One thing
+# can run past it: an email already being sent from a worker thread, which
+# cancelling its task does not stop. smtplib gives up on a step that waits six
+# seconds (SEND_SECONDS in contact/service.py), so a mail server that goes quiet ends
+# the thread within six; one that answers every step just slowly can keep it longer.
+# The email was reported as not sent by then, and the process waits for the thread.
 DRAIN_GRACE_SECONDS = 10
 
 
@@ -63,9 +71,15 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         yield
     finally:
         turns: Turns = app.state.turns
+        desk: Desk = app.state.contact
         turns.closing = True
-        await turns.drain(DRAIN_GRACE_SECONDS)
-        # Only after the turns: they are what uses these.
+        desk.closing = True
+        # A contact form message in hand may have sent the visitor's acknowledgement
+        # and not yet the owner's notification, so it gets the same grace as an
+        # answer. gather runs the two waits at once: one after the other they could
+        # take twice the grace, and the sum above would no longer fit.
+        await asyncio.gather(turns.drain(DRAIN_GRACE_SECONDS), desk.drain(DRAIN_GRACE_SECONDS))
+        # Only after the turns and the messages: they are what uses these.
         await close_client()
         await close_pool()
         log.info("api_stopped")
@@ -81,6 +95,8 @@ def create_app() -> FastAPI:
 
     # One registry per app, so each test's app has its own.
     app.state.turns = Turns()
+    # And one desk: the contact form's hourly count and its messages in hand.
+    app.state.contact = Desk()
 
     # Middleware wraps everything registered after it, so this sees every request,
     # including the ones that fail before reaching a route.
@@ -90,6 +106,7 @@ def create_app() -> FastAPI:
     app.include_router(health.router)
     app.include_router(chat.router)
     app.include_router(feedback.router)
+    app.include_router(contact.router)
     return app
 
 

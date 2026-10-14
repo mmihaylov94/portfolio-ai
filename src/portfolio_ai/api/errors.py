@@ -29,7 +29,7 @@ from fastapi import FastAPI, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 
-from portfolio_ai.exceptions import AssistantError, ConfigError
+from portfolio_ai.exceptions import AssistantError, ConfigError, MailError
 
 log = structlog.get_logger(__name__)
 
@@ -59,6 +59,11 @@ def public_error(exc: Exception) -> PublicError:
         case psycopg.OperationalError():
             # The database is unreachable or the pool is exhausted. PoolTimeout is a
             # subclass, so it lands here too.
+            return PublicError(HTTPStatus.SERVICE_UNAVAILABLE, UNAVAILABLE)
+        case MailError():
+            # The contact form's notification could not be sent, or the mail settings
+            # are not there. The message did not reach the owner, and the caller has
+            # to hear that; a mail server that is down may be back in a moment.
             return PublicError(HTTPStatus.SERVICE_UNAVAILABLE, UNAVAILABLE)
         case ConfigError():
             # Something in the deployment is wrong -- OpenAI rejected the key, say.
@@ -142,7 +147,7 @@ async def unexpected_error_handler(  # ruff: ignore[unused-async]
 
 def install(app: FastAPI) -> None:
     """Register the handlers. Called once, by ``create_app``."""
-    for exc_class in (AssistantError, ConfigError, psycopg.OperationalError):
+    for exc_class in (AssistantError, ConfigError, MailError, psycopg.OperationalError):
         app.add_exception_handler(exc_class, domain_error_handler)
     app.add_exception_handler(RequestValidationError, validation_error_handler)
     # Everything else. Starlette runs this one outside all the middleware; see above.

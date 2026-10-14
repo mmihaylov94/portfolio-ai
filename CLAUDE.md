@@ -3,15 +3,17 @@
 Context for Claude Code working in this repository. Read [ARCHITECTURE.md](ARCHITECTURE.md) for
 the full design; this file is the short version plus the working agreements.
 [docs/INGESTION.md](docs/INGESTION.md), [docs/ASSISTANT.md](docs/ASSISTANT.md),
-[docs/API.md](docs/API.md), [docs/EVALS.md](docs/EVALS.md) and
-[docs/ANALYTICS.md](docs/ANALYTICS.md) walk through the code of the five flows, module by
-module -- update them in the same change as the code they describe.
-API.md also holds the contract the Express proxy has to meet in step 6.
+[docs/API.md](docs/API.md), [docs/EVALS.md](docs/EVALS.md),
+[docs/ANALYTICS.md](docs/ANALYTICS.md) and [docs/CONTACT.md](docs/CONTACT.md) walk through the
+code of the six flows, module by module -- update them in the same change as the code they
+describe. API.md also holds the contract the Express proxy has to meet, for the chat and for
+the contact form.
 
 ## What this project is
 
 A production Python system that replaces two n8n workflows powering the AI chat box on
-[mihaylov.io](https://mihaylov.io), plus an eval harness and an analytics loop. Four deliverables:
+[mihaylov.io](https://mihaylov.io), plus an eval harness and an analytics loop, and since
+October 2026 the site's contact form. Five deliverables:
 
 1. **Ingestion** — pull Markdown from the `knowledgebase/` folder of the GitHub repo
    `mmihaylov94/my-portfolio`, chunk it by H2 section, embed it with OpenAI, upsert into
@@ -23,8 +25,12 @@ A production Python system that replaces two n8n workflows powering the AI chat 
 4. **Analytics & feedback** — capture what visitors ask, thumbs up/down on answers, and derived
    failure signals (low retrieval score, fallback answers, rephrase-and-retry), cluster them
    into content gaps, and feed real failures back into the eval dataset.
+5. **Contact form** — each message from the site's form: fixed spam rules ported from n8n, a
+   classifier, a short automatic acknowledgement to the visitor, and an email to the owner for
+   every message, blocked ones included. Nothing is stored. Added on 2026-10-13, when it was
+   the last thing the site needed n8n for.
 
-The exported n8n workflows are the functional spec for deliverables 1 and 2. They sit in
+The exported n8n workflows are the functional spec for deliverables 1, 2 and 5. They sit in
 `n8n_workflows/` locally but are **gitignored** — they carry n8n instance and credential ids, and
 the repo is public. They are on disk, so read them before changing ingestion or prompt behaviour;
 the prompts there are well tuned and port over mostly verbatim. If the folder is ever missing,
@@ -44,10 +50,14 @@ Current state there, as of 2026-10-09: **the cutover happened on 2026-10-09** (d
 §12, steps 1 to 5). The live chat is the site's own chat UI, which calls `/api/chat` and
 `/api/chat/feedback` on the Express API, and those proxy to this service. The site is fully
 prerendered with no Nitro runtime in production; the conversation lives in
-`localStorage["portfolio-chat/v1"]`. n8n's chat workflow is left running, unused, for a week: it
-is what a rollback of the site image falls back to. After that week n8n's workflows are retired
-and `mihaylov_chat_histories` is dropped. **The old widget had no feedback**, despite what the
-old README claimed.
+`localStorage["portfolio-chat/v1"]`. The owner switched n8n's two chat workflows off and dropped
+`mihaylov_chat_histories` on 2026-10-13 (step 7 there), so the old widget is no longer a
+rollback. **The old widget had no feedback**, despite what the old README claimed.
+
+The contact form is the next switch (build step 8, 2026-10-13). `api/src/contact.js` there now hands
+each message to this service's `/v1/contact` in place of an n8n webhook. It is built and tested
+in both repositories and **live only once both are deployed, this one first**; the n8n workflow
+is switched off after that (docs/DEPLOYMENT.md §12, "The contact form").
 
 Settled cross-repo decisions:
 
@@ -61,7 +71,14 @@ Settled cross-repo decisions:
   DOM-querying in `useAiChat.ts` and the MutationObserver that injects the "Start over" button.
   Nothing about the old widget's UX needs reproducing.
 - **Existing conversations are not migrated.** `session_id` is just `crypto.randomUUID()` in
-  `localStorage`; `mihaylov_chat_histories` is dropped when n8n's workflows are retired.
+  `localStorage`; `mihaylov_chat_histories` went when n8n's chat workflows were retired.
+- **The contact form's flow lives here, and Express stays its door.** `/api/contact` keeps its
+  per-address limit and reCAPTCHA, attaches the key and forwards four fields. The rules, the
+  two model calls and both emails are this service's (docs/CONTACT.md). Two things are stated
+  on both sides and change together: the fields' lengths (`api/schemas.py` here; `MAX_CHARS`
+  in `api/src/contact.js` and the form's `maxlength` there), and the wait (35 seconds there;
+  `CLASSIFY_SECONDS`, `REPLY_SECONDS` and `SEND_SECONDS` twice here, 30 in all). A test on
+  each side holds its number.
 - **Article validation lives here, runs there.** `portfolio-ai-validate` is a command in *this*
   package that calls the same `parse_document` and `chunk_document` the pipeline uses, so
   "passes CI" and "will be indexed" cannot drift apart. The portfolio repo runs it from the
@@ -120,6 +137,7 @@ learn Python and Python-for-AI properly. That changes how to work here:
 ```
 src/portfolio_ai/
   config.py      logging.py      strict_yaml.py (a repeated YAML key is an error)
+  mail.py        (smtplib: one email; the digest and the contact form both send through it)
   db/            pool, documents, chat, feedback, analytics, evals  (raw SQL lives here only)
   llm/           client, embeddings, pricing, responses (the Responses API adapter)
   ingestion/     github, frontmatter, chunking, pipeline, cli
@@ -127,7 +145,9 @@ src/portfolio_ai/
                  postprocess (link filter, fallback), memory, cli, prompts/*.md + loader
   api/           main (app + lifespan), __main__ (the server), deps (admission), turns (answers in
                  flight), security, errors, schemas, middleware, routers/
-  analytics/     retention, signals, report, digest, mail, clustering, gaps, promote, seed, cli
+  contact/       rules (n8n's, ported), classifier, reply, emails, service (the flow), desk
+                 (the hour's count, messages in hand), replies (who may be written to), cli
+  analytics/     retention, signals, report, digest, clustering, gaps, promote, seed, cli
   evals/         datasets, runner, judge, metrics, report, cli
 migrations/      datasets/      tests/unit  tests/integration      docker/
 ```
@@ -151,6 +171,13 @@ migrations/      datasets/      tests/unit  tests/integration      docker/
   (`api/turns.py`) and the endpoints only read its events from a queue, so a visitor who leaves
   mid-answer cancels the reading, not the answer -- it is still stored and counted against the
   limits. Never iterate `conversation.chat()` directly inside an endpoint.
+- **A contact message outlives its request too, and 200 means the owner was emailed.** The
+  endpoint awaits the flow's task through `asyncio.shield`, and `contact/desk.py` holds the
+  task, so a caller that gives up between the two emails stops nothing. Everything before the
+  owner's notification may fail and the message still goes (not classified, or no reply).
+  **In any way**: those steps catch `Exception`, on purpose and nowhere else, because OpenAI
+  answering 200 with a page of HTML is an `AttributeError` nobody lists. Only a notification
+  that cannot be sent is an error.
 - **Every refusal happens before the first byte.** Checks live in the admission dependency
   (`api/deps.py`), which takes the request body itself; the chat endpoints take nothing else,
   because FastAPI validates an endpoint's own parameters after its dependencies have run. The
@@ -237,7 +264,28 @@ migrations/      datasets/      tests/unit  tests/integration      docker/
   one answer in flight per session (409), `MAX_CONCURRENT_TURNS` in flight overall (503), plus
   `DAILY_SPEND_CAP_USD` over a rolling 24 hours (default $1.00, about 1,600 answers) that returns
   a polite refusal rather than an error; `0` turns the chat off. The daily cap is the real
-  protection; the others just stop casual abuse.
+  protection; the others just stop casual abuse. The contact form has its own: 5 per IP per
+  15 min (Express) and `CONTACT_MAX_PER_HOUR` (30) for the whole service, because the daily
+  cap does not count its two model calls. Its automatic replies have two more: one per inbox
+  a day, and `CONTACT_MAX_REPLIES_PER_DAY` (10) in all, which `0` switches off.
+- **The contact form's rules are a port, held to n8n's own code.** `contact/rules.py` is the
+  workflow's Code node line for line, its faults included: text between `<` and `>` is
+  deleted, "Seoul" contains "seo", Cyrillic letters count as special characters
+  (docs/CONTACT.md has the list). `tests/unit/fixtures/contact_rules.json` is what n8n's
+  JavaScript said about 81 invented submissions, written by `contact_rules.js` from the
+  gitignored export. **Fix a rule as a change of its own**, and say in it that the fixture
+  then stops being n8n's verdict.
+- **A blocked contact message is still delivered.** "Blocked" is a label in the owner's
+  subject line, and no reply. The API answers 200 for it and the form says thank you: nobody
+  is told they were taken for spam.
+- **The acknowledgement is a model's text, sent to an address anyone could type.** It goes
+  out only when the classifier allows it, is at least 0.6 sure of the reason and at most 0.3
+  sure of spam, the rules found nothing suspicious, the address is one plain mailbox, and
+  neither reply limit stops it (`contact/replies.py`). The model writes paragraphs. The code
+  refuses a long reply, one that is not plain text, and one with a link, an address or a phone
+  number in it. Everything else is fixed: the subject, the greeting, the signature, and the two
+  lines under it. No code puts what a visitor typed into an email to a visitor; only the
+  model's paragraphs, written from it, can echo any of it.
 - **Retention is 90 days** for raw `chat_messages` and feedback. `content_gaps` and aggregates
   are kept indefinitely, so insight outlives the conversation. A promoted question leaves the
   database altogether: it is committed to this repository as an eval case.
@@ -252,8 +300,9 @@ This repository is public on GitHub, and **git history is published too**. From 
   lists both.
   They are public by his choice (confirmed 2026-09-24), and the golden datasets' contact cases
   check answers for them exactly. Nobody else's address goes in, least of all a visitor's in a
-  question promoted from real traffic; a unit test checks every dataset for that. The digest
-  recipient still comes from `DIGEST_TO_EMAIL`, because it is configuration.
+  question promoted from real traffic; a unit test checks every dataset for that. The digest's
+  recipient comes from `DIGEST_TO_EMAIL` and the contact form's from `CONTACT_TO_EMAIL`,
+  because they are configuration.
 - **No IPs or hostnames in committed files** — not the LAN dev server, not the EC2 host, not
   container names. They live in `.env`. `docker/docker-compose.yml` is a template, and `mihaylov.io` is
   the only host that should appear anywhere in the repo.
@@ -313,6 +362,9 @@ uv run python -m portfolio_ai.analytics refresh-gaps        # names new gaps; a 
 uv run python -m portfolio_ai.analytics gaps                # the writing queue; quotes visitors
 uv run python -m portfolio_ai.analytics gap-status 7 written --doc services
 uv run python -m portfolio_ai.analytics promote-case 812 --expected-doc services   # quotes visitors
+
+uv run python -m portfolio_ai.contact try --message "..."   # the form's two emails, printed; sends nothing
+node tests/unit/fixtures/contact_rules.js                    # n8n's verdicts again; needs the export
 ```
 
 Production schedules live in `docker/crontab`, run by the `worker` container with
@@ -325,7 +377,7 @@ in a week when nobody asked anything and while the mail settings are not in `.en
 
 - **Two environments, two machines.** Local is a LAN server holding nothing live — purge, drop
   and re-ingest there freely. Production is an EC2 instance that also runs the live site, n8n and
-  n8n's `mihaylov_rag_documents` / `mihaylov_chat_histories` tables. **Never point a dev
+  n8n's `mihaylov_rag_documents` table. **Never point a dev
   command at production**; check which `DATABASE_URL` is loaded before anything that writes.
 - **Port 5433, not 5432.** Only 5433 has pgvector. A wrong port connects fine and then fails at
   the first migration with `type "vector" does not exist`, which reads like a broken migration
@@ -347,13 +399,17 @@ in a week when nobody asked anything and while the mail settings are not in `.en
   it stops protecting as the corpus grows, since a floor of 8 guards 11 documents and guards
   nothing at 50. Checked twice: optimistically after discovery, before anything is fetched or
   spent, and exactly at the purge itself.
-- **The n8n tables (`mihaylov_rag_documents`, `mihaylov_chat_histories`) are the rollback.**
-  In production they live in n8n's database; this project has its **own database**,
-  `portfolio_ai`, on the same Postgres instance, with the `portfolio_rag` schema inside it.
-  Never point this project at n8n's database, and do not touch or drop the old tables: retiring
-  them is the owner's step, a week after cutover (docs/DEPLOYMENT.md §12, step 7).
-  (Locally, `portfolio_rag` shares a database with other things —
+- **n8n's `mihaylov_rag_documents` table is not this project's to touch.**
+  `mihaylov_chat_histories` went on 2026-10-13, with the chat workflows. The documents table
+  stays until the new ingestion has a month of clean runs behind it, about 9 November, and
+  dropping it is the owner's step (docs/DEPLOYMENT.md §12, step 7). In production it lives in
+  n8n's database; this project has its **own database**, `portfolio_ai`, on the same Postgres
+  instance, with the `portfolio_rag` schema inside it. Never point this project at n8n's
+  database. (Locally, `portfolio_rag` shares a database with other things —
   the schema is what isolates it there, and production is stricter.)
+- **n8n itself stays, and almost none of it is this project's.** It runs the owner's other
+  workflows; touch none of them. The contact form's is switched off on the owner's word,
+  after the form has been seen working, and never deleted: it is the rollback.
 - **Do not commit secrets.** `OPENAI_API_KEY`, `DATABASE_URL`, `PORTFOLIO_AI_API_KEY` and
   `SMTP_APP_PASSWORD` come from `.env`, which is gitignored. The repo is public, so a leaked
   secret is leaked to everyone, permanently, in history.
@@ -391,6 +447,26 @@ in a week when nobody asked anything and while the mail settings are not in `.en
   personal data like a question is, and under the crontab a log line is all the command
   prints. `mail.send` raises errors that give the kind of failure and not the server's words,
   which quote the addresses involved.
+- **A contact form message is stored nowhere and logged nowhere.** There is no table. It
+  exists in the request, in the two calls to OpenAI and in the two emails, and the emails are
+  the record. `contact_handled` carries counts, flags and the rules' fixed wording, and a
+  reason only when it is one of the form's five words. A table of messages would need
+  everything the chat's has: retention, the purge, and a notice on the site.
+- **A mail header is what the library makes of the text, not the text.** `EmailMessage`
+  decodes encoded words (`=?utf-8?q?...?=`) in any header it is handed, and refuses whatever
+  `str.splitlines` splits on, U+0085 included. An address that read as one mailbox was sent to
+  two, and a subject with U+0085 lost the message, until the review sent some. So what a
+  visitor typed goes through `emails.header_text` on its way into a subject, an address
+  through `emails.safe_recipient`, and `mail._check_headers` compares the built message with
+  what was asked for. **A test of a header reads `server.delivered`**, the envelope and the
+  bytes `smtplib` would hand a server, and never the `EmailMessage` object.
+- **No unit test can reach a mail server.** `tests/unit/conftest.py` replaces `smtplib.SMTP`
+  for every test, and a test that sends installs `tests/smtp_fake.py` over it. Before the
+  guard, one test of the contact flow written without the stand-in opened a connection to the
+  real server in the default settings. Nothing was sent.
+- **No command sends a contact email.** `contact try` prints both and sends neither, and it
+  spends a fraction of a cent. The real path is tested through the site's form, by the owner
+  (docs/DEPLOYMENT.md §11, "The contact form").
 - **A gap's label is a model's output, and is treated as input.** It is written from what
   visitors typed, kept for good, and printed in a terminal and an email. `gaps._fault` refuses
   one that is over 60 characters, is not plain text or holds a link or an address, and the
@@ -444,7 +520,9 @@ in a week when nobody asked anything and while the mail settings are not in `.en
   Never run a dataset still under review, even one case of it: a complete `--only` run freezes
   it too. Smoke-test the harness on a throwaway dataset file.
 - **Ask before changing the tuned prompts.** They came from a working production system; changes
-  should be justified by an eval run, not by taste.
+  should be justified by an eval run, not by taste. The contact form's prompts are in the same
+  position: n8n's wording, with every change listed in the file's own frontmatter. No eval
+  covers them, so a change is read with `contact try`, several times over.
 - **Chat logs are real visitors' words.** People volunteer identifying details in a chat box
   ("I'm hiring for a Laravel role at Acme"). IPs are stored only as an HMAC keyed with
   `IP_HASH_SALT`, `CHAT_RETENTION_DAYS` is enforced nightly, nothing a visitor types goes into a
@@ -510,8 +588,8 @@ ARCHITECTURE.md §13).
    `postprocess.py`'s link pattern, checked against a fixture of Python's matches;
 3. the rewritten assistant article and the other copy that became false at cutover, the project
    card's image and the CV included: live;
-4. cutover itself: done on 2026-10-09, by the runbook in docs/DEPLOYMENT.md §12. A week of
-   watching follows, and then n8n's workflows are retired (steps 6 and 7 there);
+4. cutover itself: done on 2026-10-09, by the runbook in docs/DEPLOYMENT.md §12. The owner
+   switched n8n's chat workflows off on 2026-10-13 (step 7 there);
 5. golden_v2 and its baseline: done on 2026-10-09.
 
 Still open from the evals:
@@ -529,8 +607,8 @@ shipped with the API, because none of it can be reconstructed after the fact.
 
 1. the report and the invented conversations: built (`analytics report`, `analytics seed`);
 2. the weekly email, with counts and nothing a visitor typed: built (`analytics digest`,
-   sent with `smtplib` after the event loop has finished). Not yet deployed with mail
-   settings: that needs a Gmail app password in the server's `.env` (docs/DEPLOYMENT.md §11);
+   sent with `smtplib` after the event loop has finished). The owner set its mailbox up on
+   the server on 2026-10-13 (docs/DEPLOYMENT.md §11);
 3. content gaps: built (`refresh-gaps`, `gaps`, `gap-status`, migration 0006). The failed
    questions are clustered **by the search each answer ran, not by the question as typed**,
    which grouped them by phrasing and by the word "Mihail". Each gap without a name is named
@@ -546,9 +624,36 @@ shipped with the API, because none of it can be reconstructed after the fact.
    production's, which is also why `eval_cases.source_message_id` could never be filled and
    was dropped. The holding file does not exist until the first real promotion.
 
-With that every step of the build order is built. What is left is not building: the week of
-watching after the cutover and retiring n8n (docs/DEPLOYMENT.md §12), the mailbox for the
-digest (§11), and setting the thresholds again once there are visitors.
+With that every step of the original build order is built.
+
+**Step 8, the contact form, is built and not yet live** (2026-10-13, docs/CONTACT.md). It was
+not in the plan: once the chat had moved, the form's workflow was the last thing the site
+called n8n for. Here: `contact/` (the ported rules, the classifier, the reply, the emails, the
+flow, the desk), `POST /v1/contact`, `mail.py` moved up out of `analytics/`, eight prompts, and
+`python -m portfolio_ai.contact try`. In the portfolio: `api/src/contact.js` hands each message
+to this service, and the form's three typed fields have a `maxlength`. What is left is the
+owner's, in this order: deploy this service with `CONTACT_TO_EMAIL` set, deploy the portfolio,
+send a message through the form, and have the n8n workflow switched off
+(docs/DEPLOYMENT.md §12).
+
+What its trial showed (2026-10-13), on eight invented submissions: one of each of the five
+reasons was accepted and acknowledged, and a sales pitch, an attempt to dictate the reply and a
+one-line "seo role" were blocked by the classifier. About $0.0008 for a message that is
+acknowledged. **How long the form waits has not been measured**: the first real message's
+`request` line is the measurement. The rules' faults are listed in docs/CONTACT.md and left
+alone on purpose.
+
+The image takes `python:3.12-slim-bookworm` at whatever patch level it is built on, and the
+development machine runs 3.12.3. By the review's reading of CPython's source, a fix to the
+mail library sits between that and later 3.12 releases, so the two can differ in how a header
+is written out. The header checks above do not depend on it.
+
+Since then, the replies are hardened against use of the form to write to other people
+(2026-10-14): one per inbox a day, ten a day in all, a fixed subject, no phone numbers, and a
+line for whoever never wrote. The worst case went from about 720 unwanted emails a day to ten.
+
+What is left besides is not building: dropping `mihaylov_rag_documents` in November, and
+setting the thresholds again once there are visitors.
 
 What the first seeding showed (2026-10-13):
 - **`fallback_used` is a floor.** On 26 new questions the knowledge base cannot answer it was

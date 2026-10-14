@@ -1,6 +1,7 @@
 """The prompts: that they load, and that none of them changes by accident."""
 
 import json
+import re
 from pathlib import Path
 
 import pytest
@@ -25,6 +26,14 @@ PINNED = {
     "daily_limit_reply": (1, "f4daad636fed"),
     "judge": (2, "d8c0973fd84d"),
     "gap_label": (1, "b3b22eb0b65c"),
+    "contact_classifier": (1, "b71c9fea9de0"),
+    "contact_reply": (1, "c2ace85bac9d"),
+    "contact_context": (1, "a2bce9f1a0ff"),
+    "contact_brief_project": (1, "5ec5abffa9f2"),
+    "contact_brief_collaboration": (1, "e86ca5118675"),
+    "contact_brief_job": (1, "df861500bb99"),
+    "contact_brief_consultation": (1, "4e99b052632a"),
+    "contact_brief_other": (1, "5cd3015fbcca"),
 }
 
 # The n8n export the prompts were ported from. Gitignored -- it carries n8n instance
@@ -172,4 +181,105 @@ def test_a_changed_prompt_keeps_n8ns_lines_in_order_but_for_the_ones_listed(prom
             continue
         # `in` on an iterator consumes it up to the match, so each line has to be
         # found after the one before it: the order is checked, not just presence.
+        assert line in ours, line
+
+
+# --- the contact form's prompts, which came from another workflow ---------------------
+
+CONTACT_EXPORT = N8N_EXPORT.with_name("Portfolio _ Contact Form -_ Email.json")
+
+# n8n's lines that the contact form's prompts do not keep, each for a reason the
+# prompt's own frontmatter gives. Every other line of n8n's has to be there still, in
+# order. `contact_context` is not here: it was written for this project.
+CONTACT_DROPPED: dict[str, tuple[str, ...]] = {
+    # The workflow asked the classifier for it and never read the answer.
+    "contact_classifier": (
+        "- should_notify_me should be true for all legitimate messages, even vague ones",
+        '  "should_notify_me": boolean,',
+    ),
+    # The reply is paragraphs of plain text now, so the sentence lost a word.
+    "contact_reply": (
+        "Your task is to write a short, professional, human-sounding HTML email reply to "
+        "people who submit the contact form on mihaylov.io.",
+    ),
+    # The lines about Mihail, in role labels the knowledge base no longer gives him.
+    # One block, contact_context.md, stands where they stood.
+    "contact_brief_project": (
+        "- Full-stack developer",
+        "- Works with PHP, Laravel, CodeIgniter, Node.js, React",
+        "- Builds automation systems and AI workflows",
+        "- Works on web platforms, integrations, and custom systems",
+    ),
+    "contact_brief_collaboration": (
+        "- Full-stack developer and automation engineer",
+        "- Works on web development, automation, AI workflows, and digital products",
+        "- Open to partnerships and collaboration on interesting projects",
+    ),
+    "contact_brief_job": (
+        "- Full-stack developer",
+        "- Works with PHP, Laravel, CodeIgniter, Node.js, React, APIs, automation",
+        "- Experience with building platforms, integrations, and automation systems",
+    ),
+    "contact_brief_consultation": (
+        "- Automation engineer and full-stack developer",
+        "- Helps businesses with automation, integrations, system architecture, and AI workflows",
+    ),
+    "contact_brief_other": (),
+}
+
+# Where n8n's reply prompt turns to how the HTML is to be written. Everything from
+# there on was rewritten as "Format rules", for paragraphs of plain text.
+HTML_RULES = "HTML structure rules:"
+
+# An n8n expression for one of the form's fields. Each became a named field of the
+# brief, filled in by `str.format`: `{email}`, `{subject}`, `{message}`.
+_FIELD_EXPRESSION = re.compile(r"\{\{ \$\('IF \| Is spam rule\?'\)\.item\.json\.body\.(\w+) \}\}")
+
+
+def _contact_originals() -> dict[str, list[str]]:
+    """n8n's own lines for each contact prompt, with the three differences that are not
+    wording taken out: the ``=`` that marks an n8n expression, a field's expression in
+    place of the field's name, and spaces at the ends of lines."""
+    nodes = {
+        node["name"]: node["parameters"]
+        for node in json.loads(CONTACT_EXPORT.read_text(encoding="utf-8"))["nodes"]
+    }
+    originals = {
+        "contact_classifier": nodes["AI Spam Classifier?"]["options"]["systemMessage"],
+        "contact_reply": nodes["AI | Reply Generator"]["options"]["systemMessage"].partition(
+            HTML_RULES
+        )[0],
+    }
+    for reason in ("Project", "Collaboration", "Job", "Consultation", "Other"):
+        assignments = nodes[f"SET | User Message - {reason}"]["assignments"]["assignments"]
+        originals[f"contact_brief_{reason.lower()}"] = assignments[0]["value"]
+    return {
+        name: [
+            _FIELD_EXPRESSION.sub(r"{\1}", line).rstrip()
+            for line in text.removeprefix("=").strip().splitlines()
+        ]
+        for name, text in originals.items()
+    }
+
+
+@pytest.mark.skipif(not CONTACT_EXPORT.exists(), reason="the n8n export is only on the dev machine")
+@pytest.mark.parametrize("name", sorted(CONTACT_DROPPED))
+def test_a_contact_prompt_keeps_n8ns_lines_in_order_but_for_the_ones_listed(name: str) -> None:
+    """ "n8n's prompts, word for word, with these changes" is what docs/CONTACT.md says
+    of them. This is that sentence as a test: what a prompt adds is its own business,
+    and what it no longer says has to be on the list above."""
+    original = _contact_originals()[name]
+    dropped = CONTACT_DROPPED[name]
+    [prompt] = [prompt for prompt in EVERY if prompt.name == name]
+    kept = prompt.text.splitlines()
+
+    # The list cannot go stale: each line on it was n8n's, and is no longer ours.
+    for line in dropped:
+        assert line in original, line
+        assert line not in kept, line
+
+    ours = iter(kept)
+    for line in original:
+        if line in dropped:
+            continue
         assert line in ours, line

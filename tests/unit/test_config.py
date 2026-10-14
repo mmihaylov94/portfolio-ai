@@ -258,14 +258,16 @@ def test_the_mail_settings_default_to_gmails_server_and_to_nobody() -> None:
     assert settings.digest_to_email is None
 
 
-@pytest.mark.parametrize("name", ["smtp_user", "smtp_app_password", "digest_to_email"])
+@pytest.mark.parametrize(
+    "name", ["smtp_user", "smtp_app_password", "digest_to_email", "contact_to_email"]
+)
 def test_a_blank_mail_setting_means_unset(name: str) -> None:
     """`.env.example` lists all three with nothing after the equals sign. Copied as
     they are, they have to mean "no email", not "an address that is an empty string"."""
     assert getattr(_settings(**{name: "  "}), name) is None
 
 
-@pytest.mark.parametrize("name", ["smtp_user", "digest_to_email"])
+@pytest.mark.parametrize("name", ["smtp_user", "digest_to_email", "contact_to_email"])
 @pytest.mark.parametrize(
     "value",
     [
@@ -275,8 +277,25 @@ def test_a_blank_mail_setting_means_unset(name: str) -> None:
         "ow ner@example.com",
         "owner@example.com\nBcc: someone@example.com",
         "jos\N{LATIN SMALL LETTER E WITH ACUTE}@example.com",
+        # Each passed the shape check and was refused by mail.py at the first send: the
+        # mail library reads every one of them as something other than itself.
+        '"quoted"@example.com',
+        "owner@example.com.",
+        "a,b@example.com",
+        "Owner<owner@example.com>",
     ],
-    ids=["no-domain", "no-dot", "no-name", "a-space", "a-second-header", "not-ascii"],
+    ids=[
+        "no-domain",
+        "no-dot",
+        "no-name",
+        "a-space",
+        "a-second-header",
+        "not-ascii",
+        "quoted",
+        "a-trailing-dot",
+        "two-addresses",
+        "a-name-and-brackets",
+    ],
 )
 def test_what_is_plainly_not_an_address_is_refused_without_being_repeated(
     name: str, value: str
@@ -312,6 +331,36 @@ def test_a_real_looking_address_and_a_password_are_kept() -> None:
     assert settings.smtp_app_password is not None
     assert "abcd efgh" not in repr(settings), "a SecretStr, like the OpenAI key"
     assert settings.smtp_app_password.get_secret_value() == made_up
+
+
+def test_the_contact_form_has_nobody_to_tell_until_it_is_given_somebody() -> None:
+    """Unset by default, like the digest's recipient: configuration, and never an
+    address written into this repository. Without it the endpoint answers 503."""
+    assert _settings().contact_to_email is None
+    assert _settings(contact_to_email="owner@example.com").contact_to_email == "owner@example.com"
+
+
+def test_the_contact_forms_hourly_limit_is_thirty_and_at_least_one() -> None:
+    """Thirty an hour for the whole service by default. Nought is refused rather
+    than read as "off": the form is switched off by leaving its recipient unset,
+    and a limit that admits nothing would look like a fault."""
+    assert _settings().contact_max_per_hour == 30
+    assert _settings(contact_max_per_hour=1).contact_max_per_hour == 1
+    with pytest.raises(ValidationError):
+        _settings(contact_max_per_hour=0)
+    with pytest.raises(ValidationError):
+        _settings(contact_max_per_hour=1001)
+
+
+def test_the_contact_forms_replies_are_ten_a_day_and_nought_switches_them_off() -> None:
+    """Unlike the hourly limit, nought is allowed here and means something: the
+    messages still come in and reach the owner, and none is answered automatically."""
+    assert _settings().contact_max_replies_per_day == 10
+    assert _settings(contact_max_replies_per_day=0).contact_max_replies_per_day == 0
+    with pytest.raises(ValidationError):
+        _settings(contact_max_replies_per_day=-1)
+    with pytest.raises(ValidationError):
+        _settings(contact_max_replies_per_day=1001)
 
 
 def test_the_mail_port_is_a_port() -> None:

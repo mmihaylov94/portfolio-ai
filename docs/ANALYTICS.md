@@ -218,8 +218,9 @@ addresses it is about, and the message is logged.
 returns. Inside the event loop that would stop every other task for as long as it took, which
 is the lesson-5 trap. The command does its database and OpenAI work inside the loop, lets the
 loop finish, and then sends from ordinary code with nothing left to hold up.
-`asyncio.to_thread(send, ...)` would be the tool inside a server, where the loop has other work
-to do; one command does not need the machinery.
+`asyncio.to_thread(send, ...)` is the tool inside a server, where the loop has other work to
+do, and the contact form sends that way (docs/CONTACT.md). One command does not need the
+machinery.
 
 ## Content gaps
 
@@ -722,7 +723,7 @@ there, not that a file is missing.
 | `analytics/report.py` | `window`, `build` (the queries and the embedding of the questions) and `render` (the two forms) |
 | `analytics/seed.py` | the invented file's format and rules, playing it through the assistant, clearing it, and the local-only guard |
 | `analytics/digest.py` | the email as a subject and a body, composed from a report; the one-line test message |
-| `analytics/mail.py` | the mail settings, and `send`: one plain-text message over SMTP, with the failures turned into this project's errors |
+| `mail.py` | the mail settings, and `send`: one message over SMTP, with the failures turned into this project's errors. At the top of the package since the contact form became its second caller |
 | `analytics/clustering.py` | grouping vectors by their centres: `centre_of` and `cluster`, with no database and no model |
 | `analytics/gaps.py` | the refresh: failed questions to groups, groups to stored gaps, names for the ones without, one write. Also what a label may hold, and the limits of one refresh |
 | `assistant/prompts/gap_label.md` | what the model is told when it names a gap. Versioned and pinned like every prompt, and kept out of the list an eval run records |
@@ -915,7 +916,7 @@ from the same data.
   `?` instead of stopping.
 - **`tests/unit/test_agent.py`**: a search records the `doc_id` and section of each passage, in
   the order of its chunk ids.
-- **`tests/unit/test_analytics_mail.py`**, with `tests/smtp_fake.py` standing in for the mail
+- **`tests/unit/test_mail.py`**, with `tests/smtp_fake.py` standing in for the mail
   server: the connection is encrypted before the password is sent; the context passed really
   checks the certificate and the host name; the message carries its sender, recipient and body,
   characters outside ASCII included. A rejected login names the settings and repeats neither

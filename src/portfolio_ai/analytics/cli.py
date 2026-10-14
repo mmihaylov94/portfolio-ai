@@ -28,13 +28,15 @@ from typing import Annotated
 import structlog
 import typer
 
+from portfolio_ai import mail
 from portfolio_ai.analytics import digest as digests
 from portfolio_ai.analytics import gaps as gap_refresh
-from portfolio_ai.analytics import mail, promote, retention, seed
+from portfolio_ai.analytics import promote, retention, seed
 from portfolio_ai.analytics import report as reports
 from portfolio_ai.analytics.retention import RetentionReport
 from portfolio_ai.analytics.seed import InventedTraffic, Played, SeedReport
 from portfolio_ai.cli import run_async
+from portfolio_ai.config import get_settings
 from portfolio_ai.db import analytics as analytics_db
 from portfolio_ai.db.pool import close_pool
 from portfolio_ai.exceptions import AnalyticsError, ConfigError, PortfolioAIError
@@ -172,7 +174,7 @@ def send_digest(
             # mail settings arrive.
             start, end = reports.window(since)
 
-            missing = mail.missing_settings()
+            missing = mail.missing_settings("DIGEST_TO_EMAIL", get_settings().digest_to_email)
             if test:
                 if missing:
                     raise ConfigError(f"Cannot send a test. Not set: {', '.join(missing)}.")
@@ -219,11 +221,11 @@ def send_digest(
             typer.echo(f"Subject: {message.subject}\n\n{message.body}")
             typer.echo("DRY RUN: nothing was sent.")
     elif code == 0 and outbox:
-        box = mail.mailbox()
+        box = mail.mailbox(get_settings().digest_to_email)
         if box is None:  # pragma: no cover - missing_settings() said otherwise above
             raise RuntimeError("the mail settings went missing between two reads")
         # After the event loop has finished, on purpose: smtplib blocks, and there
-        # is now nothing for it to block (see analytics/mail.py).
+        # is now nothing for it to block (see mail.py).
         try:
             mail.send(box, subject=outbox[0].subject, body=outbox[0].body)
         except PortfolioAIError as exc:

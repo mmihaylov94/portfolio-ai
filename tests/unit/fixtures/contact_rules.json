@@ -1,0 +1,1787 @@
+[
+	{
+		"name": "plain",
+		"input": {
+			"email": "visitor@example.com",
+			"subject": "A new project",
+			"reason": "project",
+			"message": "I would like to talk about a project for my company next month."
+		},
+		"expected": {
+			"email": "visitor@example.com",
+			"subject": "A new project",
+			"message": "I would like to talk about a project for my company next month.",
+			"reason": "project",
+			"is_valid": true,
+			"is_spam_rule": false,
+			"suspicious": false,
+			"spam_score": 0,
+			"rule_hits": [],
+			"block_reason": ""
+		}
+	},
+	{
+		"name": "tabs-and-line-breaks",
+		"input": {
+			"email": "visitor@example.com",
+			"subject": "A new project",
+			"reason": "project",
+			"message": "I would like\tto talk\r\nabout a project\n\nfor my company."
+		},
+		"expected": {
+			"email": "visitor@example.com",
+			"subject": "A new project",
+			"message": "I would like to talk about a project for my company.",
+			"reason": "project",
+			"is_valid": true,
+			"is_spam_rule": false,
+			"suspicious": false,
+			"spam_score": 0,
+			"rule_hits": [],
+			"block_reason": ""
+		}
+	},
+	{
+		"name": "no-break-and-odd-spaces",
+		"input": {
+			"email": "visitor@example.com",
+			"subject": "A new project",
+			"reason": "project",
+			"message": "I would\u00a0like to\u2003talk about\u2028a project\u3000today."
+		},
+		"expected": {
+			"email": "visitor@example.com",
+			"subject": "A new project",
+			"message": "I would like to talk about a project today.",
+			"reason": "project",
+			"is_valid": true,
+			"is_spam_rule": false,
+			"suspicious": false,
+			"spam_score": 0,
+			"rule_hits": [],
+			"block_reason": ""
+		}
+	},
+	{
+		"name": "next-line-is-not-space",
+		"input": {
+			"email": "visitor@example.com",
+			"subject": "A new project",
+			"reason": "project",
+			"message": "I would like to talk\u0085about a project today."
+		},
+		"expected": {
+			"email": "visitor@example.com",
+			"subject": "A new project",
+			"message": "I would like to talk\u0085about a project today.",
+			"reason": "project",
+			"is_valid": true,
+			"is_spam_rule": false,
+			"suspicious": false,
+			"spam_score": 0,
+			"rule_hits": [],
+			"block_reason": ""
+		}
+	},
+	{
+		"name": "unit-separator-is-not-space",
+		"input": {
+			"email": "visitor@example.com",
+			"subject": "A new project",
+			"reason": "project",
+			"message": "I would like to talk\u001fabout a project today."
+		},
+		"expected": {
+			"email": "visitor@example.com",
+			"subject": "A new project",
+			"message": "I would like to talk\u001fabout a project today.",
+			"reason": "project",
+			"is_valid": true,
+			"is_spam_rule": false,
+			"suspicious": false,
+			"spam_score": 0,
+			"rule_hits": [],
+			"block_reason": ""
+		}
+	},
+	{
+		"name": "zero-width-inside-a-keyword",
+		"input": {
+			"email": "visitor@example.com",
+			"subject": "A new project",
+			"reason": "project",
+			"message": "We offer s\u200be\u200co services for your website today."
+		},
+		"expected": {
+			"email": "visitor@example.com",
+			"subject": "A new project",
+			"message": "We offer seo services for your website today.",
+			"reason": "project",
+			"is_valid": true,
+			"is_spam_rule": false,
+			"suspicious": false,
+			"spam_score": 2,
+			"rule_hits": [
+				"Spam keyword hits: 1"
+			],
+			"block_reason": ""
+		}
+	},
+	{
+		"name": "byte-order-mark-inside",
+		"input": {
+			"email": "visitor@example.com",
+			"subject": "A\ufeff new\ufeff project",
+			"reason": "project",
+			"message": "I would like to talk about a project for my company next month."
+		},
+		"expected": {
+			"email": "visitor@example.com",
+			"subject": "A new project",
+			"message": "I would like to talk about a project for my company next month.",
+			"reason": "project",
+			"is_valid": true,
+			"is_spam_rule": false,
+			"suspicious": false,
+			"spam_score": 0,
+			"rule_hits": [],
+			"block_reason": ""
+		}
+	},
+	{
+		"name": "html-is-removed",
+		"input": {
+			"email": "visitor@example.com",
+			"subject": "<b>A new</b> project",
+			"reason": "project",
+			"message": "<p>I would like to talk</p><script>alert(1)</script> about a project."
+		},
+		"expected": {
+			"email": "visitor@example.com",
+			"subject": "A new project",
+			"message": "I would like to talk alert(1) about a project.",
+			"reason": "project",
+			"is_valid": true,
+			"is_spam_rule": false,
+			"suspicious": false,
+			"spam_score": 0,
+			"rule_hits": [],
+			"block_reason": ""
+		}
+	},
+	{
+		"name": "a-less-than-eats-to-the-next-greater-than",
+		"input": {
+			"email": "visitor@example.com",
+			"subject": "A new project",
+			"reason": "project",
+			"message": "If a < b and c > d then we should talk about the project."
+		},
+		"expected": {
+			"email": "visitor@example.com",
+			"subject": "A new project",
+			"message": "If a d then we should talk about the project.",
+			"reason": "project",
+			"is_valid": true,
+			"is_spam_rule": false,
+			"suspicious": false,
+			"spam_score": 0,
+			"rule_hits": [],
+			"block_reason": ""
+		}
+	},
+	{
+		"name": "an-unclosed-tag-stays",
+		"input": {
+			"email": "visitor@example.com",
+			"subject": "A new project",
+			"reason": "project",
+			"message": "The budget is < 5000 and the deadline is next month, roughly."
+		},
+		"expected": {
+			"email": "visitor@example.com",
+			"subject": "A new project",
+			"message": "The budget is < 5000 and the deadline is next month, roughly.",
+			"reason": "project",
+			"is_valid": true,
+			"is_spam_rule": false,
+			"suspicious": false,
+			"spam_score": 0,
+			"rule_hits": [],
+			"block_reason": ""
+		}
+	},
+	{
+		"name": "email-is-lowercased",
+		"input": {
+			"email": "  Visitor@Example.COM ",
+			"subject": "A new project",
+			"reason": "project",
+			"message": "I would like to talk about a project for my company next month."
+		},
+		"expected": {
+			"email": "visitor@example.com",
+			"subject": "A new project",
+			"message": "I would like to talk about a project for my company next month.",
+			"reason": "project",
+			"is_valid": true,
+			"is_spam_rule": false,
+			"suspicious": false,
+			"spam_score": 0,
+			"rule_hits": [],
+			"block_reason": ""
+		}
+	},
+	{
+		"name": "a-dotted-capital-i",
+		"input": {
+			"email": "\u0130NFO@EXAMPLE.COM",
+			"subject": "A new project",
+			"reason": "project",
+			"message": "I would like to talk about a project for my company next month."
+		},
+		"expected": {
+			"email": "i\u0307nfo@example.com",
+			"subject": "A new project",
+			"message": "I would like to talk about a project for my company next month.",
+			"reason": "project",
+			"is_valid": true,
+			"is_spam_rule": false,
+			"suspicious": false,
+			"spam_score": 0,
+			"rule_hits": [],
+			"block_reason": ""
+		}
+	},
+	{
+		"name": "a-final-sigma",
+		"input": {
+			"email": "visitor@example.com",
+			"subject": "\u039f\u0394\u039f\u03a3",
+			"reason": "project",
+			"message": "\u039f\u0394\u039f\u03a3"
+		},
+		"expected": {
+			"email": "visitor@example.com",
+			"subject": "\u039f\u0394\u039f\u03a3",
+			"message": "\u039f\u0394\u039f\u03a3",
+			"reason": "project",
+			"is_valid": true,
+			"is_spam_rule": false,
+			"suspicious": true,
+			"spam_score": 3,
+			"rule_hits": [
+				"Message too short",
+				"Subject and message are identical"
+			],
+			"block_reason": ""
+		}
+	},
+	{
+		"name": "reason-is-cleaned",
+		"input": {
+			"email": "visitor@example.com",
+			"subject": "A new project",
+			"reason": "  Project\n",
+			"message": "I would like to talk about a project for my company next month."
+		},
+		"expected": {
+			"email": "visitor@example.com",
+			"subject": "A new project",
+			"message": "I would like to talk about a project for my company next month.",
+			"reason": "project",
+			"is_valid": true,
+			"is_spam_rule": false,
+			"suspicious": false,
+			"spam_score": 0,
+			"rule_hits": [],
+			"block_reason": ""
+		}
+	},
+	{
+		"name": "no-email",
+		"input": {
+			"email": "",
+			"subject": "A new project",
+			"reason": "project",
+			"message": "I would like to talk about a project for my company next month."
+		},
+		"expected": {
+			"email": "",
+			"subject": "A new project",
+			"message": "I would like to talk about a project for my company next month.",
+			"reason": "project",
+			"is_valid": false,
+			"is_spam_rule": false,
+			"suspicious": false,
+			"spam_score": 0,
+			"rule_hits": [],
+			"block_reason": "Missing required fields"
+		}
+	},
+	{
+		"name": "a-message-of-spaces",
+		"input": {
+			"email": "visitor@example.com",
+			"subject": "A new project",
+			"reason": "project",
+			"message": " \t\u00a0\n"
+		},
+		"expected": {
+			"email": "visitor@example.com",
+			"subject": "A new project",
+			"message": "",
+			"reason": "project",
+			"is_valid": false,
+			"is_spam_rule": false,
+			"suspicious": false,
+			"spam_score": 0,
+			"rule_hits": [],
+			"block_reason": "Missing required fields"
+		}
+	},
+	{
+		"name": "a-subject-of-zero-width",
+		"input": {
+			"email": "visitor@example.com",
+			"subject": "\u200b\u200d\ufeff",
+			"reason": "project",
+			"message": "I would like to talk about a project for my company next month."
+		},
+		"expected": {
+			"email": "visitor@example.com",
+			"subject": "",
+			"message": "I would like to talk about a project for my company next month.",
+			"reason": "project",
+			"is_valid": false,
+			"is_spam_rule": false,
+			"suspicious": false,
+			"spam_score": 0,
+			"rule_hits": [],
+			"block_reason": "Missing required fields"
+		}
+	},
+	{
+		"name": "a-message-of-a-tag",
+		"input": {
+			"email": "visitor@example.com",
+			"subject": "A new project",
+			"reason": "project",
+			"message": "<br>"
+		},
+		"expected": {
+			"email": "visitor@example.com",
+			"subject": "A new project",
+			"message": "",
+			"reason": "project",
+			"is_valid": false,
+			"is_spam_rule": false,
+			"suspicious": false,
+			"spam_score": 0,
+			"rule_hits": [],
+			"block_reason": "Missing required fields"
+		}
+	},
+	{
+		"name": "an-unknown-reason",
+		"input": {
+			"email": "visitor@example.com",
+			"subject": "A new project",
+			"reason": "sales",
+			"message": "I would like to talk about a project for my company next month."
+		},
+		"expected": {
+			"email": "visitor@example.com",
+			"subject": "A new project",
+			"message": "I would like to talk about a project for my company next month.",
+			"reason": "sales",
+			"is_valid": false,
+			"is_spam_rule": false,
+			"suspicious": false,
+			"spam_score": 0,
+			"rule_hits": [],
+			"block_reason": "Invalid reason value"
+		}
+	},
+	{
+		"name": "no-reason",
+		"input": {
+			"email": "visitor@example.com",
+			"subject": "A new project",
+			"reason": "",
+			"message": "I would like to talk about a project for my company next month."
+		},
+		"expected": {
+			"email": "visitor@example.com",
+			"subject": "A new project",
+			"message": "I would like to talk about a project for my company next month.",
+			"reason": "",
+			"is_valid": false,
+			"is_spam_rule": false,
+			"suspicious": false,
+			"spam_score": 0,
+			"rule_hits": [],
+			"block_reason": "Missing required fields"
+		}
+	},
+	{
+		"name": "missing-comes-before-the-reason",
+		"input": {
+			"email": "",
+			"subject": "A new project",
+			"reason": "sales",
+			"message": "I would like to talk about a project for my company next month."
+		},
+		"expected": {
+			"email": "",
+			"subject": "A new project",
+			"message": "I would like to talk about a project for my company next month.",
+			"reason": "sales",
+			"is_valid": false,
+			"is_spam_rule": false,
+			"suspicious": false,
+			"spam_score": 0,
+			"rule_hits": [],
+			"block_reason": "Missing required fields"
+		}
+	},
+	{
+		"name": "the-reason-comes-before-the-address",
+		"input": {
+			"email": "not-an-address",
+			"subject": "A new project",
+			"reason": "sales",
+			"message": "I would like to talk about a project for my company next month."
+		},
+		"expected": {
+			"email": "not-an-address",
+			"subject": "A new project",
+			"message": "I would like to talk about a project for my company next month.",
+			"reason": "sales",
+			"is_valid": false,
+			"is_spam_rule": false,
+			"suspicious": false,
+			"spam_score": 0,
+			"rule_hits": [],
+			"block_reason": "Invalid reason value"
+		}
+	},
+	{
+		"name": "no-at",
+		"input": {
+			"email": "visitor.example.com",
+			"subject": "A new project",
+			"reason": "project",
+			"message": "I would like to talk about a project for my company next month."
+		},
+		"expected": {
+			"email": "visitor.example.com",
+			"subject": "A new project",
+			"message": "I would like to talk about a project for my company next month.",
+			"reason": "project",
+			"is_valid": false,
+			"is_spam_rule": false,
+			"suspicious": false,
+			"spam_score": 0,
+			"rule_hits": [],
+			"block_reason": "Invalid email format"
+		}
+	},
+	{
+		"name": "two-ats",
+		"input": {
+			"email": "visitor@@example.com",
+			"subject": "A new project",
+			"reason": "project",
+			"message": "I would like to talk about a project for my company next month."
+		},
+		"expected": {
+			"email": "visitor@@example.com",
+			"subject": "A new project",
+			"message": "I would like to talk about a project for my company next month.",
+			"reason": "project",
+			"is_valid": false,
+			"is_spam_rule": false,
+			"suspicious": false,
+			"spam_score": 0,
+			"rule_hits": [],
+			"block_reason": "Invalid email format"
+		}
+	},
+	{
+		"name": "two-addresses",
+		"input": {
+			"email": "a@example.com,b@example.com",
+			"subject": "A new project",
+			"reason": "project",
+			"message": "I would like to talk about a project for my company next month."
+		},
+		"expected": {
+			"email": "a@example.com,b@example.com",
+			"subject": "A new project",
+			"message": "I would like to talk about a project for my company next month.",
+			"reason": "project",
+			"is_valid": false,
+			"is_spam_rule": false,
+			"suspicious": false,
+			"spam_score": 0,
+			"rule_hits": [],
+			"block_reason": "Invalid email format"
+		}
+	},
+	{
+		"name": "a-space-in-it",
+		"input": {
+			"email": "vis itor@example.com",
+			"subject": "A new project",
+			"reason": "project",
+			"message": "I would like to talk about a project for my company next month."
+		},
+		"expected": {
+			"email": "vis itor@example.com",
+			"subject": "A new project",
+			"message": "I would like to talk about a project for my company next month.",
+			"reason": "project",
+			"is_valid": false,
+			"is_spam_rule": false,
+			"suspicious": false,
+			"spam_score": 0,
+			"rule_hits": [],
+			"block_reason": "Invalid email format"
+		}
+	},
+	{
+		"name": "no-dot-after-the-at",
+		"input": {
+			"email": "visitor@example",
+			"subject": "A new project",
+			"reason": "project",
+			"message": "I would like to talk about a project for my company next month."
+		},
+		"expected": {
+			"email": "visitor@example",
+			"subject": "A new project",
+			"message": "I would like to talk about a project for my company next month.",
+			"reason": "project",
+			"is_valid": false,
+			"is_spam_rule": false,
+			"suspicious": false,
+			"spam_score": 0,
+			"rule_hits": [],
+			"block_reason": "Invalid email format"
+		}
+	},
+	{
+		"name": "a-comma-before-the-at",
+		"input": {
+			"email": "a,b@example.com",
+			"subject": "A new project",
+			"reason": "project",
+			"message": "I would like to talk about a project for my company next month."
+		},
+		"expected": {
+			"email": "a,b@example.com",
+			"subject": "A new project",
+			"message": "I would like to talk about a project for my company next month.",
+			"reason": "project",
+			"is_valid": true,
+			"is_spam_rule": false,
+			"suspicious": false,
+			"spam_score": 0,
+			"rule_hits": [],
+			"block_reason": ""
+		}
+	},
+	{
+		"name": "a-line-break-at-the-end",
+		"input": {
+			"email": "visitor@example.com\n",
+			"subject": "A new project",
+			"reason": "project",
+			"message": "I would like to talk about a project for my company next month."
+		},
+		"expected": {
+			"email": "visitor@example.com",
+			"subject": "A new project",
+			"message": "I would like to talk about a project for my company next month.",
+			"reason": "project",
+			"is_valid": true,
+			"is_spam_rule": false,
+			"suspicious": false,
+			"spam_score": 0,
+			"rule_hits": [],
+			"block_reason": ""
+		}
+	},
+	{
+		"name": "a-line-break-inside",
+		"input": {
+			"email": "visitor@example.com\nBcc: other@example.com",
+			"subject": "A new project",
+			"reason": "project",
+			"message": "I would like to talk about a project for my company next month."
+		},
+		"expected": {
+			"email": "visitor@example.com bcc: other@example.com",
+			"subject": "A new project",
+			"message": "I would like to talk about a project for my company next month.",
+			"reason": "project",
+			"is_valid": false,
+			"is_spam_rule": false,
+			"suspicious": false,
+			"spam_score": 0,
+			"rule_hits": [],
+			"block_reason": "Invalid email format"
+		}
+	},
+	{
+		"name": "not-ascii",
+		"input": {
+			"email": "b\u00fcro@ex\u00e4mple.com",
+			"subject": "A new project",
+			"reason": "project",
+			"message": "I would like to talk about a project for my company next month."
+		},
+		"expected": {
+			"email": "b\u00fcro@ex\u00e4mple.com",
+			"subject": "A new project",
+			"message": "I would like to talk about a project for my company next month.",
+			"reason": "project",
+			"is_valid": true,
+			"is_spam_rule": false,
+			"suspicious": false,
+			"spam_score": 0,
+			"rule_hits": [],
+			"block_reason": ""
+		}
+	},
+	{
+		"name": "a-disposable-domain",
+		"input": {
+			"email": "someone@mailinator.com",
+			"subject": "A new project",
+			"reason": "project",
+			"message": "I would like to talk about a project for my company next month."
+		},
+		"expected": {
+			"email": "someone@mailinator.com",
+			"subject": "A new project",
+			"message": "I would like to talk about a project for my company next month.",
+			"reason": "project",
+			"is_valid": true,
+			"is_spam_rule": false,
+			"suspicious": false,
+			"spam_score": 2,
+			"rule_hits": [
+				"Disposable email domain"
+			],
+			"block_reason": ""
+		}
+	},
+	{
+		"name": "a-subdomain-of-one-is-not",
+		"input": {
+			"email": "someone@mail.mailinator.com",
+			"subject": "A new project",
+			"reason": "project",
+			"message": "I would like to talk about a project for my company next month."
+		},
+		"expected": {
+			"email": "someone@mail.mailinator.com",
+			"subject": "A new project",
+			"message": "I would like to talk about a project for my company next month.",
+			"reason": "project",
+			"is_valid": true,
+			"is_spam_rule": false,
+			"suspicious": false,
+			"spam_score": 0,
+			"rule_hits": [],
+			"block_reason": ""
+		}
+	},
+	{
+		"name": "nine-characters",
+		"input": {
+			"email": "visitor@example.com",
+			"subject": "A new project",
+			"reason": "project",
+			"message": "Call me!!"
+		},
+		"expected": {
+			"email": "visitor@example.com",
+			"subject": "A new project",
+			"message": "Call me!!",
+			"reason": "project",
+			"is_valid": true,
+			"is_spam_rule": false,
+			"suspicious": false,
+			"spam_score": 2,
+			"rule_hits": [
+				"Message too short"
+			],
+			"block_reason": ""
+		}
+	},
+	{
+		"name": "ten-characters",
+		"input": {
+			"email": "visitor@example.com",
+			"subject": "A new project",
+			"reason": "project",
+			"message": "Call me!!!"
+		},
+		"expected": {
+			"email": "visitor@example.com",
+			"subject": "A new project",
+			"message": "Call me!!!",
+			"reason": "project",
+			"is_valid": true,
+			"is_spam_rule": false,
+			"suspicious": false,
+			"spam_score": 0,
+			"rule_hits": [],
+			"block_reason": ""
+		}
+	},
+	{
+		"name": "four-emoji-are-eight",
+		"input": {
+			"email": "visitor@example.com",
+			"subject": "A new project",
+			"reason": "project",
+			"message": "\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00"
+		},
+		"expected": {
+			"email": "visitor@example.com",
+			"subject": "A new project",
+			"message": "\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00",
+			"reason": "project",
+			"is_valid": true,
+			"is_spam_rule": false,
+			"suspicious": false,
+			"spam_score": 2,
+			"rule_hits": [
+				"Message too short"
+			],
+			"block_reason": ""
+		}
+	},
+	{
+		"name": "five-emoji-are-ten",
+		"input": {
+			"email": "visitor@example.com",
+			"subject": "A new project",
+			"reason": "project",
+			"message": "\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00"
+		},
+		"expected": {
+			"email": "visitor@example.com",
+			"subject": "A new project",
+			"message": "\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00",
+			"reason": "project",
+			"is_valid": true,
+			"is_spam_rule": false,
+			"suspicious": false,
+			"spam_score": 0,
+			"rule_hits": [],
+			"block_reason": ""
+		}
+	},
+	{
+		"name": "a-subject-of-one-letter",
+		"input": {
+			"email": "visitor@example.com",
+			"subject": "A",
+			"reason": "project",
+			"message": "I would like to talk about a project for my company next month."
+		},
+		"expected": {
+			"email": "visitor@example.com",
+			"subject": "A",
+			"message": "I would like to talk about a project for my company next month.",
+			"reason": "project",
+			"is_valid": true,
+			"is_spam_rule": false,
+			"suspicious": false,
+			"spam_score": 1,
+			"rule_hits": [
+				"Subject too short"
+			],
+			"block_reason": ""
+		}
+	},
+	{
+		"name": "a-subject-of-one-emoji",
+		"input": {
+			"email": "visitor@example.com",
+			"subject": "\ud83d\ude00",
+			"reason": "project",
+			"message": "I would like to talk about a project for my company next month."
+		},
+		"expected": {
+			"email": "visitor@example.com",
+			"subject": "\ud83d\ude00",
+			"message": "I would like to talk about a project for my company next month.",
+			"reason": "project",
+			"is_valid": true,
+			"is_spam_rule": false,
+			"suspicious": false,
+			"spam_score": 0,
+			"rule_hits": [],
+			"block_reason": ""
+		}
+	},
+	{
+		"name": "two-links",
+		"input": {
+			"email": "visitor@example.com",
+			"subject": "A new project",
+			"reason": "project",
+			"message": "See https://example.com/a and http://example.com/b for the details of it."
+		},
+		"expected": {
+			"email": "visitor@example.com",
+			"subject": "A new project",
+			"message": "See https://example.com/a and http://example.com/b for the details of it.",
+			"reason": "project",
+			"is_valid": true,
+			"is_spam_rule": false,
+			"suspicious": false,
+			"spam_score": 0,
+			"rule_hits": [],
+			"block_reason": ""
+		}
+	},
+	{
+		"name": "three-links",
+		"input": {
+			"email": "visitor@example.com",
+			"subject": "A new project",
+			"reason": "project",
+			"message": "See https://example.com/a and http://example.com/b and www.example.com for it."
+		},
+		"expected": {
+			"email": "visitor@example.com",
+			"subject": "A new project",
+			"message": "See https://example.com/a and http://example.com/b and www.example.com for it.",
+			"reason": "project",
+			"is_valid": true,
+			"is_spam_rule": false,
+			"suspicious": false,
+			"spam_score": 2,
+			"rule_hits": [
+				"Too many links: 3"
+			],
+			"block_reason": ""
+		}
+	},
+	{
+		"name": "three-links-with-a-long-s-are-none",
+		"input": {
+			"email": "visitor@example.com",
+			"subject": "A new project",
+			"reason": "project",
+			"message": "See http\u017f://example.com/a http\u017f://example.com/b http\u017f://example.com/c for the details."
+		},
+		"expected": {
+			"email": "visitor@example.com",
+			"subject": "A new project",
+			"message": "See http\u017f://example.com/a http\u017f://example.com/b http\u017f://example.com/c for the details.",
+			"reason": "project",
+			"is_valid": true,
+			"is_spam_rule": false,
+			"suspicious": false,
+			"spam_score": 0,
+			"rule_hits": [],
+			"block_reason": ""
+		}
+	},
+	{
+		"name": "three-links-in-capitals",
+		"input": {
+			"email": "visitor@example.com",
+			"subject": "A new project",
+			"reason": "project",
+			"message": "HTTPS://EXAMPLE.COM/A HTTP://EXAMPLE.COM/B WWW.EXAMPLE.COM are the pages for it."
+		},
+		"expected": {
+			"email": "visitor@example.com",
+			"subject": "A new project",
+			"message": "HTTPS://EXAMPLE.COM/A HTTP://EXAMPLE.COM/B WWW.EXAMPLE.COM are the pages for it.",
+			"reason": "project",
+			"is_valid": true,
+			"is_spam_rule": false,
+			"suspicious": true,
+			"spam_score": 3,
+			"rule_hits": [
+				"Too many links: 3",
+				"Too much uppercase text"
+			],
+			"block_reason": ""
+		}
+	},
+	{
+		"name": "two-words-four-times-each",
+		"input": {
+			"email": "visitor@example.com",
+			"subject": "A new project",
+			"reason": "project",
+			"message": "buy cheap buy cheap buy cheap buy cheap"
+		},
+		"expected": {
+			"email": "visitor@example.com",
+			"subject": "A new project",
+			"message": "buy cheap buy cheap buy cheap buy cheap",
+			"reason": "project",
+			"is_valid": true,
+			"is_spam_rule": false,
+			"suspicious": false,
+			"spam_score": 2,
+			"rule_hits": [
+				"Excessive repetition"
+			],
+			"block_reason": ""
+		}
+	},
+	{
+		"name": "two-words-three-times-each",
+		"input": {
+			"email": "visitor@example.com",
+			"subject": "A new project",
+			"reason": "project",
+			"message": "buy cheap buy cheap buy cheap now please"
+		},
+		"expected": {
+			"email": "visitor@example.com",
+			"subject": "A new project",
+			"message": "buy cheap buy cheap buy cheap now please",
+			"reason": "project",
+			"is_valid": true,
+			"is_spam_rule": false,
+			"suspicious": false,
+			"spam_score": 0,
+			"rule_hits": [],
+			"block_reason": ""
+		}
+	},
+	{
+		"name": "one-word-four-times",
+		"input": {
+			"email": "visitor@example.com",
+			"subject": "A new project",
+			"reason": "project",
+			"message": "really really really really want to talk soon"
+		},
+		"expected": {
+			"email": "visitor@example.com",
+			"subject": "A new project",
+			"message": "really really really really want to talk soon",
+			"reason": "project",
+			"is_valid": true,
+			"is_spam_rule": false,
+			"suspicious": false,
+			"spam_score": 0,
+			"rule_hits": [],
+			"block_reason": ""
+		}
+	},
+	{
+		"name": "five-words-is-too-few",
+		"input": {
+			"email": "visitor@example.com",
+			"subject": "A new project",
+			"reason": "project",
+			"message": "buy buy buy buy cheap"
+		},
+		"expected": {
+			"email": "visitor@example.com",
+			"subject": "A new project",
+			"message": "buy buy buy buy cheap",
+			"reason": "project",
+			"is_valid": true,
+			"is_spam_rule": false,
+			"suspicious": false,
+			"spam_score": 0,
+			"rule_hits": [],
+			"block_reason": ""
+		}
+	},
+	{
+		"name": "repetition-ignores-case",
+		"input": {
+			"email": "visitor@example.com",
+			"subject": "A new project",
+			"reason": "project",
+			"message": "Buy CHEAP buy cheap BUY Cheap buy cheap now"
+		},
+		"expected": {
+			"email": "visitor@example.com",
+			"subject": "A new project",
+			"message": "Buy CHEAP buy cheap BUY Cheap buy cheap now",
+			"reason": "project",
+			"is_valid": true,
+			"is_spam_rule": false,
+			"suspicious": false,
+			"spam_score": 2,
+			"rule_hits": [
+				"Excessive repetition"
+			],
+			"block_reason": ""
+		}
+	},
+	{
+		"name": "ten-symbols",
+		"input": {
+			"email": "visitor@example.com",
+			"subject": "A new project",
+			"reason": "project",
+			"message": "Our prices are great ########## and we should talk."
+		},
+		"expected": {
+			"email": "visitor@example.com",
+			"subject": "A new project",
+			"message": "Our prices are great ########## and we should talk.",
+			"reason": "project",
+			"is_valid": true,
+			"is_spam_rule": false,
+			"suspicious": false,
+			"spam_score": 0,
+			"rule_hits": [],
+			"block_reason": ""
+		}
+	},
+	{
+		"name": "eleven-symbols",
+		"input": {
+			"email": "visitor@example.com",
+			"subject": "A new project",
+			"reason": "project",
+			"message": "Our prices are great ########### and we should talk."
+		},
+		"expected": {
+			"email": "visitor@example.com",
+			"subject": "A new project",
+			"message": "Our prices are great ########### and we should talk.",
+			"reason": "project",
+			"is_valid": true,
+			"is_spam_rule": false,
+			"suspicious": false,
+			"spam_score": 1,
+			"rule_hits": [
+				"Too many special characters"
+			],
+			"block_reason": ""
+		}
+	},
+	{
+		"name": "five-emoji-count-as-ten-symbols",
+		"input": {
+			"email": "visitor@example.com",
+			"subject": "A new project",
+			"reason": "project",
+			"message": "Thank you for the article \ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00 it helped."
+		},
+		"expected": {
+			"email": "visitor@example.com",
+			"subject": "A new project",
+			"message": "Thank you for the article \ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00 it helped.",
+			"reason": "project",
+			"is_valid": true,
+			"is_spam_rule": false,
+			"suspicious": false,
+			"spam_score": 0,
+			"rule_hits": [],
+			"block_reason": ""
+		}
+	},
+	{
+		"name": "six-emoji-count-as-twelve-symbols",
+		"input": {
+			"email": "visitor@example.com",
+			"subject": "A new project",
+			"reason": "project",
+			"message": "Thank you for the article \ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00 it helped."
+		},
+		"expected": {
+			"email": "visitor@example.com",
+			"subject": "A new project",
+			"message": "Thank you for the article \ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00 it helped.",
+			"reason": "project",
+			"is_valid": true,
+			"is_spam_rule": false,
+			"suspicious": false,
+			"spam_score": 1,
+			"rule_hits": [
+				"Too many special characters"
+			],
+			"block_reason": ""
+		}
+	},
+	{
+		"name": "letters-outside-ascii-are-symbols",
+		"input": {
+			"email": "visitor@example.com",
+			"subject": "A new project",
+			"reason": "project",
+			"message": "\u0417\u0434\u0440\u0430\u0432\u0435\u0439\u0442\u0435, \u0438\u043c\u0430\u043c \u043f\u0440\u043e\u0435\u043a\u0442."
+		},
+		"expected": {
+			"email": "visitor@example.com",
+			"subject": "A new project",
+			"message": "\u0417\u0434\u0440\u0430\u0432\u0435\u0439\u0442\u0435, \u0438\u043c\u0430\u043c \u043f\u0440\u043e\u0435\u043a\u0442.",
+			"reason": "project",
+			"is_valid": true,
+			"is_spam_rule": false,
+			"suspicious": false,
+			"spam_score": 1,
+			"rule_hits": [
+				"Too many special characters"
+			],
+			"block_reason": ""
+		}
+	},
+	{
+		"name": "accents-are-symbols",
+		"input": {
+			"email": "visitor@example.com",
+			"subject": "A new project",
+			"reason": "project",
+			"message": "D\u00e9j\u00e0 vu \u00e0 Z\u00fcrich, t\u00e9l\u00e9phonez \u00e0 l'h\u00f4tel apr\u00e8s d\u00eener s'il vous pla\u00eet."
+		},
+		"expected": {
+			"email": "visitor@example.com",
+			"subject": "A new project",
+			"message": "D\u00e9j\u00e0 vu \u00e0 Z\u00fcrich, t\u00e9l\u00e9phonez \u00e0 l'h\u00f4tel apr\u00e8s d\u00eener s'il vous pla\u00eet.",
+			"reason": "project",
+			"is_valid": true,
+			"is_spam_rule": false,
+			"suspicious": false,
+			"spam_score": 1,
+			"rule_hits": [
+				"Too many special characters"
+			],
+			"block_reason": ""
+		}
+	},
+	{
+		"name": "seven-capitals-in-ten",
+		"input": {
+			"email": "visitor@example.com",
+			"subject": "A new project",
+			"reason": "project",
+			"message": "ABCDEFG abc!"
+		},
+		"expected": {
+			"email": "visitor@example.com",
+			"subject": "A new project",
+			"message": "ABCDEFG abc!",
+			"reason": "project",
+			"is_valid": true,
+			"is_spam_rule": false,
+			"suspicious": false,
+			"spam_score": 1,
+			"rule_hits": [
+				"Too much uppercase text"
+			],
+			"block_reason": ""
+		}
+	},
+	{
+		"name": "six-capitals-in-ten",
+		"input": {
+			"email": "visitor@example.com",
+			"subject": "A new project",
+			"reason": "project",
+			"message": "ABCDEF abcd!"
+		},
+		"expected": {
+			"email": "visitor@example.com",
+			"subject": "A new project",
+			"message": "ABCDEF abcd!",
+			"reason": "project",
+			"is_valid": true,
+			"is_spam_rule": false,
+			"suspicious": false,
+			"spam_score": 0,
+			"rule_hits": [],
+			"block_reason": ""
+		}
+	},
+	{
+		"name": "nine-capitals-are-too-few",
+		"input": {
+			"email": "visitor@example.com",
+			"subject": "A new project",
+			"reason": "project",
+			"message": "ABCDEFGHI 123456"
+		},
+		"expected": {
+			"email": "visitor@example.com",
+			"subject": "A new project",
+			"message": "ABCDEFGHI 123456",
+			"reason": "project",
+			"is_valid": true,
+			"is_spam_rule": false,
+			"suspicious": false,
+			"spam_score": 0,
+			"rule_hits": [],
+			"block_reason": ""
+		}
+	},
+	{
+		"name": "shouting",
+		"input": {
+			"email": "visitor@example.com",
+			"subject": "A new project",
+			"reason": "project",
+			"message": "I NEED A WEBSITE BUILT VERY QUICKLY PLEASE"
+		},
+		"expected": {
+			"email": "visitor@example.com",
+			"subject": "A new project",
+			"message": "I NEED A WEBSITE BUILT VERY QUICKLY PLEASE",
+			"reason": "project",
+			"is_valid": true,
+			"is_spam_rule": false,
+			"suspicious": false,
+			"spam_score": 1,
+			"rule_hits": [
+				"Too much uppercase text"
+			],
+			"block_reason": ""
+		}
+	},
+	{
+		"name": "subject-is-the-message",
+		"input": {
+			"email": "visitor@example.com",
+			"subject": "Please call me back",
+			"reason": "project",
+			"message": "please CALL me back"
+		},
+		"expected": {
+			"email": "visitor@example.com",
+			"subject": "Please call me back",
+			"message": "please CALL me back",
+			"reason": "project",
+			"is_valid": true,
+			"is_spam_rule": false,
+			"suspicious": false,
+			"spam_score": 1,
+			"rule_hits": [
+				"Subject and message are identical"
+			],
+			"block_reason": ""
+		}
+	},
+	{
+		"name": "a-keyword",
+		"input": {
+			"email": "visitor@example.com",
+			"subject": "A new project",
+			"reason": "project",
+			"message": "We offer backlinks for your website at a good price."
+		},
+		"expected": {
+			"email": "visitor@example.com",
+			"subject": "A new project",
+			"message": "We offer backlinks for your website at a good price.",
+			"reason": "project",
+			"is_valid": true,
+			"is_spam_rule": false,
+			"suspicious": false,
+			"spam_score": 2,
+			"rule_hits": [
+				"Spam keyword hits: 1"
+			],
+			"block_reason": ""
+		}
+	},
+	{
+		"name": "a-keyword-in-the-subject",
+		"input": {
+			"email": "visitor@example.com",
+			"subject": "Guest post offer",
+			"reason": "project",
+			"message": "I would like to write for your website sometime."
+		},
+		"expected": {
+			"email": "visitor@example.com",
+			"subject": "Guest post offer",
+			"message": "I would like to write for your website sometime.",
+			"reason": "project",
+			"is_valid": true,
+			"is_spam_rule": false,
+			"suspicious": false,
+			"spam_score": 2,
+			"rule_hits": [
+				"Spam keyword hits: 1"
+			],
+			"block_reason": ""
+		}
+	},
+	{
+		"name": "seo-inside-a-word",
+		"input": {
+			"email": "visitor@example.com",
+			"subject": "A new project",
+			"reason": "project",
+			"message": "I am writing from Seoul about a museology project."
+		},
+		"expected": {
+			"email": "visitor@example.com",
+			"subject": "A new project",
+			"message": "I am writing from Seoul about a museology project.",
+			"reason": "project",
+			"is_valid": true,
+			"is_spam_rule": false,
+			"suspicious": false,
+			"spam_score": 2,
+			"rule_hits": [
+				"Spam keyword hits: 1"
+			],
+			"block_reason": ""
+		}
+	},
+	{
+		"name": "a-doctor",
+		"input": {
+			"email": "visitor@example.com",
+			"subject": "A new project",
+			"reason": "project",
+			"message": "Please pass this message on to Dr Smith at your office."
+		},
+		"expected": {
+			"email": "visitor@example.com",
+			"subject": "A new project",
+			"message": "Please pass this message on to Dr Smith at your office.",
+			"reason": "project",
+			"is_valid": true,
+			"is_spam_rule": false,
+			"suspicious": false,
+			"spam_score": 2,
+			"rule_hits": [
+				"Spam keyword hits: 1"
+			],
+			"block_reason": ""
+		}
+	},
+	{
+		"name": "da-as-a-word",
+		"input": {
+			"email": "visitor@example.com",
+			"subject": "A new project",
+			"reason": "project",
+			"message": "Your site has a DA of forty, which we could improve."
+		},
+		"expected": {
+			"email": "visitor@example.com",
+			"subject": "A new project",
+			"message": "Your site has a DA of forty, which we could improve.",
+			"reason": "project",
+			"is_valid": true,
+			"is_spam_rule": false,
+			"suspicious": false,
+			"spam_score": 2,
+			"rule_hits": [
+				"Spam keyword hits: 1"
+			],
+			"block_reason": ""
+		}
+	},
+	{
+		"name": "da-inside-a-word",
+		"input": {
+			"email": "visitor@example.com",
+			"subject": "A new project",
+			"reason": "project",
+			"message": "I saw the data and the dashboard you built last year."
+		},
+		"expected": {
+			"email": "visitor@example.com",
+			"subject": "A new project",
+			"message": "I saw the data and the dashboard you built last year.",
+			"reason": "project",
+			"is_valid": true,
+			"is_spam_rule": false,
+			"suspicious": false,
+			"spam_score": 0,
+			"rule_hits": [],
+			"block_reason": ""
+		}
+	},
+	{
+		"name": "da-beside-cyrillic",
+		"input": {
+			"email": "visitor@example.com",
+			"subject": "A new project",
+			"reason": "project",
+			"message": "\u043f\u0440da is how the report ended, oddly enough for us."
+		},
+		"expected": {
+			"email": "visitor@example.com",
+			"subject": "A new project",
+			"message": "\u043f\u0440da is how the report ended, oddly enough for us.",
+			"reason": "project",
+			"is_valid": true,
+			"is_spam_rule": false,
+			"suspicious": false,
+			"spam_score": 2,
+			"rule_hits": [
+				"Spam keyword hits: 1"
+			],
+			"block_reason": ""
+		}
+	},
+	{
+		"name": "a-long-s-is-not-an-s",
+		"input": {
+			"email": "visitor@example.com",
+			"subject": "A new project",
+			"reason": "project",
+			"message": "We offer \u017feo services for your website this month."
+		},
+		"expected": {
+			"email": "visitor@example.com",
+			"subject": "A new project",
+			"message": "We offer \u017feo services for your website this month.",
+			"reason": "project",
+			"is_valid": true,
+			"is_spam_rule": false,
+			"suspicious": false,
+			"spam_score": 0,
+			"rule_hits": [],
+			"block_reason": ""
+		}
+	},
+	{
+		"name": "a-kelvin-sign-is-not-a-k",
+		"input": {
+			"email": "visitor@example.com",
+			"subject": "A new project",
+			"reason": "project",
+			"message": "We offer bac\u212alinks for your website this month."
+		},
+		"expected": {
+			"email": "visitor@example.com",
+			"subject": "A new project",
+			"message": "We offer bac\u212alinks for your website this month.",
+			"reason": "project",
+			"is_valid": true,
+			"is_spam_rule": false,
+			"suspicious": false,
+			"spam_score": 0,
+			"rule_hits": [],
+			"block_reason": ""
+		}
+	},
+	{
+		"name": "crypto-in-cryptography",
+		"input": {
+			"email": "visitor@example.com",
+			"subject": "A new project",
+			"reason": "project",
+			"message": "I teach cryptography and would like to collaborate with you."
+		},
+		"expected": {
+			"email": "visitor@example.com",
+			"subject": "A new project",
+			"message": "I teach cryptography and would like to collaborate with you.",
+			"reason": "project",
+			"is_valid": true,
+			"is_spam_rule": false,
+			"suspicious": false,
+			"spam_score": 2,
+			"rule_hits": [
+				"Spam keyword hits: 1"
+			],
+			"block_reason": ""
+		}
+	},
+	{
+		"name": "two-keywords",
+		"input": {
+			"email": "visitor@example.com",
+			"subject": "A new project",
+			"reason": "project",
+			"message": "Casino and betting partners wanted for a new site."
+		},
+		"expected": {
+			"email": "visitor@example.com",
+			"subject": "A new project",
+			"message": "Casino and betting partners wanted for a new site.",
+			"reason": "project",
+			"is_valid": true,
+			"is_spam_rule": false,
+			"suspicious": false,
+			"spam_score": 2,
+			"rule_hits": [
+				"Spam keyword hits: 2"
+			],
+			"block_reason": ""
+		}
+	},
+	{
+		"name": "three-keywords",
+		"input": {
+			"email": "visitor@example.com",
+			"subject": "A new project",
+			"reason": "project",
+			"message": "Casino and betting and forex partners wanted for a new site."
+		},
+		"expected": {
+			"email": "visitor@example.com",
+			"subject": "A new project",
+			"message": "Casino and betting and forex partners wanted for a new site.",
+			"reason": "project",
+			"is_valid": true,
+			"is_spam_rule": false,
+			"suspicious": true,
+			"spam_score": 3,
+			"rule_hits": [
+				"Spam keyword hits: 3",
+				"Multiple spam indicators"
+			],
+			"block_reason": ""
+		}
+	},
+	{
+		"name": "a-guarantee",
+		"input": {
+			"email": "visitor@example.com",
+			"subject": "A new project",
+			"reason": "project",
+			"message": "We give a 100% guarantee on every site that we build."
+		},
+		"expected": {
+			"email": "visitor@example.com",
+			"subject": "A new project",
+			"message": "We give a 100% guarantee on every site that we build.",
+			"reason": "project",
+			"is_valid": true,
+			"is_spam_rule": false,
+			"suspicious": false,
+			"spam_score": 2,
+			"rule_hits": [
+				"Spam keyword hits: 1"
+			],
+			"block_reason": ""
+		}
+	},
+	{
+		"name": "a-job-about-traffic",
+		"input": {
+			"email": "visitor@example.com",
+			"subject": "A new project",
+			"reason": "job",
+			"message": "We have a role open on our web traffic team in Sofia."
+		},
+		"expected": {
+			"email": "visitor@example.com",
+			"subject": "A new project",
+			"message": "We have a role open on our web traffic team in Sofia.",
+			"reason": "job",
+			"is_valid": true,
+			"is_spam_rule": false,
+			"suspicious": false,
+			"spam_score": 1,
+			"rule_hits": [
+				"Reason/message mismatch"
+			],
+			"block_reason": ""
+		}
+	},
+	{
+		"name": "a-project-about-traffic",
+		"input": {
+			"email": "visitor@example.com",
+			"subject": "A new project",
+			"reason": "project",
+			"message": "We want a dashboard for our web traffic team in Sofia."
+		},
+		"expected": {
+			"email": "visitor@example.com",
+			"subject": "A new project",
+			"message": "We want a dashboard for our web traffic team in Sofia.",
+			"reason": "project",
+			"is_valid": true,
+			"is_spam_rule": false,
+			"suspicious": false,
+			"spam_score": 0,
+			"rule_hits": [],
+			"block_reason": ""
+		}
+	},
+	{
+		"name": "a-job-about-seo",
+		"input": {
+			"email": "visitor@example.com",
+			"subject": "A new project",
+			"reason": "job",
+			"message": "We are hiring an seo specialist for our team in Sofia."
+		},
+		"expected": {
+			"email": "visitor@example.com",
+			"subject": "A new project",
+			"message": "We are hiring an seo specialist for our team in Sofia.",
+			"reason": "job",
+			"is_valid": true,
+			"is_spam_rule": false,
+			"suspicious": true,
+			"spam_score": 3,
+			"rule_hits": [
+				"Spam keyword hits: 1",
+				"Reason/message mismatch"
+			],
+			"block_reason": ""
+		}
+	},
+	{
+		"name": "two-is-neither",
+		"input": {
+			"email": "visitor@example.com",
+			"subject": "A new project",
+			"reason": "project",
+			"message": "Call me!!"
+		},
+		"expected": {
+			"email": "visitor@example.com",
+			"subject": "A new project",
+			"message": "Call me!!",
+			"reason": "project",
+			"is_valid": true,
+			"is_spam_rule": false,
+			"suspicious": false,
+			"spam_score": 2,
+			"rule_hits": [
+				"Message too short"
+			],
+			"block_reason": ""
+		}
+	},
+	{
+		"name": "three-is-suspicious",
+		"input": {
+			"email": "visitor@example.com",
+			"subject": "A",
+			"reason": "project",
+			"message": "Call me!!"
+		},
+		"expected": {
+			"email": "visitor@example.com",
+			"subject": "A",
+			"message": "Call me!!",
+			"reason": "project",
+			"is_valid": true,
+			"is_spam_rule": false,
+			"suspicious": true,
+			"spam_score": 3,
+			"rule_hits": [
+				"Message too short",
+				"Subject too short"
+			],
+			"block_reason": ""
+		}
+	},
+	{
+		"name": "four-is-suspicious",
+		"input": {
+			"email": "visitor@example.com",
+			"subject": "A new project",
+			"reason": "project",
+			"message": "seo??"
+		},
+		"expected": {
+			"email": "visitor@example.com",
+			"subject": "A new project",
+			"message": "seo??",
+			"reason": "project",
+			"is_valid": true,
+			"is_spam_rule": false,
+			"suspicious": true,
+			"spam_score": 4,
+			"rule_hits": [
+				"Message too short",
+				"Spam keyword hits: 1"
+			],
+			"block_reason": ""
+		}
+	},
+	{
+		"name": "five-is-spam",
+		"input": {
+			"email": "someone@mailinator.com",
+			"subject": "A",
+			"reason": "project",
+			"message": "Call me!!"
+		},
+		"expected": {
+			"email": "someone@mailinator.com",
+			"subject": "A",
+			"message": "Call me!!",
+			"reason": "project",
+			"is_valid": true,
+			"is_spam_rule": true,
+			"suspicious": false,
+			"spam_score": 5,
+			"rule_hits": [
+				"Disposable email domain",
+				"Message too short",
+				"Subject too short"
+			],
+			"block_reason": "Rule-based spam threshold reached"
+		}
+	},
+	{
+		"name": "six-is-spam",
+		"input": {
+			"email": "someone@mailinator.com",
+			"subject": "A new project",
+			"reason": "project",
+			"message": "seo??"
+		},
+		"expected": {
+			"email": "someone@mailinator.com",
+			"subject": "A new project",
+			"message": "seo??",
+			"reason": "project",
+			"is_valid": true,
+			"is_spam_rule": true,
+			"suspicious": false,
+			"spam_score": 6,
+			"rule_hits": [
+				"Disposable email domain",
+				"Message too short",
+				"Spam keyword hits: 1"
+			],
+			"block_reason": "Rule-based spam threshold reached"
+		}
+	},
+	{
+		"name": "everything-at-once",
+		"input": {
+			"email": "someone@tempmail.com",
+			"subject": "BUY NOW",
+			"reason": "job",
+			"message": "BUY NOW casino betting forex https://a.example https://b.example https://c.example BUY NOW BUY NOW BUY NOW"
+		},
+		"expected": {
+			"email": "someone@tempmail.com",
+			"subject": "BUY NOW",
+			"message": "BUY NOW casino betting forex https://a.example https://b.example https://c.example BUY NOW BUY NOW BUY NOW",
+			"reason": "job",
+			"is_valid": true,
+			"is_spam_rule": true,
+			"suspicious": false,
+			"spam_score": 9,
+			"rule_hits": [
+				"Disposable email domain",
+				"Too many links: 3",
+				"Excessive repetition",
+				"Spam keyword hits: 4",
+				"Multiple spam indicators"
+			],
+			"block_reason": "Rule-based spam threshold reached"
+		}
+	}
+]

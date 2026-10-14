@@ -14,6 +14,8 @@ discovered halfway through serving a request rather than when the process boots.
 
 import re
 from decimal import Decimal
+from email.message import EmailMessage
+from email.utils import getaddresses
 from functools import lru_cache
 from typing import Literal
 from urllib.parse import urlparse
@@ -27,6 +29,23 @@ from portfolio_ai.exceptions import ConfigError
 # says nothing about which of the two local databases it is, and the same digits then
 # have to be repeated in the error message.
 _LOCAL_PGVECTOR_PORT = 5433
+
+
+def _one_address(value: str) -> bool:
+    """Whether ``value`` is one email address as the mail library reads a header.
+
+    It is put into a To header and read back the way ``smtplib`` reads recipients,
+    which is the check ``mail.py`` makes on every message before it is sent. The
+    parser rewrites quotes and a trailing dot, a name or angle brackets leave an
+    address that is not the value, and a comma makes two.
+    """
+    header = EmailMessage()
+    try:
+        header["To"] = value
+    except (ValueError, LookupError):
+        return False
+    return [found for _, found in getaddresses([str(header["To"])])] == [value]
+
 
 # The shortest API key or hashing key accepted. 32 characters of hex is 128 bits,
 # which nobody guesses; the generator suggested in the error gives 64.
@@ -286,6 +305,24 @@ class Settings(BaseSettings):
     # Who receives it. Configuration, and never written into this repository.
     digest_to_email: str | None = None
 
+    # --- The contact form -------------------------------------------------------
+    # Who is told of each message sent through the site's contact form, and where a
+    # visitor's answer to the automatic acknowledgement goes (its Reply-To). The
+    # sending account is the one above. Without this, or without that account, the
+    # contact endpoint answers 503 and the form says it is unavailable.
+    contact_to_email: str | None = None
+    # How many submissions the whole service takes in an hour. Each one can cost two
+    # model calls and send two emails, and the daily spending limit counts chat
+    # answers only, so this is what bounds the form. The site's API also allows each
+    # visitor, by IP address, five in fifteen minutes.
+    contact_max_per_hour: int = Field(default=30, ge=1, le=1000)
+    # How many automatic replies the whole service sends in any 24 hours. The form
+    # takes any address, so a reply can go to somebody who never wrote; this bounds
+    # how many such emails a day the sending account can be made to send. Past it, a
+    # message still reaches the owner, without a reply. 0 switches the replies off.
+    # Each address is also sent at most one a day (contact/replies.py).
+    contact_max_replies_per_day: int = Field(default=10, ge=0, le=1000)
+
     log_level: Literal["DEBUG", "INFO", "WARNING", "ERROR"] = "INFO"
 
     @field_validator(
@@ -296,6 +333,7 @@ class Settings(BaseSettings):
         "smtp_user",
         "smtp_app_password",
         "digest_to_email",
+        "contact_to_email",
         mode="before",
     )
     @classmethod
@@ -316,7 +354,7 @@ class Settings(BaseSettings):
             return None
         return value
 
-    @field_validator("smtp_user", "digest_to_email")
+    @field_validator("smtp_user", "digest_to_email", "contact_to_email")
     @classmethod
     def _looks_like_an_address(cls, value: str | None) -> str | None:
         """Refuse what is plainly not an email address, without repeating it.
@@ -338,6 +376,12 @@ class Settings(BaseSettings):
         name, at, domain = value.partition("@")
         shaped = bool(name and at and "." in domain)
         if not shaped or not value.isascii() or any(char.isspace() for char in value):
+            raise ValueError("must be an email address in plain ASCII, such as name@example.com")
+        # And one address as the mail library reads it: a comma, a name, angle brackets,
+        # quotes or a trailing dot make it something else. mail.py checks every message
+        # this way before sending it, so such a value would otherwise pass here and fail
+        # at the first email, days later. Checked here so it stops the process at once.
+        if not _one_address(value):
             raise ValueError("must be an email address in plain ASCII, such as name@example.com")
         return value
 

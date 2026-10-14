@@ -140,9 +140,14 @@ what you reach for when a library gives you no async option.
 
 When the digest was actually built, it turned out not to need the hatch. It's a command, not a
 server: it does its async work, lets `asyncio.run` return, and only then sends the email, from
-ordinary code where a blocking call has nothing left to block. `analytics/mail.py` says so at
-the top. `to_thread` is still the answer whenever the blocking call has to happen while the
-loop is busy with other things, which is where a server always is.
+ordinary code where a blocking call has nothing left to block. `to_thread` is still the answer
+whenever the blocking call has to happen while the loop is busy with other things, which is
+where a server always is.
+
+The project got that case as well, later. The site's contact form sends its emails from inside
+the API, whose loop is writing chat answers at the same moment, so `contact/service.py` really
+does call `asyncio.to_thread(mail.send, ...)`. Both callers use the same function, and `mail.py`
+explains the two ways round at the top.
 
 ### Calling an async function doesn't run it
 

@@ -29,8 +29,8 @@ pushed:
 
 When the task names a commit range, a branch or particular files, review those instead.
 
-Before judging a module, read the design it implements. docs/INGESTION.md, docs/ASSISTANT.md and
-docs/API.md walk through each flow module by module, and ARCHITECTURE.md §13 records the settled
+Before judging a module, read the design it implements. docs/INGESTION.md, docs/ASSISTANT.md,
+docs/API.md and docs/CONTACT.md walk through each flow module by module, and ARCHITECTURE.md §13 records the settled
 decisions. A settled decision is not a finding. If one looks wrong because of a fact the record
 didn't consider, raise it as a question.
 
@@ -370,6 +370,46 @@ Look for these first; each one has cost real time here.
   the chat's notice and the assistant's article say 90 days.
 - A sentence written from a reviewer's finding is checked against the finding's own output:
   "six letters of Cyrillic and box drawing" was three Cyrillic letters.
+- A unit test that sends mail without `tests/smtp_fake.py` reached the real mail server once.
+  `tests/unit/conftest.py` now replaces `smtplib.SMTP` for every test. Anything new that
+  reaches outward needs a guard of that kind and not a habit.
+- A pattern ported from JavaScript changes meaning in four places: `\s` is a different list,
+  a string's length is UTF-16 units there and characters here, `\b` and `/i` are ASCII-only
+  there without the `u` flag (`re.ASCII` here), and `$` also matches before a final line
+  break here (`fullmatch`).
+- An escape typed into a source file can arrive as the character it names. Scan a new file
+  for characters outside printable ASCII: a zero-width space inside a pattern cannot be seen
+  in review.
+- Two timeouts in two repositories are added up: the caller's against everything the callee
+  may wait for, which for an OpenAI call is the client's timeout times its attempts. Look
+  for a comment or a test on each side that names the other.
+- Waits at shutdown add. Each `drain(grace)` awaited in turn is another grace, and Docker's
+  `stop_grace_period` is one number.
+- An address that passes a loose check can be two recipients in a header: `a,b@example.com`.
+  What a visitor typed meets a strict test before it goes into `To`.
+- A count quoted from a trial is counted again from the trial's output, and a duration nobody
+  measured is not written as a figure: "two replies in seven" was two in five, and "5 to 8
+  seconds" was a guess.
+- `EmailMessage` decodes `=?charset?q?...?=` in any header it is given. Text a visitor typed
+  becomes a comma, a line break or a link after every check on the typed text has passed.
+  Check the header the library holds, and the recipients `getaddresses` reads from it.
+- A mail stand-in that keeps the `EmailMessage` object has not seen what a server sees.
+  Flatten it as `smtplib` does and read the envelope and the bytes (`server.delivered`).
+- `EmailMessage` refuses a header by `str.splitlines()`, which splits on U+0085; JavaScript's
+  `\s` does not have it. A net stricter than the cleaning above it turns one character into a
+  lost message.
+- "Everything before X may fail" is an `except Exception` around each optional step, not a
+  list of the errors somebody thought of. Feed the step a 200 that is not a response.
+- A fixture case named for a number has to produce it: `five-is-spam` scored 6. List the
+  scores a fixture holds beside its thresholds.
+- The development machine's Python and the image's differ by patch level, and a
+  standard-library fix can sit between them (3.12.3 against 3.12.5 for mail headers). A test
+  asserts what this code guarantees, not what the interpreter happens to do.
+- A flag given to some of a module's patterns is checked on all of them: `re.ASCII` was on
+  the keywords and not on the link pattern.
+- A heredoc is not a safe place for a script with a backslash in it. One put a backspace
+  byte in a comment where the two characters of an escape were meant. Scan what a script
+  wrote for control bytes.
 
 When a finding is a new kind of mistake, suggest a one-line entry for this list.
 
@@ -379,8 +419,8 @@ You are read-only. Never create, change or delete a file inside the repository, 
 git command that changes state: add, commit, stash, checkout, switch, restore, reset, clean,
 rebase, merge or push. The uncommitted work you are reviewing may exist nowhere else.
 
-Don't run the project's own commands: the assistant, ingestion, the API server, analytics or an
-eval run. They reach OpenAI, GitHub or the database, and some of them spend money or write rows.
+Don't run the project's own commands: the assistant, ingestion, the API server, analytics,
+`contact try` or an eval run. They reach OpenAI, GitHub or the database, and some of them spend money or write rows.
 A complete eval run also freezes the dataset it runs, for good. `python -m portfolio_ai.evals check`
 and `run --dry-run` are the exceptions: both are free and write nothing. The test suites are
 your only other route to the database. Don't start servers or other long-running processes, and

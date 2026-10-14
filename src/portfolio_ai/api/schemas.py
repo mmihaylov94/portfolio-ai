@@ -217,3 +217,55 @@ class FeedbackRequest(BaseModel):
     # the Literal check gets a chance to read `true` as 1.
     rating: Annotated[Literal[-1, 1], BeforeValidator(_not_a_boolean)]
     comment: Comment | None = None
+
+
+# --- the contact form ---------------------------------------------------------------
+
+# The longest of each field the contact form may send. An address cannot be longer
+# than 254 characters and be an address. The other three bound what one submission
+# costs: its message is sent to a model twice and to the owner once.
+MAX_CONTACT_EMAIL = 254
+MAX_CONTACT_SUBJECT = 300
+MAX_CONTACT_MESSAGE = 5000
+MAX_CONTACT_REASON = 40
+
+
+class ContactRequest(BaseModel):
+    """One message from the site's contact form, as the site's API forwards it.
+
+    Shape and size only: each field trimmed, not empty, within its limit and free
+    of control characters, the same steps ``Message`` goes through above. Whether
+    the reason is one the form offers and whether the address is an address are the
+    rules' to decide (``contact/rules.py``): a submission that fails those is not
+    refused here but reported to the owner as blocked, which is what the workflow
+    this replaced did.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    email: Annotated[
+        str,
+        StringConstraints(strip_whitespace=True, min_length=1, max_length=MAX_CONTACT_EMAIL),
+        AfterValidator(_no_control_characters),
+    ]
+    subject: Annotated[
+        str,
+        StringConstraints(strip_whitespace=True, min_length=1, max_length=MAX_CONTACT_SUBJECT),
+        AfterValidator(_no_control_characters),
+    ]
+    message: Annotated[
+        str,
+        StringConstraints(strip_whitespace=True, min_length=1, max_length=MAX_CONTACT_MESSAGE),
+        AfterValidator(_no_control_characters),
+    ]
+    reason: Annotated[
+        str,
+        StringConstraints(strip_whitespace=True, min_length=1, max_length=MAX_CONTACT_REASON),
+        AfterValidator(_no_control_characters),
+    ]
+
+
+class ContactResponse(BaseModel):
+    """The owner has been notified. Nothing about what was decided: see the router."""
+
+    status: Literal["received"] = "received"

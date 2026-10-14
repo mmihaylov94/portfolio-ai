@@ -16,6 +16,9 @@ Four parts:
 4. **Analytics** — captures what visitors ask and where the assistant fails them, clusters the
    gaps, and feeds real failures back into the eval set.
 
+It also takes the messages of the site's contact form: fixed spam rules, a classifier, a short
+automatic acknowledgement, and an email to the owner for every message.
+
 Deliberately built without a RAG framework: the OpenAI SDK, psycopg and raw SQL, so every
 embedding call, vector query and agent loop iteration is visible in the source.
 
@@ -27,6 +30,7 @@ embedding call, vector query and agent loop iteration is visible in the source.
 - **[docs/API.md](docs/API.md)** — how the HTTP API works: one request step by step, the contract, the limits, the libraries
 - **[docs/EVALS.md](docs/EVALS.md)** — how the evals work: the golden dataset, what is measured, the judge, reading a comparison
 - **[docs/ANALYTICS.md](docs/ANALYTICS.md)** — how the analytics work: what an answer records, the report's two forms, the invented conversations it was built against
+- **[docs/CONTACT.md](docs/CONTACT.md)** — how the contact form works: one message step by step, the rules ported from n8n, the two models, the emails
 - **[docs/DEPLOYMENT.md](docs/DEPLOYMENT.md)** — how it is deployed, and the one-command redeploy
 - **[docs/lessons/](docs/lessons/)** — the project built as a lesson series, one concept at a time
 - **[CLAUDE.md](CLAUDE.md)** — working context for Claude Code
@@ -61,6 +65,11 @@ Live: the chat on [mihaylov.io](https://mihaylov.io) has answered from this serv
   written, the articles its searches found most relevant listed under it, and thumbs up/down
   on every answer.
   The site's API passes each question to this service, which has no public address.
+- **The site's contact form** — a message sent through the form is checked by fixed rules and
+  a classifier, acknowledged with a short reply that says it is automatic, and emailed to
+  the owner, blocked ones included. The form says thank you only once that email has gone.
+  Nothing a visitor typed is stored or logged. It was the site's last n8n workflow, ported
+  with its rules held to the original by a fixture of n8n's own verdicts.
 
 **The models in use** are settings, chosen by eval runs and changed the same way: `gpt-6-luna`
 writes the answers, `gpt-5-mini` classifies each message, `text-embedding-3-small` produces the
@@ -105,6 +114,8 @@ uv run python -m portfolio_ai.analytics refresh-gaps --dry-run   # the content g
 uv run python -m portfolio_ai.analytics gaps              # the writing queue; quotes it, so terminal only
 uv run python -m portfolio_ai.analytics promote-case 812 --expected-doc faq   # quotes it: terminal only
 uv run python -m portfolio_ai.analytics seed --dry-run    # invented conversations for development
+
+uv run python -m portfolio_ai.contact try --message "..."   # the contact form's two emails, printed; sends nothing
 
 uv run python -m portfolio_ai.evals check datasets/golden_v3.yaml    # validate the golden set
 uv run python -m portfolio_ai.evals run --label my-run --dry-run     # plan an eval run; no spend
